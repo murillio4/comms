@@ -1,0 +1,9 @@
+[package]
+name = "voice-client"
+version = "0.1.0"
+authors = ["Mitchell Hentges <mitch9654@mozilla.com>"]
+edition = "2018"
+
+[dependencies]
+cpal = "0.9.0"
+opus = "0.2.1"
