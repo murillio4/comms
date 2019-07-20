@@ -7,20 +7,23 @@
 //! precisely synchronised.
 
 extern crate cpal;
+extern crate failure;
 
 use std::net::UdpSocket;
 
 use cpal::{Format, SampleFormat, SampleRate};
+use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
 use opus::{Application, Channels, Encoder};
 
 const SAMPLE_RATE: u32 = 48000; // Opus requires 48000hz
 const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 
-fn main() -> std::io::Result<()> {
-    let event_loop = cpal::EventLoop::new();
+fn main() -> Result<(), failure::Error> {
+    let host = cpal::default_host();
+    let event_loop = host.event_loop();
 
-    let input_device = cpal::default_input_device().expect("Failed to get default input device");
-    println!("Using default input device: \"{}\"", input_device.name());
+    let input_device = host.default_input_device().expect("Failed to get default input device");
+    println!("Using default input device: \"{}\"", input_device.name().unwrap());
 
     let format = Format {
         channels: 1,
@@ -30,7 +33,7 @@ fn main() -> std::io::Result<()> {
 
     println!("Attempting to build input stream with `{:?}`.", format);
     let input_stream_id = event_loop.build_input_stream(&input_device, &format).unwrap();
-    event_loop.play_stream(input_stream_id.clone());
+    event_loop.play_stream(input_stream_id.clone())?;
 
     let mut opus_encoder = Encoder::new(format.sample_rate.0, Channels::Mono, Application::LowDelay).unwrap();
     let mut opus_input_buffer = [0 as i16; 960];
@@ -39,7 +42,15 @@ fn main() -> std::io::Result<()> {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.connect("127.0.0.1:18847")?;
 
-    event_loop.run(move |id, data| {
+    event_loop.run(move |id, result| {
+        let data = match result {
+            Ok(data) => data,
+            Err(err) => {
+                eprintln!("An error occurred on stream {:?}: {}", id, err);
+                return;
+            }
+        };
+
         match data {
             cpal::StreamData::Input { buffer: cpal::UnknownTypeInputBuffer::I16(buffer) } => {
                 assert_eq!(id, input_stream_id);
@@ -55,5 +66,5 @@ fn main() -> std::io::Result<()> {
             },
             _ => panic!("we're expecting f32 data"),
         }
-    });
+    })
 }
