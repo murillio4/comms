@@ -5,6 +5,5 @@ authors = ["Mitchell Hentges <mitch9654@mozilla.com>"]
 edition = "2018"
 
 [dependencies]
-cpal = "0.10.0"
-failure = "0.1.5"
+libpulse-binding = "2.13.0"
 opus = "0.2.1"

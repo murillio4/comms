@@ -6,65 +6,153 @@
 //! Uses a delay of `LATENCY_MS` milliseconds in case the default input and output streams are not
 //! precisely synchronised.
 
-extern crate cpal;
-extern crate failure;
-
 use std::net::UdpSocket;
 
-use cpal::{Format, SampleFormat, SampleRate};
-use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
-use opus::{Application, Channels, Encoder};
+use libpulse_binding::mainloop::standard::{Mainloop, IterateResult};
+use libpulse_binding::context::Context;
+use libpulse_binding::context::flags::NOAUTOSPAWN;
+use libpulse_binding::error::PAErr;
+use libpulse_binding::time::MicroSeconds;
+use std::error::Error;
+use std::fmt;
+use std::fmt::Formatter;
+use libpulse_binding::context;
+use libpulse_binding::sample::{Spec, Format};
+use libpulse_binding::stream::{Stream, PeekResult};
+use libpulse_binding::def::BufferAttr;
+use std::rc::Rc;
+use std::cell::RefCell;
+use libpulse_binding::stream::flags::ADJUST_LATENCY;
 
-const SAMPLE_RATE: u32 = 48000; // Opus requires 48000hz
-const OPUS_PACKET_MAX_LENGTH: usize = 1276;
+// const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 
-fn main() -> Result<(), failure::Error> {
-    let host = cpal::default_host();
-    let event_loop = host.event_loop();
+const SPEC: Spec = Spec {
+    channels: 1,
+    rate: 48000, // Opus requires 48000hz
+    format: Format::S16le,
+};
 
-    let input_device = host.default_input_device().expect("Failed to get default input device");
-    println!("Using default input device: \"{}\"", input_device.name().unwrap());
+fn listen(context: &mut Context) {
+    let stream_rc = Rc::new(RefCell::new(
+        Stream::new(context, "record", &SPEC, None).unwrap()
+    ));
+    let stream = stream_rc.clone();
+    let mut stream = stream.borrow_mut();
 
-    let format = Format {
-        channels: 1,
-        data_type: SampleFormat::I16,
-        sample_rate: SampleRate(SAMPLE_RATE),
+    stream.set_overflow_callback(Some(Box::new(move || {
+        println!("[recording] overflow");
+    })));
+    stream.set_underflow_callback(Some(Box::new(move || {
+        println!("[recording] underflow");
+    })));
+    stream.set_started_callback(Some(Box::new(move || {
+        println!("[recording] started");
+    })));
+    stream.set_suspended_callback(Some(Box::new(move || {
+        println!("[recording] suspended");
+    })));
+    stream.set_event_callback(Some(Box::new(move |_, _| {
+        println!("[recording] event???");
+    })));
+    stream.set_moved_callback(Some(Box::new(move || {
+        println!("[recording] it moved how neat is that");
+    })));
+
+    let buffer_attr = BufferAttr {
+        tlength: std::u32::MAX, // only matters for playback
+        maxlength: std::u32::MAX,
+        prebuf: std::u32::MAX,
+        minreq: std::u32::MAX,
+        fragsize: SPEC.usec_to_bytes(MicroSeconds(30000)) as u32,
     };
+    stream.connect_record(None, Some(&buffer_attr), ADJUST_LATENCY).unwrap();
 
-    println!("Attempting to build input stream with `{:?}`.", format);
-    let input_stream_id = event_loop.build_input_stream(&input_device, &format).unwrap();
-    event_loop.play_stream(input_stream_id.clone())?;
-
-    let mut opus_encoder = Encoder::new(format.sample_rate.0, Channels::Mono, Application::LowDelay).unwrap();
-    let mut opus_input_buffer = [0 as i16; 960];
-    let mut opus_input_buffer_index = 0;
+    //    let mut opus_input_buffer = [0 as i16; 120];
+    //    let mut opus_input_buffer_index = 0;
 
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    socket.connect("127.0.0.1:18847")?;
+    socket.connect("127.0.0.1:18847").unwrap();
+    stream.set_read_callback(Some(Box::new(move |_| {
+        let mut stream = stream_rc.borrow_mut();
+        match stream.peek() {
+            Ok(data) => {
+                match data {
+                    PeekResult::Empty => println!("empty"),
+                    PeekResult::Hole(_) => println!("hole detected"),
+                    PeekResult::Data(data) => {
+//                           let mut packet = Vec::<i16>::with_capacity(data.len() / 2);
+//                           for i in 0..(data.len() / 2) {
+//                               let sample = i16::from_le_bytes([
+//                                   data[i * 2],
+//                                   data[i * 2 + 1]
+//                               ]);
+//                               packet.push(sample);
+//                           }
 
-    event_loop.run(move |id, result| {
-        let data = match result {
-            Ok(data) => data,
-            Err(err) => {
-                eprintln!("An error occurred on stream {:?}: {}", id, err);
-                return;
-            }
-        };
-
-        match data {
-            cpal::StreamData::Input { buffer: cpal::UnknownTypeInputBuffer::I16(buffer) } => {
-                assert_eq!(id, input_stream_id);
-                for &sample in buffer.iter() {
-                    opus_input_buffer[opus_input_buffer_index] = sample;
-                    opus_input_buffer_index = (opus_input_buffer_index + 1) % 960;
-
-                    if opus_input_buffer_index == 0 {
-                        let opus_packet = opus_encoder.encode_vec(&opus_input_buffer, OPUS_PACKET_MAX_LENGTH).unwrap();
-                        let _ = socket.send(&opus_packet);
+                        // let opus_packet = opus_encoder.encode_vec(&opus_input_buffer, OPUS_PACKET_MAX_LENGTH).unwrap();
+                        socket.send(&data).unwrap();
                     }
                 }
             },
-            _ => panic!("we're expecting f32 data"),
+            Err(_) => {
+                panic!("stream.peek() error");
+            }
         }
-    })
+        stream.discard().unwrap();
+    })));
+}
+
+fn main() {
+    let mut mainloop = Mainloop::new().unwrap();
+    let mut context = Context::new(&mainloop, "voip-client").unwrap();
+    context.connect(Some("/run/user/1000/pulse/native"), NOAUTOSPAWN, None).unwrap();
+    context.wait(&mut mainloop).unwrap();
+    listen(&mut context);
+    mainloop.run().unwrap();
+}
+
+#[derive(Debug)]
+enum WaitError {
+    Failed(Option<PAErr>),
+    Cancelled,
+}
+
+impl Error for WaitError {}
+
+impl fmt::Display for WaitError {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), ::std::fmt::Error> {
+        match *self {
+            WaitError::Failed(_) => f.write_str("Failed"),
+            WaitError::Cancelled => f.write_str("Cancelled"),
+        }
+    }
+}
+
+trait WaitableOperation {
+    fn wait(&self, mainloop: &mut Mainloop) -> Result<(), WaitError>;
+}
+
+impl WaitableOperation for Context {
+    fn wait(&self, mainloop: &mut Mainloop) -> Result<(), WaitError> {
+        loop {
+            match mainloop.iterate(false) {
+                IterateResult::Quit(_) => {
+                    return Err(WaitError::Cancelled);
+                }
+                IterateResult::Err(err) => {
+                    return Err(WaitError::Failed(Some(err)));
+                }
+                IterateResult::Success(_) => {}
+            };
+            match self.get_state() {
+                context::State::Ready => { break; }
+                context::State::Failed |
+                context::State::Terminated => {
+                    return Err(WaitError::Failed(None));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
