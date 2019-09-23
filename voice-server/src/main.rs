@@ -72,9 +72,6 @@ fn play(context: &mut Context, rx: Receiver<u8>) {
         tlength: SPEC.usec_to_bytes(MicroSeconds(30000)) as u32,
     };
     stream.connect_playback(None, Some(&buffer_attr), ADJUST_LATENCY, None, None).unwrap();
-
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    socket.connect("127.0.0.1:18847").unwrap();
     stream.set_write_callback(Some(Box::new(move |bytes| {
         let mut stream = stream_rc.borrow_mut();
         let buffer = stream.begin_write(Some(bytes)).unwrap().unwrap();
