@@ -6,152 +6,102 @@
 //! Uses a delay of `LATENCY_MS` milliseconds in case the default input and output streams are not
 //! precisely synchronised.
 
-use std::net::UdpSocket;
-
-use libpulse_binding::mainloop::standard::{Mainloop, IterateResult};
-use libpulse_binding::context::Context;
-use libpulse_binding::context::flags::NOAUTOSPAWN;
-use libpulse_binding::error::PAErr;
-use libpulse_binding::time::MicroSeconds;
-use std::error::Error;
-use std::fmt;
-use std::fmt::Formatter;
-use libpulse_binding::context;
-use libpulse_binding::sample::{Spec, Format};
-use libpulse_binding::stream::{Stream, SeekMode};
-use libpulse_binding::def::BufferAttr;
+use mio::net::UdpSocket;
+use std::io;
+use mio::{Poll, Token, Ready, PollOpt, Events};
+use mio::unix::UnixReady;
+use voice_lib::{packet, deserialize, serialize};
+use voice_lib::packet::{Packet, AudioFromClient};
+use std::net::SocketAddr;
 use std::rc::Rc;
-use std::cell::RefCell;
-use libpulse_binding::stream::flags::ADJUST_LATENCY;
-use std::sync::mpsc::Receiver;
 
-// const OPUS_PACKET_MAX_LENGTH: usize = 1276;
+// TODO handle keep-alive
 
-const SPEC: Spec = Spec {
-    channels: 1,
-    rate: 48000, // Opus requires 48000hz
-    format: Format::S16le,
-};
-const MAX_PACKET_SIZE: usize = 2000;
+fn main() -> io::Result<()> {
+    let socket = UdpSocket::bind(&"0.0.0.0:18847".parse().unwrap())?;
 
-fn play(context: &mut Context, rx: Receiver<u8>) {
-    let stream_rc = Rc::new(RefCell::new(
-        Stream::new(context, "playback", &SPEC, None).unwrap()
-    ));
-    let stream = stream_rc.clone();
-    let mut stream = stream.borrow_mut();
+    let poll = Poll::new()?;
+    poll.register(&socket, Token(0), Ready::all(), PollOpt::edge())?;
 
-    stream.set_overflow_callback(Some(Box::new(move || {
-        println!("[playback] overflow");
-    })));
-    stream.set_underflow_callback(Some(Box::new(move || {
-        println!("[playback] underflow");
-    })));
-    {
-        let stream_rc = stream_rc.clone();
-        stream.set_started_callback(Some(Box::new(move || {
-            let mut stream = stream_rc.borrow_mut();
-            println!("[playback] started -> {:?}", stream.get_buffer_attr().unwrap());
-        })));
-    }
-    stream.set_suspended_callback(Some(Box::new(move || {
-        println!("[playback] suspended");
-    })));
-    stream.set_event_callback(Some(Box::new(move |_, _| {
-        println!("[playback] event???");
-    })));
-    stream.set_moved_callback(Some(Box::new(move || {
-        println!("[playback] it moved how neat is that");
-    })));
+    let mut events = Events::with_capacity(1024);
+    let mut failed = false;
+    let mut buffer: [u8; 2000] = [0u8; 2000];
 
-    let buffer_attr = BufferAttr {
-        fragsize: std::u32::MAX, // only matters for recording
-        maxlength: std::u32::MAX,
-        prebuf: std::u32::MAX,
-        minreq: std::u32::MAX,
-        tlength: SPEC.usec_to_bytes(MicroSeconds(30000)) as u32,
-    };
-    stream.connect_playback(None, Some(&buffer_attr), ADJUST_LATENCY, None, None).unwrap();
-    stream.set_write_callback(Some(Box::new(move |bytes| {
-        let mut stream = stream_rc.borrow_mut();
-        let buffer = stream.begin_write(Some(bytes)).unwrap().unwrap();
+    let mut clients = Vec::<SocketAddr>::new();
+    let mut outgoing_queue = Vec::<(Rc<Vec<u8>>, SocketAddr)>::new();
+    let mut socket_writable = false;
 
-        for i in 0..buffer.len() {
-            let sample = match rx.try_recv() {
-                Ok(sample) => {
-                    sample
-                },
-                Err(_) => 0u8,
-            };
-            buffer[i] = sample;
-        }
+    while !failed {
+        poll.poll(&mut events, None)?;
+        for event in events.iter() {
+            // TODO make cross-platform
+            let readiness = UnixReady::from(event.readiness());
+            if readiness.is_error() {
+                eprintln!("{}", socket.take_error().unwrap().unwrap());
+                failed = true;
+            }
+            if readiness.is_readable() {
+                let (size, remote_addr) = socket.recv_from(&mut buffer).unwrap();
 
-        stream.write_copy(&buffer, 0, SeekMode::Relative).unwrap();
-    })));
-}
-
-fn main() {
-    let (tx, rx) = std::sync::mpsc::sync_channel((SPEC.rate / 16) as usize);
-    std::thread::spawn(move || {
-        let mut mainloop = Mainloop::new().unwrap();
-        let mut context = Context::new(&mainloop, "voip-client").unwrap();
-        context.connect(Some("/run/user/1000/pulse/native"), NOAUTOSPAWN, None).unwrap();
-        context.wait(&mut mainloop).unwrap();
-        play(&mut context, rx);
-        mainloop.run().unwrap();
-    });
-    let socket = UdpSocket::bind("127.0.0.1:18847").unwrap();
-    let mut buf = [0; MAX_PACKET_SIZE];
-    loop {
-        let packet_length = socket.recv_from(&mut buf).unwrap().0;
-        for i in 0..packet_length {
-            tx.send(buf[i]).unwrap();
-        }
-    }
-}
-
-#[derive(Debug)]
-enum WaitError {
-    Failed(Option<PAErr>),
-    Cancelled,
-}
-
-impl Error for WaitError {}
-
-impl fmt::Display for WaitError {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), ::std::fmt::Error> {
-        match *self {
-            WaitError::Failed(_) => f.write_str("Failed"),
-            WaitError::Cancelled => f.write_str("Cancelled"),
-        }
-    }
-}
-
-trait WaitableOperation {
-    fn wait(&self, mainloop: &mut Mainloop) -> Result<(), WaitError>;
-}
-
-impl WaitableOperation for Context {
-    fn wait(&self, mainloop: &mut Mainloop) -> Result<(), WaitError> {
-        loop {
-            match mainloop.iterate(false) {
-                IterateResult::Quit(_) => {
-                    return Err(WaitError::Cancelled);
+                if size == 0 {
+                    println!("received packet with size 0, ignoring");
+                    continue;
                 }
-                IterateResult::Err(err) => {
-                    return Err(WaitError::Failed(Some(err)));
+
+                let buffer = &buffer[0..size];
+                let header_type = buffer[0];
+                match header_type {
+                    packet::Connect::HEADER_TYPE => {
+                        clients.push(remote_addr);
+                        println!("[{:?}] added client", &remote_addr);
+                        outgoing_queue.push((Rc::new(buffer.to_vec()), remote_addr));
+                        attempt_write(&mut outgoing_queue, &socket, &mut socket_writable);
+                    }
+                    packet::AudioFromClient::HEADER_TYPE => {
+                        println!("[{:?}] received audio {:?}", remote_addr, &buffer[0..size]);
+                        let audio_from_client: AudioFromClient = match deserialize(&buffer[1..size]) {
+                            Ok(packet) => packet,
+                            Err(_) => {
+                                println!("[{:?}] Failed to parse packet, ignoring", &remote_addr);
+                                continue;
+                            }
+                        };
+                        let audio_to_client = packet::AudioToClient {
+                            bytes: audio_from_client.0,
+                            author: remote_addr.to_string(),
+                        };
+                        let packet = Rc::new(serialize(audio_to_client).unwrap());
+
+                        for client in clients.iter()
+                            .filter(|c| c != &&remote_addr)
+                            {
+                            outgoing_queue.push((packet.clone(), client.clone()))
+                        }
+                        attempt_write(&mut outgoing_queue, &socket, &mut socket_writable);
+                    }
+                    packet::Disconnect::HEADER_TYPE => {
+                        clients.retain(|c| c != &remote_addr);
+                        println!("[{:?}] removed client", &remote_addr);
+                    }
+                    _ => {
+                        println!("Received unknown packet type {} from {:?}", header_type, remote_addr);
+                    }
                 }
-                IterateResult::Success(_) => {}
-            };
-            match self.get_state() {
-                context::State::Ready => { break; }
-                context::State::Failed |
-                context::State::Terminated => {
-                    return Err(WaitError::Failed(None));
-                }
-                _ => {}
+            }
+            if readiness.is_writable() {
+                socket_writable = true;
+                attempt_write(&mut outgoing_queue, &socket, &mut socket_writable)
             }
         }
-        Ok(())
+    }
+    Ok(())
+}
+
+fn attempt_write(outgoing_queue: &mut Vec<(Rc<Vec<u8>>, SocketAddr)>, socket: &UdpSocket, socket_writable: &mut bool) {
+    if !outgoing_queue.is_empty() && *socket_writable {
+        let (packet, client) = outgoing_queue.remove(0);
+        socket.send_to(&packet, &client).unwrap();
+        *socket_writable = false;
+        println!("[ -> {:?}] Sending packet of type {}", &client, packet[0]);
     }
 }

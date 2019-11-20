@@ -5,5 +5,8 @@ authors = ["Mitchell Hentges <mitch9654@mozilla.com>"]
 edition = "2018"
 
 [dependencies]
-libpulse-binding = "2.13.0"
-opus = "0.2.1"
+mio = "0.6.19"
+
+[dependencies.voice-lib]
+path = "../voice-lib"
+version = "0.1.0"
