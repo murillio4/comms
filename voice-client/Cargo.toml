@@ -10,6 +10,7 @@ clap = "2.33.0"
 libpulse-binding = "2.13.0"
 mio = "0.6.19"
 ringbuf = "0.2.1"
+sample = "0.10.0"
 serde = { version = "1.0"}
 opus = "0.2.1"
 

@@ -9,15 +9,17 @@ use std::sync::mpsc::{Receiver, Sender, SendError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
 use serde::Serialize;
-use ringbuf::Producer;
+use ringbuf::{Producer, Consumer, RingBuffer};
 use voice_lib::packet::{Packet, AudioToClient};
 use bincode::deserialize;
+use std::collections::HashMap;
 
-pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, mut producer: Producer<u8>, registration: Registration, size: Arc<AtomicUsize>) -> io::Result<()> {
-    let socket = UdpSocket::bind(&"127.0.0.1:0".parse().unwrap())?;
+pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, command_tx: Sender<AudioCommand>, registration: Registration, size: Arc<AtomicUsize>) -> io::Result<()> {
+    let socket = UdpSocket::bind(&"0.0.0.0:0".parse().unwrap())?;
     socket.connect(server_address)?;
 
     let outgoing_queue = OutgoingQueue::new(receiver, registration, size);
+    let mut send_to_audio_thread = SendToAudioThread::new(command_tx);
 
     let network_token = Token(0);
     let audio_token = Token(1);
@@ -61,7 +63,7 @@ pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, mut producer
                                                 continue;
                                             }
                                         };
-                                        producer.push_slice(audio_to_client.bytes);
+                                        send_to_audio_thread.send(audio_to_client.author, audio_to_client.bytes);
                                     },
                                     _ => ()
                                 }
@@ -93,6 +95,45 @@ pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, mut producer
     };
 
     Ok(())
+}
+
+pub enum AudioCommand {
+    NewClientStream(String, Consumer<i16>),
+//    RemoveClientStream(String),
+}
+
+pub struct SendToAudioThread {
+    command_tx: Sender<AudioCommand>,
+    client_streams: HashMap<String, Producer<i16>>,
+}
+
+impl SendToAudioThread {
+    fn new(command_tx: Sender<AudioCommand>) -> SendToAudioThread {
+        SendToAudioThread {
+            command_tx,
+            client_streams: HashMap::new(),
+        }
+    }
+
+    fn send(&mut self, id: String, bytes: &[u8]) {
+        let l16le_samples: Vec<i16> = bytes
+            .chunks(2)
+            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+
+        match self.client_streams.get_mut(&id.clone()) {
+            Some(producer) => {
+                producer.push_slice(&l16le_samples);
+            },
+            None => {
+                let ring = RingBuffer::new(4800);
+                let (mut producer, consumer) = ring.split();
+                self.command_tx.send(AudioCommand::NewClientStream(id.clone(), consumer)).unwrap();
+                producer.push_slice(&l16le_samples);
+                self.client_streams.insert(id.clone(), producer);
+            }
+        }
+    }
 }
 
 pub struct AppendToQueue {
