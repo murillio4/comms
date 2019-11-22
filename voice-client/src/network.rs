@@ -1,24 +1,23 @@
 use std::io;
 use std::net::SocketAddr;
 
-use mio::{Evented, Events, Poll, PollOpt, Ready, Registration, SetReadiness, Token};
+use mio::{Evented, Events, Poll, PollOpt, Ready, Registration, Token};
 use mio::net::UdpSocket;
 use mio::unix::UnixReady;
-use voice_lib::{packet, serialize};
-use std::sync::mpsc::{Receiver, Sender, SendError};
+use voice_lib::packet;
+use std::sync::mpsc::{Receiver, Sender, SendError, RecvError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
-use serde::Serialize;
 use ringbuf::{Producer, Consumer, RingBuffer};
 use voice_lib::packet::{Packet, AudioToClient};
 use bincode::deserialize;
 use std::collections::HashMap;
 
-pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, command_tx: Sender<AudioCommand>, registration: Registration, size: Arc<AtomicUsize>) -> io::Result<()> {
+pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, command_tx: Sender<AudioCommand>, registration: Registration, size: Arc<AtomicUsize>) -> Result<(), NetworkError> {
     let socket = UdpSocket::bind(&"0.0.0.0:0".parse().unwrap())?;
     socket.connect(server_address)?;
 
-    let outgoing_queue = OutgoingQueue::new(receiver, registration, size);
+    let outgoing_queue = OutgoingPacketQueue::new(receiver, registration, size);
     let mut send_to_audio_thread = SendToAudioThread::new(command_tx);
 
     let network_token = Token(0);
@@ -29,11 +28,9 @@ pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, command_tx: 
 
     let mut buffer = [0; 65535];
     let mut events = Events::with_capacity(1024);
-    let mut failed = false;
 
-    while !failed {
-        poll.poll(&mut events, None)?;
-
+    poll.poll(&mut events, None)?;
+    loop {
         for event in events.iter() {
             // todo make cross-platform, how can tell if can't send on windows?
             let readiness = UnixReady::from(event.readiness());
@@ -63,7 +60,7 @@ pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, command_tx: 
                                                 continue;
                                             }
                                         };
-                                        send_to_audio_thread.send(audio_to_client.author, audio_to_client.bytes);
+                                        send_to_audio_thread.send(audio_to_client.author, audio_to_client.bytes)?;
                                     },
                                     _ => ()
                                 }
@@ -72,29 +69,26 @@ pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, command_tx: 
                                 if e.kind() == io::ErrorKind::WouldBlock {
                                     break;
                                 } else {
-                                    return Err(e);
+                                    return Err(e.into());
                                 }
                             }
                         }
                     }
                 }
                 if readiness.is_error() {
-                    eprintln!("{}", socket.take_error().unwrap().unwrap());
-                    failed = true;
+                    return Err(NetworkError::Io(socket.take_error()?));
                 }
                 if readiness.is_writable() {
                     outgoing_queue.socket_writable.store(true, Ordering::Relaxed);
                     if !outgoing_queue.is_empty() {
-                        outgoing_queue.send_one(&socket)
+                        outgoing_queue.send_one(&socket)?;
                     }
                 }
             } else if token == audio_token && readiness.is_readable() {
-                outgoing_queue.send_one(&socket);
+                outgoing_queue.send_one(&socket)?;
             }
         }
-    };
-
-    Ok(())
+    }
 }
 
 pub enum AudioCommand {
@@ -115,7 +109,7 @@ impl SendToAudioThread {
         }
     }
 
-    fn send(&mut self, id: String, bytes: &[u8]) {
+    fn send(&mut self, id: String, bytes: &[u8]) -> Result<(), NetworkError> {
         let l16le_samples: Vec<i16> = bytes
             .chunks(2)
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
@@ -128,93 +122,45 @@ impl SendToAudioThread {
             None => {
                 let ring = RingBuffer::new(4800);
                 let (mut producer, consumer) = ring.split();
-                self.command_tx.send(AudioCommand::NewClientStream(id.clone(), consumer)).unwrap();
+                self.command_tx.send(AudioCommand::NewClientStream(id.clone(), consumer))?;
                 producer.push_slice(&l16le_samples);
                 self.client_streams.insert(id.clone(), producer);
             }
-        }
-    }
-}
-
-pub struct AppendToQueue {
-    sender: Sender<Vec<u8>>,
-    set_readiness: SetReadiness,
-    size: Arc<AtomicUsize>,
-}
-
-impl AppendToQueue {
-    pub fn new(sender: Sender<Vec<u8>>, set_readiness: SetReadiness, size: Arc<AtomicUsize>) -> AppendToQueue {
-        AppendToQueue {
-            sender,
-            set_readiness,
-            size,
-        }
-    }
-
-    pub fn push<P>(&self, packet: P) -> Result<(), AppendQueueError> where P: packet::Packet + Serialize {
-        let raw_packet = serialize(packet)?;
-        self.sender.send(raw_packet)?;
-        self.set_readiness.set_readiness(Ready::readable())?;
-        self.size.fetch_add(1, Ordering::Relaxed);
+        };
         Ok(())
     }
 }
 
-#[derive(Debug)]
-pub enum AppendQueueError {
-    SerializeFailed(bincode::Error),
-    SendFailed(SendError<Vec<u8>>),
-    SetReadinessFailed(io::Error),
-}
-
-impl From<bincode::Error> for AppendQueueError {
-    fn from(e: bincode::Error) -> Self {
-        AppendQueueError::SerializeFailed(e)
-    }
-}
-
-impl From<SendError<Vec<u8>>> for AppendQueueError {
-    fn from(e: SendError<Vec<u8>>) -> Self {
-        AppendQueueError::SendFailed(e)
-    }
-}
-
-impl From<io::Error> for AppendQueueError {
-    fn from(e: io::Error) -> Self {
-        AppendQueueError::SetReadinessFailed(e)
-    }
-}
-
-pub struct OutgoingQueue {
-    receiver: Receiver<Vec<u8>>,
+pub struct OutgoingPacketQueue {
+    audio_thread_receiver: Receiver<Vec<u8>>,
     registration: Registration,
     socket_writable: AtomicBool,
     size: Arc<AtomicUsize>,
 }
-unsafe impl Send for OutgoingQueue {}
-unsafe impl Sync for OutgoingQueue {}
+unsafe impl Send for OutgoingPacketQueue {}
+unsafe impl Sync for OutgoingPacketQueue {}
 
-impl OutgoingQueue {
-    pub fn new(receiver: Receiver<Vec<u8>>, registration: Registration, size: Arc<AtomicUsize>) -> OutgoingQueue {
-        OutgoingQueue {
-            receiver,
+impl OutgoingPacketQueue {
+    pub fn new(receiver: Receiver<Vec<u8>>, registration: Registration, size: Arc<AtomicUsize>) -> OutgoingPacketQueue {
+        OutgoingPacketQueue {
+            audio_thread_receiver: receiver,
             registration,
             socket_writable: AtomicBool::new(false),
             size,
         }
     }
 
-    fn send_one(&self, socket: &UdpSocket) {
+    fn send_one(&self, socket: &UdpSocket)-> Result<(), NetworkError> {
         if !self.socket_writable.load(Ordering::Relaxed) {
-            return
+            return Ok(())
         }
 
 
-        let packet = self.receiver.recv().unwrap();
+        let packet = self.audio_thread_receiver.recv()?;
         self.size.fetch_sub(1, Ordering::Relaxed);
-        socket.send(&packet).unwrap();
-//        println!("[ -> ] Sending packet of type {}", packet[0]);
+        socket.send(&packet)?;
         self.socket_writable.store(false, Ordering::Relaxed);
+        Ok(())
     }
 
     fn is_empty(&self) -> bool {
@@ -222,7 +168,7 @@ impl OutgoingQueue {
     }
 }
 
-impl Evented for OutgoingQueue {
+impl Evented for OutgoingPacketQueue {
     fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
     {
         self.registration.register(poll, token, interest, opts)
@@ -234,6 +180,31 @@ impl Evented for OutgoingQueue {
     }
 
     fn deregister(&self, poll: &Poll) -> io::Result<()> {
-        self.registration.deregister(poll)
+        poll.deregister(self)
+    }
+}
+
+#[derive(Debug)]
+pub enum NetworkError {
+    Io(Option<io::Error>),
+    SendCommandToAudioThread(SendError<AudioCommand>),
+    ReceiveFromAudioThread(RecvError),
+}
+
+impl From<io::Error> for NetworkError {
+    fn from(e: io::Error) -> Self {
+        NetworkError::Io(Some(e))
+    }
+}
+
+impl From<SendError<AudioCommand>> for NetworkError {
+    fn from(e: SendError<AudioCommand>) -> Self {
+        NetworkError::SendCommandToAudioThread(e)
+    }
+}
+
+impl From<RecvError> for NetworkError {
+    fn from(e: RecvError) -> Self {
+        NetworkError::ReceiveFromAudioThread(e)
     }
 }

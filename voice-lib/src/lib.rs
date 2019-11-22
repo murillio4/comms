@@ -1,15 +1,22 @@
 use serde::{Serialize, Deserialize};
-use std::io::Write;
+use std::io::{Write, ErrorKind};
+use std::io;
 
 pub mod packet;
 
-pub fn serialize<P>(packet: P) -> bincode::Result<Vec<u8>>
+pub fn serialize<P>(packet: P) -> Result<Vec<u8>, SerializeError>
     where P: packet::Packet + Serialize {
     let mut buffer = Vec::<u8>::new();
-    buffer.write(&[P::HEADER_TYPE]).unwrap();
+    loop {
+        match buffer.write(&[P::HEADER_TYPE]) {
+            Ok(_) => break,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(SerializeError::WritingHeaderTypeFailed(e))
+        }
+    }
     match bincode::serialize_into(&mut buffer, &packet) {
         Ok(_) => Ok(buffer),
-        Err(e) => Err(e),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -18,10 +25,14 @@ pub fn deserialize<'a, P>(packet_bytes: &'a [u8]) -> bincode::Result<P>
     bincode::deserialize(packet_bytes)
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+#[derive(Debug)]
+pub enum SerializeError {
+    WritingHeaderTypeFailed(io::Error),
+    SerializingFailed(bincode::Error),
+}
+
+impl From<bincode::Error> for SerializeError {
+    fn from(e: bincode::Error) -> Self {
+        SerializeError::SerializingFailed(e)
     }
 }
