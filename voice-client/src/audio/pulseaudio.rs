@@ -24,6 +24,7 @@ use libpulse_binding::context::flags::NOAUTOSPAWN;
 use libpulse_binding::context;
 use std::fmt::Formatter;
 use std::error::Error;
+use crate::audio::{AudioError, ReceiveFromNetworkThread, SendToNetworkThread};
 
 const SPEC: Spec = Spec {
     channels: 1,
@@ -32,18 +33,18 @@ const SPEC: Spec = Spec {
 };
 const PULSE_LATENCY: MicroSeconds = MicroSeconds(30000);
 
-pub fn run(pulseaudio_server: Option<&str>, send_to_network_thread: SendToNetworkThread, command_rx: Receiver<AudioCommand>) -> Result<(), AudioError> {
+pub fn run(pulseaudio_server: Option<&str>, send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Result<(), AudioError> {
     let mut mainloop = Mainloop::new().ok_or(AudioError::PulseInitializationFailed)?;
     let mut context = Context::new(&mainloop, "voip-client").ok_or(AudioError::PulseInitializationFailed)?;
     context.connect(pulseaudio_server, NOAUTOSPAWN, None)?;
     context.wait(&mut mainloop)?;
-    record(&mut context, send_to_network_thread)?;
-    playback(&mut context, command_rx)?;
+    record(&mut context, send)?;
+    playback(&mut context, receive)?;
     mainloop.run()?;
     Ok(())
 }
 
-fn record(pulse_context: &mut Context, send_to_network_thread: SendToNetworkThread) -> Result<(), AudioError> {
+fn record(pulse_context: &mut Context, send: SendToNetworkThread) -> Result<(), AudioError> {
     let stream_rc = Rc::new(RefCell::new(
         Stream::new(pulse_context, "record", &SPEC, None).ok_or(AudioError::StreamCreation)?
     ));
@@ -80,7 +81,7 @@ fn record(pulse_context: &mut Context, send_to_network_thread: SendToNetworkThre
 
     stream.set_read_callback(Some(Box::new(move |_| {
         let mut stream = stream_rc.borrow_mut();
-        if let Err(e) = on_record_callback(&mut stream, &send_to_network_thread) {
+        if let Err(e) = on_record_callback(&mut stream, &send) {
             eprintln!("Encountered an error while handling microphone audio, stopping");
             eprintln!("Error details: {:?}", e);
             process::exit(1);
@@ -109,68 +110,15 @@ fn on_record_callback(stream: &mut Stream, send_to_network_thread: &SendToNetwor
     Ok(())
 }
 
-pub struct SendToNetworkThread {
-    sender: Sender<Vec<u8>>,
-    set_readiness: SetReadiness,
-    size: Arc<AtomicUsize>,
-}
 
-impl SendToNetworkThread {
-    pub fn new(sender: Sender<Vec<u8>>, set_readiness: SetReadiness, size: Arc<AtomicUsize>) -> SendToNetworkThread {
-        SendToNetworkThread {
-            sender,
-            set_readiness,
-            size,
-        }
-    }
-
-    pub fn send<P>(&self, packet: P) -> Result<(), SendToNetworkThreadError>
-        where P: Serialize + Packet {
-        let raw_packet = serialize(packet)?;
-        self.sender.send(raw_packet)?;
-        self.set_readiness.set_readiness(Ready::readable())?;
-        self.size.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
-
-
-#[derive(Debug)]
-pub enum SendToNetworkThreadError {
-    SerializeFailed(SerializeError),
-    SendFailed(SendError<Vec<u8>>),
-    SetReadinessFailed(io::Error),
-}
-
-impl From<SerializeError> for SendToNetworkThreadError {
-    fn from(e: SerializeError) -> Self {
-        SendToNetworkThreadError::SerializeFailed(e)
-    }
-}
-
-impl From<SendError<Vec<u8>>> for SendToNetworkThreadError {
-    fn from(e: SendError<Vec<u8>>) -> Self {
-        SendToNetworkThreadError::SendFailed(e)
-    }
-}
-
-impl From<io::Error> for SendToNetworkThreadError {
-    fn from(e: io::Error) -> Self {
-        SendToNetworkThreadError::SetReadinessFailed(e)
-    }
-}
-
-
-fn playback(pulse_context: &mut Context, command_rx: Receiver<AudioCommand>) -> Result<(), AudioError> {
+fn playback(pulse_context: &mut Context, receive: ReceiveFromNetworkThread) -> Result<(), AudioError> {
     let stream_rc = Rc::new(RefCell::new(
         Stream::new(pulse_context, "playback", &SPEC, None).ok_or(AudioError::StreamCreation)?
     ));
     let stream = stream_rc.clone();
     let mut stream = stream.borrow_mut();
 
-    let receive_from_network_thread = Rc::new(RefCell::new(
-        ReceiveFromNetworkThread::new(command_rx)
-    ));
+    let receive = Rc::new(RefCell::new(receive));
 
     stream.set_overflow_callback(Some(Box::new(move || {
         println!("[playback] overflow");
@@ -199,7 +147,7 @@ fn playback(pulse_context: &mut Context, command_rx: Receiver<AudioCommand>) -> 
     stream.connect_playback(None, Some(&buffer_attr), ADJUST_LATENCY, None, None)?;
     stream.set_write_callback(Some(Box::new(move |bytes| {
         let mut stream = stream_rc.borrow_mut();
-        if let Err(e) = on_playback_callback(&mut stream, bytes, &mut receive_from_network_thread.borrow_mut()) {
+        if let Err(e) = on_playback_callback(&mut stream, bytes, &mut receive.borrow_mut()) {
             eprintln!("Encountered an error while outputting audio, stopping");
             eprintln!("Error details: {:?}", e);
             process::exit(1);
@@ -223,49 +171,6 @@ fn on_playback_callback(stream: &mut Stream, bytes: usize, receive_from_network_
     Ok(())
 }
 
-struct ReceiveFromNetworkThread {
-    command_rx: Receiver<AudioCommand>,
-    client_streams: HashMap<String, Consumer<i16>>,
-}
-
-impl ReceiveFromNetworkThread {
-    fn new(command_rx: Receiver<AudioCommand>) -> ReceiveFromNetworkThread {
-        ReceiveFromNetworkThread {
-            command_rx,
-            client_streams: HashMap::new(),
-        }
-    }
-
-    fn handle_commands(&mut self) {
-        while let Ok(command) = self.command_rx.try_recv() {
-            match command {
-                AudioCommand::NewClientStream(id, consumer) => {
-                    self.client_streams.insert(id, consumer);
-                }
-            }
-        }
-    }
-
-    fn next_sample(&mut self) -> i16 {
-        let init: i16 = sample::Sample::equilibrium();
-        let init = init.to_signed_sample();
-        self.client_streams.values_mut()
-            .fold(init, |acc, consumer| {
-                let next_sample = consumer.pop().unwrap_or(0);
-                acc.checked_add(next_sample).unwrap_or(std::i16::MAX)
-            })
-    }
-}
-
-#[derive(Debug)]
-pub enum AudioError {
-    StreamCreation,
-    Pulse(Option<String>),
-    SendToNetworkThread(SendToNetworkThreadError),
-    NoBufferToWriteTo,
-    PulseInitializationFailed,
-}
-
 impl From<PAErr> for AudioError {
     fn from(err: PAErr) -> Self {
         AudioError::Pulse(err.to_string())
@@ -275,12 +180,6 @@ impl From<PAErr> for AudioError {
 impl From<(PAErr, Retval)> for AudioError {
     fn from(err_tuple: (PAErr, Retval)) -> Self {
         AudioError::Pulse(err_tuple.0.to_string())
-    }
-}
-
-impl From<SendToNetworkThreadError> for AudioError {
-    fn from(err: SendToNetworkThreadError) -> Self {
-        AudioError::SendToNetworkThread(err)
     }
 }
 

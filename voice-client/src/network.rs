@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 
 use mio::{Evented, Events, Poll, PollOpt, Ready, Registration, Token};
 use mio::net::UdpSocket;
-use mio::unix::UnixReady;
 use voice_lib::packet;
 use std::sync::mpsc::{Receiver, Sender, SendError, RecvError};
 use std::sync::Arc;
@@ -29,12 +28,10 @@ pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, command_tx: 
     let mut buffer = [0; 65535];
     let mut events = Events::with_capacity(1024);
 
-    poll.poll(&mut events, None)?;
     loop {
+        poll.poll(&mut events, None)?;
         for event in events.iter() {
-            // todo make cross-platform, how can tell if can't send on windows?
-            let readiness = UnixReady::from(event.readiness());
-            // println!("{:?} {:?}", &event.token(), readiness);
+            let readiness = event.readiness();
             let token = event.token();
             if token == network_token {
                 if readiness.is_readable() {
@@ -74,9 +71,6 @@ pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, command_tx: 
                             }
                         }
                     }
-                }
-                if readiness.is_error() {
-                    return Err(NetworkError::Io(socket.take_error()?));
                 }
                 if readiness.is_writable() {
                     outgoing_queue.socket_writable.store(true, Ordering::Relaxed);
@@ -158,7 +152,14 @@ impl OutgoingPacketQueue {
 
         let packet = self.audio_thread_receiver.recv()?;
         self.size.fetch_sub(1, Ordering::Relaxed);
-        socket.send(&packet)?;
+        match socket.send(&packet) {
+            Ok(_) => (),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                println!("EWouldBlock on OutgoingPacketQueue, dropping packet");
+                return Ok(());
+            },
+            Err(e) => return Err(e.into())
+        };
         self.socket_writable.store(false, Ordering::Relaxed);
         Ok(())
     }

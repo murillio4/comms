@@ -9,11 +9,11 @@
 use mio::net::UdpSocket;
 use std::io;
 use mio::{Poll, Token, Ready, PollOpt, Events};
-use mio::unix::UnixReady;
 use voice_lib::{packet, deserialize, serialize};
 use voice_lib::packet::{Packet, AudioFromClient};
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::collections::HashSet;
 
 // TODO handle keep-alive
 
@@ -24,24 +24,22 @@ fn main() -> io::Result<()> {
     poll.register(&socket, Token(0), Ready::all(), PollOpt::edge())?;
 
     let mut events = Events::with_capacity(1024);
-    let mut failed = false;
     let mut buffer: [u8; 2000] = [0u8; 2000];
 
-    let mut clients = Vec::<SocketAddr>::new();
+    let mut clients = HashSet::<SocketAddr>::new();
     let mut outgoing_queue = Vec::<(Rc<Vec<u8>>, SocketAddr)>::new();
     let mut socket_writable = false;
 
-    while !failed {
+    loop {
         poll.poll(&mut events, None)?;
         for event in events.iter() {
-            // TODO make cross-platform
-            let readiness = UnixReady::from(event.readiness());
-            if readiness.is_error() {
-                eprintln!("{}", socket.take_error().unwrap().unwrap());
-                failed = true;
-            }
+            let readiness = event.readiness();
             if readiness.is_readable() {
-                let (size, remote_addr) = socket.recv_from(&mut buffer).unwrap();
+                let (size, remote_addr) = match socket.recv_from(&mut buffer) {
+                    Ok(tuple) => tuple,
+                    Err(e) if e.kind() == io::ErrorKind::ConnectionReset => continue,
+                    Err(e) => panic!(e),
+                };
 
                 if size == 0 {
                     println!("received packet with size 0, ignoring");
@@ -52,13 +50,12 @@ fn main() -> io::Result<()> {
                 let header_type = buffer[0];
                 match header_type {
                     packet::Connect::HEADER_TYPE => {
-                        clients.push(remote_addr);
+                        clients.insert(remote_addr);
                         println!("[{:?}] added client", &remote_addr);
                         outgoing_queue.push((Rc::new(buffer.to_vec()), remote_addr));
                         attempt_write(&mut outgoing_queue, &socket, &mut socket_writable);
                     }
                     packet::AudioFromClient::HEADER_TYPE => {
-                        println!("[{:?}] received audio {:?}", remote_addr, &buffer[0..size]);
                         let audio_from_client: AudioFromClient = match deserialize(&buffer[1..size]) {
                             Ok(packet) => packet,
                             Err(_) => {
@@ -66,6 +63,8 @@ fn main() -> io::Result<()> {
                                 continue;
                             }
                         };
+                        clients.insert(remote_addr.clone());
+                        println!("[{:?}] received audio [{}]", remote_addr, audio_from_client.0.len());
                         let audio_to_client = packet::AudioToClient {
                             bytes: audio_from_client.0,
                             author: remote_addr.to_string(),
@@ -75,6 +74,7 @@ fn main() -> io::Result<()> {
                         for client in clients.iter()
                             .filter(|c| c != &&remote_addr)
                             {
+                            println!("pushing to outgoing_queue");
                             outgoing_queue.push((packet.clone(), client.clone()))
                         }
                         attempt_write(&mut outgoing_queue, &socket, &mut socket_writable);
@@ -93,14 +93,20 @@ fn main() -> io::Result<()> {
                 attempt_write(&mut outgoing_queue, &socket, &mut socket_writable)
             }
         }
-    }
-    Ok(())
+    };
 }
 
 fn attempt_write(outgoing_queue: &mut Vec<(Rc<Vec<u8>>, SocketAddr)>, socket: &UdpSocket, socket_writable: &mut bool) {
     if !outgoing_queue.is_empty() && *socket_writable {
         let (packet, client) = outgoing_queue.remove(0);
-        socket.send_to(&packet, &client).unwrap();
+        match socket.send_to(&packet, &client) {
+            Ok(_) => (),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                outgoing_queue.insert(0, (packet, client));
+                return;
+            },
+            Err(e) => panic!(e),
+        };
         *socket_writable = false;
         println!("[ -> {:?}] Sending packet of type {}", &client, packet[0]);
     }
