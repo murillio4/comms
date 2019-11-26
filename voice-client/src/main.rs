@@ -1,10 +1,6 @@
-//! Feeds back the input stream directly into the output stream.
-//!
-//! Assumes that the input and output devices can use the same stream format and that they support
-//! the f32 sample format.
-//!
-//! Uses a delay of `LATENCY_MS` milliseconds in case the default input and output streams are not
-//! precisely synchronised.
+#[cfg(target_os = "windows")]
+#[macro_use]
+extern crate lazy_static;
 
 use std::process;
 use clap::{App, Arg};
@@ -12,7 +8,7 @@ use std::sync::{Arc, mpsc};
 use mio::Registration;
 use voice_lib::packet;
 use std::sync::atomic::AtomicUsize;
-use crate::audio::{SendToNetworkThread, SendToNetworkThreadError};
+use crate::audio::{SendToNetworkThread, SendToNetworkThreadError, ReceiveFromNetworkThread};
 
 mod audio;
 mod network;
@@ -49,8 +45,8 @@ fn main() -> Result<(), CommsError> {
     let (registration, set_readiness) = Registration::new2();
     let size = Arc::new(AtomicUsize::new(0));
     let send_to_network_thread = SendToNetworkThread::new(sender, set_readiness, size.clone());
-
     let (command_tx, command_rx) = mpsc::channel();
+    let receive_from_network_thread = ReceiveFromNetworkThread::new(command_rx);
 
     std::thread::spawn(move || {
         if let Err(e) = network::run(server_address, receiver, command_tx, registration, size) {
@@ -63,7 +59,7 @@ fn main() -> Result<(), CommsError> {
     let connect = packet::Connect();
     send_to_network_thread.send(connect)?;
 
-    audio::run(pulseaudio_server, send_to_network_thread, command_rx)?;
+    audio::run(pulseaudio_server, send_to_network_thread, receive_from_network_thread)?;
     Ok(())
 }
 
