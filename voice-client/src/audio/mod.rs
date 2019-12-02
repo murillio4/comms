@@ -11,6 +11,8 @@ use std::sync::atomic::Ordering;
 use std::io;
 use std::sync::atomic::AtomicUsize;
 use sample::Sample;
+use std::time::SystemTime;
+use serde::export::Clone;
 
 #[cfg(unix)]
 mod pulseaudio;
@@ -43,13 +45,15 @@ impl From<SendToNetworkThreadError> for AudioError {
 }
 
 pub struct ReceiveFromNetworkThread {
+    app_start: SystemTime,
     command_rx: Receiver<AudioCommand>,
     client_streams: HashMap<String, Consumer<i16>>,
 }
 
 impl ReceiveFromNetworkThread {
-    pub fn new(command_rx: Receiver<AudioCommand>) -> ReceiveFromNetworkThread {
+    pub fn new(app_start: SystemTime, command_rx: Receiver<AudioCommand>) -> ReceiveFromNetworkThread {
         ReceiveFromNetworkThread {
+            app_start,
             command_rx,
             client_streams: HashMap::new(),
         }
@@ -68,10 +72,12 @@ impl ReceiveFromNetworkThread {
     fn next_sample(&mut self) -> i16 {
         let init: i16 = sample::Sample::equilibrium();
         let init = init.to_signed_sample();
+        let app_start = self.app_start.clone();
         self.client_streams.values_mut()
             .fold(init, |acc, consumer| {
                 let next_sample = consumer.pop().unwrap_or_else(|| {
-                    println!("ReceiveFromNetworkThread behind");
+                    let duration = SystemTime::now().duration_since(app_start).unwrap();
+                    println!("[{}], ReceiveFromNetworkThread behind", duration.as_millis());
                     0
                 });
                 acc.checked_add(next_sample).unwrap_or(std::i16::MAX)

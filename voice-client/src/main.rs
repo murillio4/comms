@@ -9,6 +9,7 @@ use mio::Registration;
 use voice_lib::packet;
 use std::sync::atomic::AtomicUsize;
 use crate::audio::{SendToNetworkThread, SendToNetworkThreadError, ReceiveFromNetworkThread};
+use std::time::SystemTime;
 
 mod audio;
 mod network;
@@ -16,6 +17,7 @@ mod network;
 // const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 
 fn main() -> Result<(), CommsError> {
+    let app_start = SystemTime::now();
     let matches = App::new("Comms")
         .version("0.1")
         .arg(Arg::with_name("server_address").takes_value(true).required(true))
@@ -46,7 +48,7 @@ fn main() -> Result<(), CommsError> {
     let size = Arc::new(AtomicUsize::new(0));
     let send_to_network_thread = SendToNetworkThread::new(sender, set_readiness, size.clone());
     let (command_tx, command_rx) = mpsc::channel();
-    let receive_from_network_thread = ReceiveFromNetworkThread::new(command_rx);
+    let receive_from_network_thread = ReceiveFromNetworkThread::new(app_start, command_rx);
 
     std::thread::spawn(move || {
         if let Err(e) = network::run(server_address, receiver, command_tx, registration, size) {

@@ -39,7 +39,6 @@ pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, command_tx: 
                         match socket.recv(&mut buffer) {
                             Ok(size) => {
                                 if size == 0 {
-                                    println!("received packet with size 0, ignoring");
                                     continue;
                                 }
 
