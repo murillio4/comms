@@ -1,6 +1,8 @@
 use serde::{Serialize, Deserialize};
 use std::io::{Write, ErrorKind};
 use std::io;
+use winapi::um::processthreadsapi;
+use std::os::raw::c_int;
 
 pub mod packet;
 
@@ -34,5 +36,17 @@ pub enum SerializeError {
 impl From<bincode::Error> for SerializeError {
     fn from(e: bincode::Error) -> Self {
         SerializeError::SerializingFailed(e)
+    }
+}
+
+#[cfg(windows)]
+pub fn bump_priority() {
+    unsafe {
+        processthreadsapi::SetThreadPriority(
+            processthreadsapi::GetCurrentThread(),
+            15 as c_int,
+        );
+        dbg!(processthreadsapi::GetPriorityClass(processthreadsapi::GetCurrentProcess()));
+        dbg!(processthreadsapi::GetThreadPriority(processthreadsapi::GetCurrentThread()));
     }
 }
