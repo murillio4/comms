@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use mio::{Evented, Events, Poll, PollOpt, Ready, Registration, Token};
 use mio::net::UdpSocket;
 use voice_lib::packet;
-use std::sync::mpsc::{Receiver, Sender, SendError, RecvError};
+use std::sync::mpsc::{Receiver, Sender, SendError, RecvError, TryRecvError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
 use ringbuf::{Producer, Consumer, RingBuffer};
@@ -130,8 +130,6 @@ pub struct OutgoingPacketQueue {
     socket_writable: AtomicBool,
     size: Arc<AtomicUsize>,
 }
-unsafe impl Send for OutgoingPacketQueue {}
-unsafe impl Sync for OutgoingPacketQueue {}
 
 impl OutgoingPacketQueue {
     pub fn new(receiver: Receiver<Vec<u8>>, registration: Registration, size: Arc<AtomicUsize>) -> OutgoingPacketQueue {
@@ -148,8 +146,14 @@ impl OutgoingPacketQueue {
             return Ok(())
         }
 
+        let packet = match self.audio_thread_receiver.try_recv() {
+            Ok(packet) => packet,
+            Err(_) => {
+                // Audio thread doesn't actually have data, ignoring missing packet
+                return Ok(());
+            }
+        };
 
-        let packet = self.audio_thread_receiver.recv()?;
         self.size.fetch_sub(1, Ordering::Relaxed);
         match socket.send(&packet) {
             Ok(_) => (),

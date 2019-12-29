@@ -66,7 +66,6 @@ fn main() -> io::Result<()> {
                             }
                         };
                         clients.insert(remote_addr.clone());
-                        println!("[{:?}] received audio [{}]", remote_addr, audio_from_client.0.len());
                         let audio_to_client = packet::AudioToClient {
                             bytes: audio_from_client.0,
                             author: remote_addr.to_string(),
@@ -109,6 +108,5 @@ fn attempt_write(outgoing_queue: &mut Vec<(Rc<Vec<u8>>, SocketAddr)>, socket: &U
             Err(e) => panic!(e),
         };
         *socket_writable = false;
-        println!("[ -> {:?}] Sending packet of type {}", &client, packet[0]);
     }
 }

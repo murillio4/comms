@@ -76,8 +76,6 @@ impl ReceiveFromNetworkThread {
         self.client_streams.values_mut()
             .fold(init, |acc, consumer| {
                 let next_sample = consumer.pop().unwrap_or_else(|| {
-                    let duration = SystemTime::now().duration_since(app_start).unwrap();
-                    println!("[{}], ReceiveFromNetworkThread behind", duration.as_millis());
                     0
                 });
                 acc.checked_add(next_sample).unwrap_or(std::i16::MAX)
