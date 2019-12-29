@@ -3,6 +3,8 @@ use std::io::{Write, ErrorKind};
 use std::io;
 
 pub mod packet;
+#[cfg(windows)]
+pub mod winlib;
 
 pub fn serialize<P>(packet: P) -> Result<Vec<u8>, SerializeError>
     where P: packet::Packet + Serialize {

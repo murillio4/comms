@@ -38,14 +38,14 @@ pub struct EventLoop {
 
 impl EventLoop {
     pub fn new() -> EventLoop {
-        unsafe {
-            let task_name = "Audio\0".to_string();
-            let mut task_index = 0 as DWORD;
-            let handle = avrt::AvSetMmThreadCharacteristicsA(task_name.as_ptr() as _, &mut task_index);
-            if handle.is_null() {
-                eprintln!("Unable to bump thread priority using mmcss");
-            }
-        }
+//        unsafe {
+//            let task_name = "Audio\0".to_string();
+//            let mut task_index = 0 as DWORD;
+//            let handle = avrt::AvSetMmThreadCharacteristicsA(task_name.as_ptr() as _, &mut task_index);
+//            if handle.is_null() {
+//                eprintln!("Unable to bump thread priority using mmcss");
+//            }
+//        }
         let pending_scheduled_event = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
         EventLoop {
             pending_commands_handle: pending_scheduled_event,

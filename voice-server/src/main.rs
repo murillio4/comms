@@ -14,17 +14,21 @@ use voice_lib::packet::{Packet, AudioFromClient};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::collections::HashSet;
+#[cfg(windows)]
+use voice_lib::winlib::bump_priority;
 
 // TODO handle keep-alive
 
 fn main() -> io::Result<()> {
+    #[cfg(windows)]
+    bump_priority();
     let socket = UdpSocket::bind(&"0.0.0.0:18847".parse().unwrap())?;
 
     let poll = Poll::new()?;
     poll.register(&socket, Token(0), Ready::all(), PollOpt::edge())?;
 
     let mut events = Events::with_capacity(1024);
-    let mut buffer: [u8; 2000] = [0u8; 2000];
+    let mut buffer = [0u8; 65535];
 
     let mut clients = HashSet::<SocketAddr>::new();
     let mut outgoing_queue = Vec::<(Rc<Vec<u8>>, SocketAddr)>::new();
@@ -38,11 +42,12 @@ fn main() -> io::Result<()> {
                 let (size, remote_addr) = match socket.recv_from(&mut buffer) {
                     Ok(tuple) => tuple,
                     Err(e) if e.kind() == io::ErrorKind::ConnectionReset => continue,
-                    Err(e) => panic!(e),
+                    Err(e) => {
+                        return Err(e);
+                    }
                 };
 
                 if size == 0 {
-                    println!("received packet with size 0, ignoring");
                     continue;
                 }
 
@@ -64,7 +69,6 @@ fn main() -> io::Result<()> {
                             }
                         };
                         clients.insert(remote_addr.clone());
-                        println!("[{:?}] received audio [{}]", remote_addr, audio_from_client.0.len());
                         let audio_to_client = packet::AudioToClient {
                             bytes: audio_from_client.0,
                             author: remote_addr.to_string(),
@@ -74,7 +78,6 @@ fn main() -> io::Result<()> {
                         for client in clients.iter()
                             .filter(|c| c != &&remote_addr)
                             {
-                            println!("pushing to outgoing_queue");
                             outgoing_queue.push((packet.clone(), client.clone()))
                         }
                         attempt_write(&mut outgoing_queue, &socket, &mut socket_writable);
@@ -108,6 +111,5 @@ fn attempt_write(outgoing_queue: &mut Vec<(Rc<Vec<u8>>, SocketAddr)>, socket: &U
             Err(e) => panic!(e),
         };
         *socket_writable = false;
-        println!("[ -> {:?}] Sending packet of type {}", &client, packet[0]);
     }
 }
