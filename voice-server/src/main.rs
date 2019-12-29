@@ -9,15 +9,18 @@
 use mio::net::UdpSocket;
 use std::io;
 use mio::{Poll, Token, Ready, PollOpt, Events};
-use voice_lib::{packet, deserialize, serialize, bump_priority};
+use voice_lib::{packet, deserialize, serialize};
 use voice_lib::packet::{Packet, AudioFromClient};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::collections::HashSet;
+#[cfg(windows)]
+use voice_lib::winlib::bump_priority;
 
 // TODO handle keep-alive
 
 fn main() -> io::Result<()> {
+    #[cfg(windows)]
     bump_priority();
     let socket = UdpSocket::bind(&"0.0.0.0:18847".parse().unwrap())?;
 

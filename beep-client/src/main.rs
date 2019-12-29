@@ -1,10 +1,13 @@
 use std::net::UdpSocket;
 use std::time::{SystemTime, Duration};
-use voice_lib::{packet, serialize, bump_priority};
+use voice_lib::{packet, serialize};
 use clap::{App, Arg};
 use std::io;
+#[cfg(windows)]
+use voice_lib::winlib::bump_priority;
 
 fn main() -> Result<(), BeepClientErr> {
+    #[cfg(windows)]
     bump_priority();
 
     let matches = App::new("Beep Client")

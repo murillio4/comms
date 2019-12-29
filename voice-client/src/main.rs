@@ -6,10 +6,12 @@ use std::process;
 use clap::{App, Arg};
 use std::sync::{Arc, mpsc};
 use mio::Registration;
-use voice_lib::{packet, bump_priority};
+use voice_lib::packet;
 use std::sync::atomic::AtomicUsize;
 use crate::audio::{SendToNetworkThread, SendToNetworkThreadError, ReceiveFromNetworkThread};
 use std::time::SystemTime;
+#[cfg(windows)]
+use voice_lib::winlib::bump_priority;
 
 mod audio;
 mod network;
@@ -51,6 +53,7 @@ fn main() -> Result<(), CommsError> {
     let receive_from_network_thread = ReceiveFromNetworkThread::new(app_start, command_rx);
 
     std::thread::spawn(move || {
+        #[cfg(windows)]
         bump_priority();
         if let Err(e) = network::run(server_address, receiver, command_tx, registration, size) {
             eprintln!("Encountered an error in network operations, stopping");
@@ -59,6 +62,7 @@ fn main() -> Result<(), CommsError> {
         }
     });
 
+    #[cfg(windows)]
     bump_priority();
     let connect = packet::Connect();
     send_to_network_thread.send(connect)?;
