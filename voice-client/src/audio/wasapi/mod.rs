@@ -16,15 +16,7 @@ pub fn run(send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Resu
     let output_device = OutputDevice::default().unwrap();
 
     let mut input_format = input_device.default_format().unwrap();
-    input_format.data_type = SampleFormat::I16;
-
     let mut output_format = output_device.default_format().unwrap();
-    output_format.data_type = SampleFormat::I16;
-
-    println!("Using default input device: \"{}\"", input_device.name().unwrap());
-    println!("{:?}", input_format);
-    println!("Using default output device: \"{}\"", output_device.name().unwrap());
-    println!("{:?}", output_format);
 
     let playback_interpolator = interpolate::Linear::new([0f64; 1], [0f64; 1]);
     let server_signal = signal::from_iter(receive);
@@ -42,6 +34,20 @@ pub fn run(send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Resu
 
     let mut sample_count_accumulator = 0f64;
 
+    let mic_sample_rate = input_format.sample_rate.0;
+    let mut convert_and_send = |sample_count| {
+        let adjusted_samples_count: f64 = (sample_count as f64 * (48000f64 / mic_sample_rate as f64)) + sample_count_accumulator;
+        let samples_to_send = adjusted_samples_count.floor();
+        sample_count_accumulator = adjusted_samples_count - samples_to_send;
+
+        let mut buffer = Vec::<u8>::with_capacity(samples_to_send as usize);
+        for _ in 0..(samples_to_send as usize) {
+            let sample = mic_signal.next()[0].to_sample::<i16>();
+            buffer.extend(&sample.to_le_bytes());
+        }
+        send.send(AudioFromClient(&buffer)).unwrap();
+    };
+
     event_loop.run(move |id, result| {
         let data = match result {
             Ok(data) => data,
@@ -52,23 +58,47 @@ pub fn run(send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Resu
         };
 
         match data {
+            StreamData::Input(UnknownTypeInputBuffer::U16(buffer)) => {
+                let sample_count = buffer.len() / input_format.channels as usize;
+                for i in 0..sample_count {
+                    let item = buffer[i*input_format.channels as usize];
+                    mic_producer.push(item.to_sample::<f64>()).unwrap();
+                }
+                convert_and_send(sample_count);
+            }
+            StreamData::Input(UnknownTypeInputBuffer::F32(buffer)) => {
+                let sample_count = buffer.len() / input_format.channels as usize;
+                for i in 0..sample_count {
+                    let item = buffer[i*input_format.channels as usize];
+                    mic_producer.push(item.to_sample::<f64>()).unwrap();
+                }
+                convert_and_send(sample_count);
+            }
             StreamData::Input(UnknownTypeInputBuffer::I16(buffer)) => {
                 let sample_count = buffer.len() / input_format.channels as usize;
                 for i in 0..sample_count {
                     let item = buffer[i*input_format.channels as usize];
                     mic_producer.push(item.to_sample::<f64>()).unwrap();
                 }
-                let mic_sample_rate = input_format.sample_rate.0;
-                let adjusted_samples_count: f64 = (sample_count as f64 * (48000f64 / mic_sample_rate as f64)) + sample_count_accumulator;
-                let samples_to_send = adjusted_samples_count.floor();
-                sample_count_accumulator = adjusted_samples_count - samples_to_send;
-
-                let mut buffer = Vec::<u8>::with_capacity(samples_to_send as usize);
-                for _ in 0..(samples_to_send as usize) {
-                    let sample = mic_signal.next()[0].to_sample::<i16>();
-                    buffer.extend(&sample.to_le_bytes());
+                convert_and_send(sample_count);
+            },
+            StreamData::Output(UnknownTypeOutputBuffer::U16(mut buffer)) => {
+                let channel_count = output_format.channels as usize;
+                for window in 0..buffer.len() / channel_count {
+                    let sample = playback_signal.next()[0].to_sample::<u16>();
+                    for channel in 0..channel_count {
+                        buffer[window * channel_count + channel] = sample
+                    }
                 }
-                send.send(AudioFromClient(&buffer)).unwrap();
+            },
+            StreamData::Output(UnknownTypeOutputBuffer::F32(mut buffer)) => {
+                let channel_count = output_format.channels as usize;
+                for window in 0..buffer.len() / channel_count {
+                    let sample = playback_signal.next()[0].to_sample::<f32>();
+                    for channel in 0..channel_count {
+                        buffer[window * channel_count + channel] = sample
+                    }
+                }
             },
             StreamData::Output(UnknownTypeOutputBuffer::I16(mut buffer)) => {
                 let channel_count = output_format.channels as usize;

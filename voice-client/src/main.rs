@@ -2,7 +2,7 @@
 #[macro_use]
 extern crate lazy_static;
 
-use std::process;
+use std::{process, io};
 use clap::{App, Arg};
 use std::sync::{Arc, mpsc};
 use mio::Registration;
@@ -12,6 +12,8 @@ use crate::audio::{SendToNetworkThread, SendToNetworkThreadError, ReceiveFromNet
 use std::time::SystemTime;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
+use std::net::ToSocketAddrs;
+use std::io::BufRead;
 
 mod audio;
 mod network;
@@ -22,26 +24,37 @@ fn main() -> Result<(), CommsError> {
     let app_start = SystemTime::now();
     let matches = App::new("Comms")
         .version("0.1")
-        .arg(Arg::with_name("server_address").takes_value(true).required(true))
+        .arg(Arg::with_name("server_address").takes_value(true))
         .arg(Arg::with_name("pulseaudio").takes_value(true))
         .get_matches();
 
     let server_address = match matches.value_of("server_address") {
-        Some(server_address) => server_address,
+        Some(server_address) => server_address.to_string(),
         None => {
-            eprintln!("{}", matches.usage());
-            return Err(CommsError::Usage);
+            println!("Enter server address (e.g.: \"kamloops.fuzzlesoft.ca\")");
+            let stdin = io::stdin();
+            let server_address = stdin.lock().lines().next()
+                .unwrap()
+                .unwrap();
+            if server_address == "" {
+                "kamloops.fuzzlesoft.ca".to_string()
+            } else {
+                server_address
+            }
         }
     };
-    let pulseaudio_server = matches.value_of("pulseaudio");
 
     println!("Connecting to {}...", server_address);
-
+    let pulseaudio_server = matches.value_of("pulseaudio");
     let server_address_with_port = format!("{}:18847", server_address);
-    let server_address = match server_address_with_port.parse() {
-        Ok(server_address) => server_address,
+    let server_address = match server_address_with_port.to_socket_addrs() {
+        Ok(mut addresses) => {
+            addresses
+                .next()
+                .expect(&format!("Unable to resolve domain {}", server_address))
+        },
         Err(e) => {
-            eprintln!("Could not parse \"{}\" as a server address: {}", server_address, e);
+            eprintln!("Could not parse {} as a server address: {}", server_address, e);
             return Err(CommsError::Usage);
         }
     };

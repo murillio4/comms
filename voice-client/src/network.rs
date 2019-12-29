@@ -46,7 +46,7 @@ pub fn run(server_address: SocketAddr, receiver: Receiver<Vec<u8>>, command_tx: 
                                 let header_type = buffer[0];
                                 match header_type {
                                     packet::Connect::HEADER_TYPE => {
-                                        println!("Thanks for sending back the connect packet");
+                                        println!("-> Connected!");
                                     },
                                     packet::AudioToClient::HEADER_TYPE => {
                                         let audio_to_client: AudioToClient = match deserialize(&buffer[1..size]) {
