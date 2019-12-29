@@ -149,7 +149,7 @@ impl OutgoingPacketQueue {
         let packet = match self.audio_thread_receiver.try_recv() {
             Ok(packet) => packet,
             Err(_) => {
-                // Audio thread doesn't actually have data, ignoring missing packet
+                // todo Audio thread doesn't actually have data, ignoring missing packet
                 return Ok(());
             }
         };

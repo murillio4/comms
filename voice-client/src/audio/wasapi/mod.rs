@@ -133,7 +133,7 @@ impl Iterator for MicIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         Some([self.consumer.pop().unwrap_or_else(|| {
-            println!("MicIterator fell behind");
+            // TODO println!("MicIterator fell behind");
             0f64
         })])
     }

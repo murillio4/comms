@@ -19,6 +19,5 @@ pub fn bump_priority() {
         if handle.is_null() {
             eprintln!("Unable to bump thread priority using mmcss");
         }
-        dbg!(processthreadsapi::GetThreadPriority(processthreadsapi::GetCurrentThread()));
     }
 }
