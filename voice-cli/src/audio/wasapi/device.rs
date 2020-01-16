@@ -245,6 +245,7 @@ impl IMMDeviceWrapper {
 }
 
 impl InputDevice {
+    #[allow(dead_code)]
     pub fn name(&self) -> Result<String, DeviceNameError> {
         self.device.name()
     }
@@ -272,6 +273,7 @@ impl InputDevice {
 }
 
 impl OutputDevice {
+    #[allow(dead_code)]
     pub fn name(&self) -> Result<String, DeviceNameError> {
         self.device.name()
     }

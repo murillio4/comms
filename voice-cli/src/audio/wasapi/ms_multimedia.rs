@@ -59,7 +59,6 @@ pub fn format_to_waveformatextensible(format: &Format) -> Option<mmreg::WAVEFORM
     let format_tag = match format.data_type {
         SampleFormat::I16 => MmregFormat::PCM,
         SampleFormat::F32 => MmregFormat::EXTENSIBLE,
-        SampleFormat::U16 => return None,
     };
     let channels = format.channels as WORD;
     let sample_rate = format.sample_rate.0 as DWORD;

@@ -4,9 +4,9 @@ use std::slice;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use winapi::shared::basetsd::UINT32;
-use winapi::shared::minwindef::{DWORD, WORD};
+use winapi::shared::minwindef::WORD;
 use winapi::shared::minwindef;
-use winapi::um::{audioclient, avrt, synchapi, winbase, winnt};
+use winapi::um::{audioclient, synchapi, winbase, winnt};
 use winapi::um::audioclient::{AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_S_BUFFER_EMPTY};
 
 use crate::audio::wasapi::com::check_result;
@@ -151,7 +151,6 @@ impl EventLoop {
                         match stream.sample_format {
                             SampleFormat::F32 => capture_callback!(f32, F32),
                             SampleFormat::I16 => capture_callback!(i16, I16),
-                            SampleFormat::U16 => capture_callback!(u16, U16),
                         }
                     }
                 }
@@ -201,7 +200,6 @@ impl EventLoop {
                     match stream.sample_format {
                         SampleFormat::F32 => render_callback!(f32, F32),
                         SampleFormat::I16 => render_callback!(i16, I16),
-                        SampleFormat::U16 => render_callback!(u16, U16),
                     }
                 }
             }

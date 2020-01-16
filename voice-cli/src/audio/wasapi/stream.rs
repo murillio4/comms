@@ -6,7 +6,6 @@ use sample::Sample;
 #[derive(Debug, Clone, Copy)]
 pub enum SampleFormat {
     I16,
-    U16,
     F32,
 }
 
@@ -14,7 +13,6 @@ impl SampleFormat {
     pub fn sample_size(&self) -> usize {
         match self {
             &SampleFormat::I16 => mem::size_of::<i16>(),
-            &SampleFormat::U16 => mem::size_of::<u16>(),
             &SampleFormat::F32 => mem::size_of::<f32>(),
         }
     }
@@ -61,13 +59,11 @@ impl<'a, T> DerefMut for OutputBuffer<'a, T> where T: Sample {
 }
 
 pub enum UnknownTypeInputBuffer<'a> {
-    U16(InputBuffer<'a, u16>),
     I16(InputBuffer<'a, i16>),
     F32(InputBuffer<'a, f32>),
 }
 
 pub enum UnknownTypeOutputBuffer<'a> {
-    U16(OutputBuffer<'a, u16>),
     I16(OutputBuffer<'a, i16>),
     F32(OutputBuffer<'a, f32>),
 }

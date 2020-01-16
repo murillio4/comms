@@ -1,7 +1,7 @@
 use sample::{interpolate, signal, Signal, Sample};
 use crate::audio::{AudioError, ReceiveFromNetworkThread, SendToNetworkThread};
 use crate::audio::wasapi::device::{InputDevice, OutputDevice};
-use crate::audio::wasapi::stream::{SampleFormat, UnknownTypeInputBuffer, StreamData, UnknownTypeOutputBuffer};
+use crate::audio::wasapi::stream::{UnknownTypeInputBuffer, StreamData, UnknownTypeOutputBuffer};
 use ringbuf::{RingBuffer, Consumer};
 use voice_lib::packet::AudioFromClient;
 
@@ -15,8 +15,8 @@ pub fn run(send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Resu
     let input_device = InputDevice::default().unwrap();
     let output_device = OutputDevice::default().unwrap();
 
-    let mut input_format = input_device.default_format().unwrap();
-    let mut output_format = output_device.default_format().unwrap();
+    let input_format = input_device.default_format().unwrap();
+    let output_format = output_device.default_format().unwrap();
 
     let playback_interpolator = interpolate::Linear::new([0f64; 1], [0f64; 1]);
     let server_signal = signal::from_iter(receive);
@@ -58,14 +58,6 @@ pub fn run(send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Resu
         };
 
         match data {
-            StreamData::Input(UnknownTypeInputBuffer::U16(buffer)) => {
-                let sample_count = buffer.len() / input_format.channels as usize;
-                for i in 0..sample_count {
-                    let item = buffer[i*input_format.channels as usize];
-                    mic_producer.push(item.to_sample::<f64>()).unwrap();
-                }
-                convert_and_send(sample_count);
-            }
             StreamData::Input(UnknownTypeInputBuffer::F32(buffer)) => {
                 let sample_count = buffer.len() / input_format.channels as usize;
                 for i in 0..sample_count {
@@ -81,15 +73,6 @@ pub fn run(send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Resu
                     mic_producer.push(item.to_sample::<f64>()).unwrap();
                 }
                 convert_and_send(sample_count);
-            },
-            StreamData::Output(UnknownTypeOutputBuffer::U16(mut buffer)) => {
-                let channel_count = output_format.channels as usize;
-                for window in 0..buffer.len() / channel_count {
-                    let sample = playback_signal.next()[0].to_sample::<u16>();
-                    for channel in 0..channel_count {
-                        buffer[window * channel_count + channel] = sample
-                    }
-                }
             },
             StreamData::Output(UnknownTypeOutputBuffer::F32(mut buffer)) => {
                 let channel_count = output_format.channels as usize;
@@ -109,7 +92,6 @@ pub fn run(send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Resu
                     }
                 }
             },
-            _ => panic!("we're expecting i16 data"),
         }
     });
     Ok(())

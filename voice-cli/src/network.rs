@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use mio::{Evented, Events, Poll, PollOpt, Ready, Registration, Token};
 use mio::net::UdpSocket;
 use voice_lib::packet;
-use std::sync::mpsc::{Receiver, Sender, SendError, RecvError, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender, SendError, RecvError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
 use ringbuf::{Producer, Consumer, RingBuffer};

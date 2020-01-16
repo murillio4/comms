@@ -1,6 +1,6 @@
 use winapi::um::{errhandlingapi, processthreadsapi, avrt};
 use std::os::raw::c_int;
-use winapi::um::winbase::{THREAD_PRIORITY_HIGHEST, REALTIME_PRIORITY_CLASS, THREAD_PRIORITY_TIME_CRITICAL};
+use winapi::um::winbase::THREAD_PRIORITY_TIME_CRITICAL;
 use winapi::shared::minwindef::DWORD;
 
 #[cfg(windows)]

@@ -31,7 +31,7 @@ fn main() -> Result<(), BeepClientErr> {
     // Produce a sinusoid of maximum amplitude.
     let mut next_value = || {
         sample_clock = (sample_clock + 1.0) % sample_rate;
-        ((sample_clock * 440.0 * 2.0 * 3.141592 / sample_rate).sin() * std::i16::MAX as f32 * 0.2) as i16
+        ((sample_clock * 440.0 * 2.0 * std::f32::consts::PI / sample_rate).sin() * std::i16::MAX as f32 * 0.2) as i16
     };
 
     let socket = UdpSocket::bind("0.0.0.0:0")?;
