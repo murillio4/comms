@@ -21,4 +21,4 @@ lazy_static = "1.4.0"
 winapi = { version = "0.3.8", features = ["audioclient", "avrt", "coml2api", "combaseapi", "devpkey", "errhandlingapi", "ksmedia", "mmdeviceapi", "objbase", "synchapi", "winbase", "winnt"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libpulse-binding = "2.13.0"
+libpulse-binding = { version = "2.13.0", default-features = false }
