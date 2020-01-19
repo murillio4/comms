@@ -5,12 +5,11 @@ use mio::{Evented, Events, Poll, PollOpt, Ready, Registration, Token, SetReadine
 use mio::net::UdpSocket;
 use voice_lib::{packet, SerializeError, serialize};
 use std::sync::mpsc::{Receiver, Sender, SendError, RecvError};
-use std::sync::{Arc, mpsc};
-use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
+use std::sync::mpsc;
 use ringbuf::{Producer, Consumer, RingBuffer};
-use voice_lib::packet::{Packet, AudioToClient, AudioFromClient};
+use voice_lib::packet::{Packet, AudioToClient};
 use bincode::deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 trait RawPacket {
     fn header_and_data(&self) -> (u8, &[u8]);
@@ -25,7 +24,8 @@ impl RawPacket for &[u8] {
 pub struct Worker {
     server_address: SocketAddr,
     audio_sender: Sender<AudioCommand>,
-    packet_queue: OutgoingPacketQueue,
+    receiver: Receiver<Command>,
+    registration: Registration,
 }
 
 impl Worker {
@@ -33,14 +33,17 @@ impl Worker {
         let socket = UdpSocket::bind(&"0.0.0.0:0".parse().unwrap())?;
         socket.connect(self.server_address)?;
 
-        let packet_queue = self.packet_queue;
+        let command_queue = CommandQueue::new(self.receiver, self.registration);
         let mut send_to_audio_thread = SendToAudioThread::new(self.audio_sender);
 
         let network_token = Token(0);
-        let audio_token = Token(1);
+        let command_token = Token(1);
         let poll = Poll::new()?;
         poll.register(&socket, network_token, Ready::all(), PollOpt::edge())?;
-        poll.register(&packet_queue, audio_token, Ready::readable(), PollOpt::edge())?;
+        poll.register(&command_queue, command_token, Ready::readable(), PollOpt::edge())?;
+
+        let mut socket_writable = false;
+        let mut outgoing_packet_queue = VecDeque::<Vec<u8>>::new();
 
         let mut buffer = [0; 65535];
         let mut events = Events::with_capacity(1024);
@@ -89,50 +92,145 @@ impl Worker {
                         }
                     }
                     if readiness.is_writable() {
-                        packet_queue.socket_writable.store(true, Ordering::Relaxed);
-                        if !packet_queue.is_empty() {
-                            packet_queue.send_one(&socket)?;
-                        }
+                        socket_writable = true;
+                        attempt_send_next_packet(&mut outgoing_packet_queue, &socket, &mut socket_writable)?;
                     }
-                } else if token == audio_token && readiness.is_readable() {
-                    packet_queue.send_one(&socket)?;
+                } else if token == command_token && readiness.is_readable() {
+                    let packet = match command_queue.next() {
+                        Some(packet) => packet,
+                        None => {
+                            // This should never happen since handle_command is only called when
+                            // set_ready is called.
+                            // TODO track if/when this happens, to confirm this assumption.
+                            return Ok(());
+                        }
+                    };
+
+                    match packet {
+                        Command::OneDirection(raw_packet) => {
+                            outgoing_packet_queue.push_back(raw_packet);
+                        },
+                        _ => unimplemented!(),
+                    }
+
+                    attempt_send_next_packet(&mut outgoing_packet_queue, &socket, &mut socket_writable)?;
                 }
             }
         }
     }
 }
 
-pub struct NetworkConnectionHandle {
-    sender: Sender<Vec<u8>>, // todo make Vec<NetworkCommand> (where NetworkCommand is probably "send a packet")
+fn attempt_send_next_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, socket: &UdpSocket, socket_writable: &mut bool) -> Result<(), NetworkError> {
+    if !*socket_writable {
+        return Ok(())
+    }
+
+    let packet = match outgoing_packet_queue.get(0) {
+        Some(packet) => packet,
+        None => {
+            return Ok(());
+        }
+    };
+
+    match socket.send(packet) {
+        Ok(_) => {},
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+            // TODO track when this would happen. If it does, what about socket_writable??
+            println!("EWouldBlock on OutgoingPacketQueue, dropping packet");
+            return Ok(());
+        },
+        Err(e) => return Err(e.into())
+    };
+
+    outgoing_packet_queue.pop_front();
+    *socket_writable = false;
+    Ok(())
+}
+
+pub enum Command {
+    OneDirection(Vec<u8>),
+    Request {
+        outgoing: Vec<u8>,
+        expected_response_packet: u8,
+        send_response: Sender<Vec<u8>>,
+    }
+}
+
+pub struct Handle {
+    sender: Sender<Command>,
     set_readiness: SetReadiness,
-    queue_size: Arc<AtomicUsize>,
 }
 
 impl Handle {
     pub fn new_handle_and_worker(server_address: SocketAddr, audio_sender: Sender<AudioCommand>) -> (Self, Worker) {
         let (sender, receiver) = mpsc::channel();
         let (registration, set_readiness) = Registration::new2();
-        let queue_size = Arc::new(AtomicUsize::new(0));
         return (
             Handle {
                 sender,
                 set_readiness,
-                queue_size: queue_size.clone(),
             },
             Worker {
                 server_address,
                 audio_sender,
-                packet_queue: OutgoingPacketQueue::new(receiver, registration, queue_size),
+                receiver,
+                registration,
             }
         )
     }
 
-    pub fn send<'a>(&self, packet: impl Packet<'a>) -> Result<(), SendToNetworkThreadError> {
-        let raw_packet = serialize(packet)?;
-        self.sender.send(raw_packet)?;
+    fn send(&self, command: Command) -> Result<(), SendToNetworkThreadError> {
+        self.sender.send(command)?;
         self.set_readiness.set_readiness(Ready::readable())?;
-        self.queue_size.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    pub fn send_single<'a>(&self, packet: impl Packet<'a>) -> Result<(), SendToNetworkThreadError> {
+        let raw_packet = serialize(packet)?;
+        self.send(Command::OneDirection(raw_packet))
+    }
+
+    pub fn request<'a>(&self, outgoing_packet: impl Packet<'a>, expected_response_packet: u8, send_response: Sender<Vec<u8>>) -> Result<(), SendToNetworkThreadError> {
+        let raw_packet = serialize(outgoing_packet)?;
+        self.send(Command::Request {
+            outgoing: raw_packet,
+            expected_response_packet,
+            send_response
+        })
+    }
+}
+
+pub struct CommandQueue {
+    command_queue: Receiver<Command>,
+    registration: Registration,
+}
+
+impl CommandQueue {
+    fn new(command_queue: Receiver<Command>, registration: Registration) -> CommandQueue {
+        CommandQueue {
+            command_queue,
+            registration,
+        }
+    }
+
+    fn next(&self) -> Option<Command> {
+        self.command_queue.try_recv().ok()
+    }
+}
+
+impl Evented for CommandQueue {
+    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
+    {
+        self.registration.register(poll, token, interest, opts)
+    }
+
+    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
+    {
+        self.registration.reregister(poll, token, interest, opts)
+    }
+
+    fn deregister(&self, poll: &Poll) -> io::Result<()> {
+        poll.deregister(self)
     }
 }
 
@@ -176,71 +274,6 @@ impl SendToAudioThread {
     }
 }
 
-pub struct OutgoingPacketQueue {
-    audio_thread_receiver: Receiver<Vec<u8>>,
-    registration: Registration,
-    socket_writable: AtomicBool,
-    size: Arc<AtomicUsize>,
-}
-unsafe impl Send for OutgoingPacketQueue {}
-
-impl OutgoingPacketQueue {
-    pub fn new(receiver: Receiver<Vec<u8>>, registration: Registration, size: Arc<AtomicUsize>) -> OutgoingPacketQueue {
-        OutgoingPacketQueue {
-            audio_thread_receiver: receiver,
-            registration,
-            socket_writable: AtomicBool::new(false),
-            size,
-        }
-    }
-
-    fn send_one(&self, socket: &UdpSocket)-> Result<(), NetworkError> {
-        if !self.socket_writable.load(Ordering::Relaxed) {
-            return Ok(())
-        }
-
-        let packet = match self.audio_thread_receiver.try_recv() {
-            Ok(packet) => packet,
-            Err(_) => {
-                // todo Audio thread doesn't actually have data, ignoring missing packet
-                return Ok(());
-            }
-        };
-
-        self.size.fetch_sub(1, Ordering::Relaxed);
-        match socket.send(&packet) {
-            Ok(_) => (),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                println!("EWouldBlock on OutgoingPacketQueue, dropping packet");
-                return Ok(());
-            },
-            Err(e) => return Err(e.into())
-        };
-        self.socket_writable.store(false, Ordering::Relaxed);
-        Ok(())
-    }
-
-    fn is_empty(&self) -> bool {
-        self.size.load(Ordering::Relaxed) == 0
-    }
-}
-
-impl Evented for OutgoingPacketQueue {
-    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
-    {
-        self.registration.register(poll, token, interest, opts)
-    }
-
-    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
-    {
-        self.registration.reregister(poll, token, interest, opts)
-    }
-
-    fn deregister(&self, poll: &Poll) -> io::Result<()> {
-        poll.deregister(self)
-    }
-}
-
 #[derive(Debug)]
 pub enum NetworkError {
     Io(Option<io::Error>),
@@ -269,7 +302,7 @@ impl From<RecvError> for NetworkError {
 #[derive(Debug)]
 pub enum SendToNetworkThreadError {
     SerializeFailed(SerializeError),
-    SendFailed(SendError<Vec<u8>>),
+    SendFailed(SendError<Command>),
     SetReadinessFailed(io::Error),
 }
 
@@ -279,8 +312,8 @@ impl From<SerializeError> for SendToNetworkThreadError {
     }
 }
 
-impl From<SendError<Vec<u8>>> for SendToNetworkThreadError {
-    fn from(e: SendError<Vec<u8>>) -> Self {
+impl From<SendError<Command>> for SendToNetworkThreadError {
+    fn from(e: SendError<Command>) -> Self {
         SendToNetworkThreadError::SendFailed(e)
     }
 }

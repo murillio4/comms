@@ -72,7 +72,7 @@ fn main() -> Result<(), CommsError> {
     });
 
     let connect = packet::Connect();
-    network_handle.send(connect)?;
+    network_handle.send_single(connect)?;
 
     #[cfg(windows)]
     bump_priority();

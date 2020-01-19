@@ -47,7 +47,7 @@ pub fn run(network_handle: Handle, receiver: Receiver<AudioCommand>) -> Result<(
             let sample = mic_signal.next()[0].to_sample::<i16>();
             buffer.extend(&sample.to_le_bytes());
         }
-        network_handle.send(AudioFromClient(&buffer)).unwrap();
+        network_handle.send_single(AudioFromClient(&buffer)).unwrap();
     };
 
     event_loop.run(move |id, result| {
