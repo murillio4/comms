@@ -2,15 +2,19 @@
 #[macro_use]
 extern crate lazy_static;
 
+use futures::channel::oneshot;
 use std::{process, io};
 use clap::{App, Arg};
 use std::sync::mpsc;
-use voice_lib::packet;
+use voice_lib::{packet, deserialize};
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
 use std::net::ToSocketAddrs;
 use std::io::BufRead;
 use crate::network::{Handle, SendToNetworkThreadError};
+use voice_lib::packet::{Packet, ConnectAccepted};
+use std::thread::sleep;
+use std::time::Duration;
 
 mod audio;
 mod network;
@@ -21,6 +25,7 @@ fn main() -> Result<(), CommsError> {
     let matches = App::new("Comms")
         .version("0.1")
         .arg(Arg::with_name("server_address").takes_value(true))
+        .arg(Arg::with_name("username").takes_value(true))
         .arg(Arg::with_name("pulseaudio").takes_value(true))
         .get_matches();
 
@@ -36,6 +41,22 @@ fn main() -> Result<(), CommsError> {
                 "kamloops.fuzzlesoft.ca".to_string()
             } else {
                 server_address
+            }
+        }
+    };
+
+    let username = match matches.value_of("username") {
+        Some(username) => username.to_string(),
+        None => {
+            loop {
+                println!("Enter username:");
+                let stdin = io::stdin();
+                let username = stdin.lock().lines().next()
+                    .unwrap()
+                    .unwrap();
+                if username != "" {
+                    break username;
+                }
             }
         }
     };
@@ -71,8 +92,22 @@ fn main() -> Result<(), CommsError> {
         }
     });
 
-    let connect = packet::Connect();
-    network_handle.send_single(connect)?;
+    let connect = packet::Connect {
+        username
+    };
+    let (sender, mut receiver) = oneshot::channel();
+    network_handle.request(connect, packet::ConnectAccepted::HEADER_TYPE, sender)?;
+    loop {
+        sleep(Duration::from_millis(100));
+        match receiver.try_recv() {
+            Ok(Some(response)) => {
+                let connect_accepted: ConnectAccepted = deserialize(&response).unwrap();
+                dbg!(connect_accepted.users);
+                break;
+            },
+            _ => println!("."),
+        }
+    }
 
     #[cfg(windows)]
     bump_priority();

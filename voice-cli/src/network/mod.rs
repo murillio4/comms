@@ -1,6 +1,7 @@
 use std::io;
 use std::net::SocketAddr;
 
+use futures::channel::oneshot;
 use mio::{Evented, Events, Poll, PollOpt, Ready, Registration, Token, SetReadiness};
 use mio::net::UdpSocket;
 use voice_lib::{packet, SerializeError, serialize};
@@ -44,6 +45,7 @@ impl Worker {
 
         let mut socket_writable = false;
         let mut outgoing_packet_queue = VecDeque::<Vec<u8>>::new();
+        let mut expected_response_map = HashMap::<u8, oneshot::Sender<Vec<u8>>>::new();
 
         let mut buffer = [0; 65535];
         let mut events = Events::with_capacity(1024);
@@ -64,22 +66,18 @@ impl Worker {
 
                                     let raw_packet = &buffer[0..size];
                                     let (header, data) = raw_packet.header_and_data();
-                                    match header {
-                                        packet::Connect::HEADER_TYPE => {
-                                            println!("-> Connected!");
-                                        },
-                                        packet::AudioToClient::HEADER_TYPE => {
-                                            let audio_to_client: AudioToClient = match deserialize(data) {
-                                                Ok(packet) => packet,
-                                                Err(_) => {
-                                                    println!("Failed to parse AudioToClient packet, ignoring");
-                                                    continue;
-                                                }
-                                            };
-                                            send_to_audio_thread.send(audio_to_client.author, audio_to_client.bytes)?;
-                                        },
-                                        _ => ()
-                                    }
+                                    if header == packet::AudioToClient::HEADER_TYPE {
+                                        let audio_to_client: AudioToClient = match deserialize(data) {
+                                            Ok(packet) => packet,
+                                            Err(_) => {
+                                                println!("Failed to parse AudioToClient packet, ignoring");
+                                                continue;
+                                            }
+                                        };
+                                        send_to_audio_thread.send(audio_to_client.author, audio_to_client.bytes)?;
+                                    } else if let Some(sender) = expected_response_map.remove(&header) {
+                                        sender.send(data.to_vec()).unwrap();
+                                    } // TODO track unexpected packets
                                 }
                                 Err(e) => {
                                     if e.kind() == io::ErrorKind::WouldBlock {
@@ -110,7 +108,14 @@ impl Worker {
                         Command::OneDirection(raw_packet) => {
                             outgoing_packet_queue.push_back(raw_packet);
                         },
-                        _ => unimplemented!(),
+                        Command::Request {
+                            outgoing,
+                            expected_response_packet,
+                            send_response,
+                        } => {
+                            outgoing_packet_queue.push_back(outgoing);
+                            expected_response_map.insert(expected_response_packet, send_response);
+                        }
                     }
 
                     attempt_send_next_packet(&mut outgoing_packet_queue, &socket, &mut socket_writable)?;
@@ -147,12 +152,13 @@ fn attempt_send_next_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, socke
     Ok(())
 }
 
+#[derive(Debug)]
 pub enum Command {
     OneDirection(Vec<u8>),
     Request {
         outgoing: Vec<u8>,
         expected_response_packet: u8,
-        send_response: Sender<Vec<u8>>,
+        send_response: oneshot::Sender<Vec<u8>>,
     }
 }
 
@@ -190,7 +196,7 @@ impl Handle {
         self.send(Command::OneDirection(raw_packet))
     }
 
-    pub fn request<'a>(&self, outgoing_packet: impl Packet<'a>, expected_response_packet: u8, send_response: Sender<Vec<u8>>) -> Result<(), SendToNetworkThreadError> {
+    pub fn request<'a>(&self, outgoing_packet: impl Packet<'a>, expected_response_packet: u8, send_response: oneshot::Sender<Vec<u8>>) -> Result<(), SendToNetworkThreadError> {
         let raw_packet = serialize(outgoing_packet)?;
         self.send(Command::Request {
             outgoing: raw_packet,

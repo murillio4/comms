@@ -7,7 +7,9 @@ pub trait Packet<'a>: Serialize + Deserialize<'a> {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Connect();
+pub struct Connect {
+    pub username: String,
+}
 
 impl<'a> Packet<'a> for Connect {
     const HEADER_TYPE: u8 = 1u8;
@@ -47,4 +49,13 @@ pub struct AudioToClient<'a> {
 
 impl<'a> Packet<'a> for AudioToClient<'a> {
     const HEADER_TYPE: u8 = 5u8;
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ConnectAccepted {
+    pub users: Vec<String>,
+}
+
+impl<'a> Packet<'a> for ConnectAccepted {
+    const HEADER_TYPE: u8 = 6u8;
 }
