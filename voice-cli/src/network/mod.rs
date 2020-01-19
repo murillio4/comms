@@ -8,17 +8,27 @@ use std::sync::mpsc::{Receiver, Sender, SendError, RecvError};
 use std::sync::{Arc, mpsc};
 use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
 use ringbuf::{Producer, Consumer, RingBuffer};
-use voice_lib::packet::{Packet, AudioToClient};
+use voice_lib::packet::{Packet, AudioToClient, AudioFromClient};
 use bincode::deserialize;
 use std::collections::HashMap;
 
-pub struct NetworkConnectionWorker {
+trait RawPacket {
+    fn header_and_data(&self) -> (u8, &[u8]);
+}
+
+impl RawPacket for &[u8] {
+    fn header_and_data(&self) -> (u8, &[u8]) {
+        (self[0], &self[1..])
+    }
+}
+
+pub struct Worker {
     server_address: SocketAddr,
     audio_sender: Sender<AudioCommand>,
     packet_queue: OutgoingPacketQueue,
 }
 
-impl NetworkConnectionWorker {
+impl Worker {
     pub fn run(self) -> Result<(), NetworkError> {
         let socket = UdpSocket::bind(&"0.0.0.0:0".parse().unwrap())?;
         socket.connect(self.server_address)?;
@@ -49,14 +59,14 @@ impl NetworkConnectionWorker {
                                         continue;
                                     }
 
-                                    let buffer = &buffer[0..size];
-                                    let header_type = buffer[0];
-                                    match header_type {
+                                    let raw_packet = &buffer[0..size];
+                                    let (header, data) = raw_packet.header_and_data();
+                                    match header {
                                         packet::Connect::HEADER_TYPE => {
                                             println!("-> Connected!");
                                         },
                                         packet::AudioToClient::HEADER_TYPE => {
-                                            let audio_to_client: AudioToClient = match deserialize(&buffer[1..size]) {
+                                            let audio_to_client: AudioToClient = match deserialize(data) {
                                                 Ok(packet) => packet,
                                                 Err(_) => {
                                                     println!("Failed to parse AudioToClient packet, ignoring");
@@ -98,18 +108,18 @@ pub struct NetworkConnectionHandle {
     queue_size: Arc<AtomicUsize>,
 }
 
-impl NetworkConnectionHandle {
-    pub fn new_handle_and_worker(server_address: SocketAddr, audio_sender: Sender<AudioCommand>) -> (Self, NetworkConnectionWorker) {
+impl Handle {
+    pub fn new_handle_and_worker(server_address: SocketAddr, audio_sender: Sender<AudioCommand>) -> (Self, Worker) {
         let (sender, receiver) = mpsc::channel();
         let (registration, set_readiness) = Registration::new2();
         let queue_size = Arc::new(AtomicUsize::new(0));
         return (
-            NetworkConnectionHandle {
+            Handle {
                 sender,
                 set_readiness,
                 queue_size: queue_size.clone(),
             },
-            NetworkConnectionWorker {
+            Worker {
                 server_address,
                 audio_sender,
                 packet_queue: OutgoingPacketQueue::new(receiver, registration, queue_size),

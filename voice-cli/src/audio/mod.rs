@@ -1,4 +1,4 @@
-use crate::network::{AudioCommand, SendToNetworkThreadError, NetworkConnectionHandle};
+use crate::network::{AudioCommand, SendToNetworkThreadError, Handle};
 use std::sync::mpsc::Receiver;
 use ringbuf::Consumer;
 use std::collections::HashMap;
@@ -8,12 +8,12 @@ use sample::Sample;
 #[cfg(windows)] mod wasapi;
 
 #[cfg(unix)]
-pub fn run(pulseaudio_server: Option<&str>, network_handle: NetworkConnectionHandle, receiver: Receiver) -> Result<(), AudioError> {
+pub fn run(pulseaudio_server: Option<&str>, network_handle: Handle, receiver: Receiver) -> Result<(), AudioError> {
     pulseaudio::run(pulseaudio_server, network_handle, receiver)
 }
 
 #[cfg(windows)]
-pub fn run(_: Option<&str>, network_handle: NetworkConnectionHandle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
+pub fn run(_: Option<&str>, network_handle: Handle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
     wasapi::run(network_handle, receiver)
 }
 

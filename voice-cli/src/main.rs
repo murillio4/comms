@@ -10,7 +10,7 @@ use voice_lib::packet;
 use voice_lib::winlib::bump_priority;
 use std::net::ToSocketAddrs;
 use std::io::BufRead;
-use crate::network::{NetworkConnectionHandle, SendToNetworkThreadError};
+use crate::network::{Handle, SendToNetworkThreadError};
 
 mod audio;
 mod network;
@@ -56,7 +56,7 @@ fn main() -> Result<(), CommsError> {
     };
 
     let (audio_sender, audio_receiver) = mpsc::channel();
-    let (network_handle, network_worker) = NetworkConnectionHandle::new_handle_and_worker(
+    let (network_handle, network_worker) = Handle::new_handle_and_worker(
         server_address,
         audio_sender,
     );

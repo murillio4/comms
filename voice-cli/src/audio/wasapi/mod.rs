@@ -4,7 +4,7 @@ use crate::audio::wasapi::stream::{UnknownTypeInputBuffer, StreamData, UnknownTy
 use ringbuf::{RingBuffer, Consumer};
 use voice_lib::packet::AudioFromClient;
 use crate::audio::{AudioError, ReceiveFromNetworkThread};
-use crate::network::{NetworkConnectionHandle, AudioCommand};
+use crate::network::{Handle, AudioCommand};
 use std::sync::mpsc::Receiver;
 
 mod com;
@@ -13,7 +13,7 @@ mod event_loop;
 mod ms_multimedia;
 mod stream;
 
-pub fn run(network_handle: NetworkConnectionHandle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
+pub fn run(network_handle: Handle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
     let input_device = InputDevice::default().unwrap();
     let output_device = OutputDevice::default().unwrap();
 
