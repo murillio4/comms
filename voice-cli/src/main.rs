@@ -4,15 +4,13 @@ extern crate lazy_static;
 
 use std::{process, io};
 use clap::{App, Arg};
-use std::sync::{Arc, mpsc};
-use mio::Registration;
+use std::sync::mpsc;
 use voice_lib::packet;
-use std::sync::atomic::AtomicUsize;
-use crate::audio::{SendToNetworkThread, SendToNetworkThreadError, ReceiveFromNetworkThread};
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
 use std::net::ToSocketAddrs;
 use std::io::BufRead;
+use crate::network::{NetworkConnectionHandle, SendToNetworkThreadError};
 
 mod audio;
 mod network;
@@ -56,29 +54,29 @@ fn main() -> Result<(), CommsError> {
             return Err(CommsError::Usage);
         }
     };
-    let (sender, receiver) = mpsc::channel();
-    let (registration, set_readiness) = Registration::new2();
-    let size = Arc::new(AtomicUsize::new(0));
-    let send_to_network_thread = SendToNetworkThread::new(sender, set_readiness, size.clone());
-    let (command_tx, command_rx) = mpsc::channel();
-    let receive_from_network_thread = ReceiveFromNetworkThread::new(command_rx);
+
+    let (audio_sender, audio_receiver) = mpsc::channel();
+    let (network_handle, network_worker) = NetworkConnectionHandle::new_handle_and_worker(
+        server_address,
+        audio_sender,
+    );
 
     std::thread::spawn(move || {
         #[cfg(windows)]
         bump_priority();
-        if let Err(e) = network::run(server_address, receiver, command_tx, registration, size) {
+        if let Err(e) = network_worker.run() {
             eprintln!("Encountered an error in network operations, stopping");
             eprintln!("Error details: {:?}", e);
             process::exit(1);
         }
     });
 
+    let connect = packet::Connect();
+    network_handle.send(connect)?;
+
     #[cfg(windows)]
     bump_priority();
-    let connect = packet::Connect();
-    send_to_network_thread.send(connect)?;
-
-    audio::run(pulseaudio_server, send_to_network_thread, receive_from_network_thread)?;
+    audio::run(pulseaudio_server, network_handle, audio_receiver)?;
     Ok(())
 }
 
@@ -101,7 +99,7 @@ impl From<network::NetworkError> for CommsError {
     }
 }
 
-impl From<audio::SendToNetworkThreadError> for CommsError {
+impl From<SendToNetworkThreadError> for CommsError {
     fn from(e: SendToNetworkThreadError) -> Self {
         CommsError::Audio(e.into())
     }

@@ -7,6 +7,7 @@ edition = "2018"
 [dependencies]
 bincode = "1.2.0"
 clap = "2.33.0"
+futures = "0.3.1"
 mio = "0.6.19"
 ringbuf = "0.2.1"
 sample = "0.10.0"

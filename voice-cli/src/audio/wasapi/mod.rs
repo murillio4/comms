@@ -1,9 +1,11 @@
 use sample::{interpolate, signal, Signal, Sample};
-use crate::audio::{AudioError, ReceiveFromNetworkThread, SendToNetworkThread};
 use crate::audio::wasapi::device::{InputDevice, OutputDevice};
 use crate::audio::wasapi::stream::{UnknownTypeInputBuffer, StreamData, UnknownTypeOutputBuffer};
 use ringbuf::{RingBuffer, Consumer};
 use voice_lib::packet::AudioFromClient;
+use crate::audio::{AudioError, ReceiveFromNetworkThread};
+use crate::network::{NetworkConnectionHandle, AudioCommand};
+use std::sync::mpsc::Receiver;
 
 mod com;
 mod device;
@@ -11,7 +13,7 @@ mod event_loop;
 mod ms_multimedia;
 mod stream;
 
-pub fn run(send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Result<(), AudioError> {
+pub fn run(network_handle: NetworkConnectionHandle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
     let input_device = InputDevice::default().unwrap();
     let output_device = OutputDevice::default().unwrap();
 
@@ -19,7 +21,7 @@ pub fn run(send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Resu
     let output_format = output_device.default_format().unwrap();
 
     let playback_interpolator = interpolate::Linear::new([0f64; 1], [0f64; 1]);
-    let server_signal = signal::from_iter(receive);
+    let server_signal = signal::from_iter(ReceiveFromNetworkThread::new(receiver));
     let mut playback_signal = server_signal.from_hz_to_hz(playback_interpolator, 48000f64, output_format.sample_rate.0 as f64);
 
     let mic_buffer = RingBuffer::new(4800);
@@ -45,7 +47,7 @@ pub fn run(send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Resu
             let sample = mic_signal.next()[0].to_sample::<i16>();
             buffer.extend(&sample.to_le_bytes());
         }
-        send.send(AudioFromClient(&buffer)).unwrap();
+        network_handle.send(AudioFromClient(&buffer)).unwrap();
     };
 
     event_loop.run(move |id, result| {

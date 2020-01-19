@@ -1,49 +1,20 @@
-use crate::network::AudioCommand;
-use std::sync::mpsc::{Receiver, Sender, SendError};
+use crate::network::{AudioCommand, SendToNetworkThreadError, NetworkConnectionHandle};
+use std::sync::mpsc::Receiver;
 use ringbuf::Consumer;
 use std::collections::HashMap;
-use mio::{SetReadiness, Ready};
-use std::sync::Arc;
-use voice_lib::packet::Packet;
-use serde::Serialize;
-use voice_lib::{serialize, SerializeError};
-use std::sync::atomic::Ordering;
-use std::io;
-use std::sync::atomic::AtomicUsize;
 use sample::Sample;
 
-#[cfg(unix)]
-mod pulseaudio;
-#[cfg(windows)]
-mod wasapi;
+#[cfg(unix)] mod pulseaudio;
+#[cfg(windows)] mod wasapi;
 
 #[cfg(unix)]
-pub fn run(pulseaudio_server: Option<&str>, send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Result<(), AudioError> {
-    pulseaudio::run(pulseaudio_server, send, receive)
+pub fn run(pulseaudio_server: Option<&str>, network_handle: NetworkConnectionHandle, receiver: Receiver) -> Result<(), AudioError> {
+    pulseaudio::run(pulseaudio_server, network_handle, receiver)
 }
 
 #[cfg(windows)]
-pub fn run(_: Option<&str>, send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Result<(), AudioError> {
-    wasapi::run(send, receive)
-}
-
-#[derive(Debug)]
-pub enum AudioError {
-    SendToNetworkThread(SendToNetworkThreadError),
-    #[cfg(unix)]
-    StreamCreation,
-    #[cfg(unix)]
-    Pulse(Option<String>),
-    #[cfg(unix)]
-    NoBufferToWriteTo,
-    #[cfg(unix)]
-    PulseInitializationFailed,
-}
-
-impl From<SendToNetworkThreadError> for AudioError {
-    fn from(err: SendToNetworkThreadError) -> Self {
-        AudioError::SendToNetworkThread(err)
-    }
+pub fn run(_: Option<&str>, network_handle: NetworkConnectionHandle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
+    wasapi::run(network_handle, receiver)
 }
 
 pub struct ReceiveFromNetworkThread {
@@ -52,9 +23,9 @@ pub struct ReceiveFromNetworkThread {
 }
 
 impl ReceiveFromNetworkThread {
-    pub fn new(command_rx: Receiver<AudioCommand>) -> ReceiveFromNetworkThread {
+    pub fn new(receiver: Receiver<AudioCommand>) -> ReceiveFromNetworkThread {
         ReceiveFromNetworkThread {
-            command_rx,
+            command_rx: receiver,
             client_streams: HashMap::new(),
         }
     }
@@ -82,52 +53,21 @@ impl ReceiveFromNetworkThread {
     }
 }
 
-pub struct SendToNetworkThread {
-    sender: Sender<Vec<u8>>,
-    set_readiness: SetReadiness,
-    size: Arc<AtomicUsize>,
-}
-
-impl SendToNetworkThread {
-    pub fn new(sender: Sender<Vec<u8>>, set_readiness: SetReadiness, size: Arc<AtomicUsize>) -> SendToNetworkThread {
-        SendToNetworkThread {
-            sender,
-            set_readiness,
-            size,
-        }
-    }
-
-    pub fn send<'a, P>(&self, packet: P) -> Result<(), SendToNetworkThreadError>
-        where P: Serialize + Packet<'a> {
-        let raw_packet = serialize(packet)?;
-        self.sender.send(raw_packet)?;
-        self.set_readiness.set_readiness(Ready::readable())?;
-        self.size.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
-
 #[derive(Debug)]
-pub enum SendToNetworkThreadError {
-    SerializeFailed(SerializeError),
-    SendFailed(SendError<Vec<u8>>),
-    SetReadinessFailed(io::Error),
+pub enum AudioError {
+    SendToNetworkThread(SendToNetworkThreadError),
+    #[cfg(unix)]
+    StreamCreation,
+    #[cfg(unix)]
+    Pulse(Option<String>),
+    #[cfg(unix)]
+    NoBufferToWriteTo,
+    #[cfg(unix)]
+    PulseInitializationFailed,
 }
 
-impl From<SerializeError> for SendToNetworkThreadError {
-    fn from(e: SerializeError) -> Self {
-        SendToNetworkThreadError::SerializeFailed(e)
-    }
-}
-
-impl From<SendError<Vec<u8>>> for SendToNetworkThreadError {
-    fn from(e: SendError<Vec<u8>>) -> Self {
-        SendToNetworkThreadError::SendFailed(e)
-    }
-}
-
-impl From<io::Error> for SendToNetworkThreadError {
-    fn from(e: io::Error) -> Self {
-        SendToNetworkThreadError::SetReadinessFailed(e)
+impl From<SendToNetworkThreadError> for AudioError {
+    fn from(err: SendToNetworkThreadError) -> Self {
+        AudioError::SendToNetworkThread(err)
     }
 }
