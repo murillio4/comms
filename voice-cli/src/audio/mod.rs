@@ -97,8 +97,8 @@ impl SendToNetworkThread {
         }
     }
 
-    pub fn send<P>(&self, packet: P) -> Result<(), SendToNetworkThreadError>
-        where P: Serialize + Packet {
+    pub fn send<'a, P>(&self, packet: P) -> Result<(), SendToNetworkThreadError>
+        where P: Serialize + Packet<'a> {
         let raw_packet = serialize(packet)?;
         self.sender.send(raw_packet)?;
         self.set_readiness.set_readiness(Ready::readable())?;

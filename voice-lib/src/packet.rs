@@ -2,14 +2,14 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_AUDIO_BUFFER_SIZE: usize = 2000;
 
-pub trait Packet {
+pub trait Packet<'a>: Serialize + Deserialize<'a> {
     const HEADER_TYPE: u8;
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Connect();
 
-impl Packet for Connect {
+impl<'a> Packet<'a> for Connect {
     const HEADER_TYPE: u8 = 1u8;
 }
 
@@ -19,7 +19,7 @@ pub struct AudioFromClient<'a>(
     pub &'a [u8]
 );
 
-impl<'a> Packet for AudioFromClient<'a> {
+impl<'a> Packet<'a> for AudioFromClient<'a> {
     const HEADER_TYPE: u8 = 2u8;
 }
 
@@ -27,14 +27,14 @@ impl<'a> Packet for AudioFromClient<'a> {
 #[derive(Serialize, Deserialize)]
 pub struct Disconnect();
 
-impl Packet for Disconnect {
+impl<'a> Packet<'a> for Disconnect {
     const HEADER_TYPE: u8 = 3u8;
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct KeepAlive();
 
-impl Packet for KeepAlive {
+impl<'a> Packet<'a> for KeepAlive {
     const HEADER_TYPE: u8 = 4u8;
 }
 
@@ -45,6 +45,6 @@ pub struct AudioToClient<'a> {
     pub author: String,
 }
 
-impl<'a> Packet for AudioToClient<'a> {
+impl<'a> Packet<'a> for AudioToClient<'a> {
     const HEADER_TYPE: u8 = 5u8;
 }

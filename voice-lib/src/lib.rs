@@ -1,4 +1,3 @@
-use serde::{Serialize, Deserialize};
 use std::io::{Write, ErrorKind};
 use std::io;
 
@@ -6,8 +5,8 @@ pub mod packet;
 #[cfg(windows)]
 pub mod winlib;
 
-pub fn serialize<P>(packet: P) -> Result<Vec<u8>, SerializeError>
-    where P: packet::Packet + Serialize {
+pub fn serialize<'a, P>(packet: P) -> Result<Vec<u8>, SerializeError>
+    where P: packet::Packet<'a> {
     let mut buffer = Vec::<u8>::new();
     loop {
         match buffer.write(&[P::HEADER_TYPE]) {
@@ -23,7 +22,7 @@ pub fn serialize<P>(packet: P) -> Result<Vec<u8>, SerializeError>
 }
 
 pub fn deserialize<'a, P>(packet_bytes: &'a [u8]) -> bincode::Result<P>
-    where P: packet::Packet + Deserialize<'a> {
+    where P: packet::Packet<'a> {
     bincode::deserialize(packet_bytes)
 }
 
