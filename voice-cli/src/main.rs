@@ -2,19 +2,16 @@
 #[macro_use]
 extern crate lazy_static;
 
-use futures::channel::oneshot;
 use std::{process, io};
 use clap::{App, Arg};
 use std::sync::mpsc;
-use voice_lib::{packet, deserialize};
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
 use std::net::ToSocketAddrs;
 use std::io::BufRead;
 use crate::network::{Handle, SendToNetworkThreadError};
-use voice_lib::packet::{Packet, ConnectAccepted};
-use std::thread::sleep;
-use std::time::Duration;
+use futures::executor::block_on;
+use crate::network::future::connect_to_server;
 
 mod audio;
 mod network;
@@ -92,22 +89,9 @@ fn main() -> Result<(), CommsError> {
         }
     });
 
-    let connect = packet::Connect {
-        username
-    };
-    let (sender, mut receiver) = oneshot::channel();
-    network_handle.request(connect, packet::ConnectAccepted::HEADER_TYPE, sender)?;
-    loop {
-        sleep(Duration::from_millis(100));
-        match receiver.try_recv() {
-            Ok(Some(response)) => {
-                let connect_accepted: ConnectAccepted = deserialize(&response).unwrap();
-                dbg!(connect_accepted.users);
-                break;
-            },
-            _ => println!("."),
-        }
-    }
+    let users= block_on(connect_to_server(&network_handle, &username));
+    println!("Connected!");
+    println!("Users on server: {:?}", users);
 
     #[cfg(windows)]
     bump_priority();

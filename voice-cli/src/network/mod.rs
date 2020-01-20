@@ -1,7 +1,7 @@
 use std::io;
 use std::net::SocketAddr;
 
-use futures::channel::oneshot;
+use serde::Serialize;
 use mio::{Evented, Events, Poll, PollOpt, Ready, Registration, Token, SetReadiness};
 use mio::net::UdpSocket;
 use voice_lib::{packet, SerializeError, serialize};
@@ -11,6 +11,9 @@ use ringbuf::{Producer, Consumer, RingBuffer};
 use voice_lib::packet::{Packet, AudioToClient};
 use bincode::deserialize;
 use std::collections::{HashMap, VecDeque};
+use crate::network::future::SendResponse;
+
+pub mod future;
 
 trait RawPacket {
     fn header_and_data(&self) -> (u8, &[u8]);
@@ -45,7 +48,7 @@ impl Worker {
 
         let mut socket_writable = false;
         let mut outgoing_packet_queue = VecDeque::<Vec<u8>>::new();
-        let mut expected_response_map = HashMap::<u8, oneshot::Sender<Vec<u8>>>::new();
+        let mut expected_response_map = HashMap::<u8, SendResponse>::new();
 
         let mut buffer = [0; 65535];
         let mut events = Events::with_capacity(1024);
@@ -76,7 +79,7 @@ impl Worker {
                                         };
                                         send_to_audio_thread.send(audio_to_client.author, audio_to_client.bytes)?;
                                     } else if let Some(sender) = expected_response_map.remove(&header) {
-                                        sender.send(data.to_vec()).unwrap();
+                                        sender.done(data.to_vec());
                                     } // TODO track unexpected packets
                                 }
                                 Err(e) => {
@@ -152,13 +155,12 @@ fn attempt_send_next_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, socke
     Ok(())
 }
 
-#[derive(Debug)]
 pub enum Command {
     OneDirection(Vec<u8>),
     Request {
         outgoing: Vec<u8>,
         expected_response_packet: u8,
-        send_response: oneshot::Sender<Vec<u8>>,
+        send_response: SendResponse,
     }
 }
 
@@ -191,12 +193,12 @@ impl Handle {
         Ok(())
     }
 
-    pub fn send_single<'a>(&self, packet: impl Packet<'a>) -> Result<(), SendToNetworkThreadError> {
+    pub fn send_single<'a>(&self, packet: impl Packet<'a> + Serialize) -> Result<(), SendToNetworkThreadError> {
         let raw_packet = serialize(packet)?;
         self.send(Command::OneDirection(raw_packet))
     }
 
-    pub fn request<'a>(&self, outgoing_packet: impl Packet<'a>, expected_response_packet: u8, send_response: oneshot::Sender<Vec<u8>>) -> Result<(), SendToNetworkThreadError> {
+    pub fn request<'a>(&self, outgoing_packet: impl Packet<'a> + Serialize, expected_response_packet: u8, send_response: SendResponse) -> Result<(), SendToNetworkThreadError> {
         let raw_packet = serialize(outgoing_packet)?;
         self.send(Command::Request {
             outgoing: raw_packet,
@@ -258,22 +260,22 @@ impl SendToAudioThread {
         }
     }
 
-    fn send(&mut self, id: String, bytes: &[u8]) -> Result<(), NetworkError> {
+    fn send(&mut self, id: &str, bytes: &[u8]) -> Result<(), NetworkError> {
         let l16le_samples: Vec<i16> = bytes
             .chunks(2)
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
 
-        match self.client_streams.get_mut(&id.clone()) {
+        match self.client_streams.get_mut(id) {
             Some(producer) => {
                 producer.push_slice(&l16le_samples);
             },
             None => {
                 let ring = RingBuffer::new(4800);
                 let (mut producer, consumer) = ring.split();
-                self.command_tx.send(AudioCommand::NewClientStream(id.clone(), consumer))?;
+                self.command_tx.send(AudioCommand::NewClientStream(id.to_string(), consumer))?;
                 producer.push_slice(&l16le_samples);
-                self.client_streams.insert(id.clone(), producer);
+                self.client_streams.insert(id.to_string(), producer);
             }
         };
         Ok(())

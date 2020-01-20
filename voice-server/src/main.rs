@@ -63,7 +63,7 @@ fn main() -> io::Result<()> {
                         println!("[{:?}] {} connected", &remote_addr, &connect.username);
                         clients.push(Client {
                             socket_addr: remote_addr,
-                            username: connect.username,
+                            username: connect.username.to_string(),
                         });
 
                         let usernames = clients.iter()
@@ -87,7 +87,7 @@ fn main() -> io::Result<()> {
                         };
                         let audio_to_client = packet::AudioToClient {
                             bytes: audio_from_client.0,
-                            author: remote_addr.to_string(),
+                            author: &remote_addr.to_string(),
                         };
                         let packet = Rc::new(serialize(audio_to_client).unwrap());
 
