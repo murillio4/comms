@@ -59,6 +59,7 @@ fn main() -> io::Result<()> {
                 let (packet_type, packet) = (buffer[0], &buffer[1..]);
                 match packet_type {
                     packet::Connect::HEADER_TYPE => {
+
                         let connect: packet::Connect = deserialize(&packet).unwrap();
                         println!("[{:?}] {} connected", &remote_addr, &connect.username);
                         clients.push(Client {

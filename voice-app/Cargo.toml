@@ -1,13 +1,18 @@
 [package]
-name = "voice-cli"
+name = "voice-app"
 version = "0.1.0"
 authors = ["Mitchell Hentges <mitch9654@mozilla.com>"]
 edition = "2018"
 
 [dependencies]
+async-std = "1.4.0"
 bincode = "1.2.0"
-clap = "2.33.0"
 futures = "0.3.1"
+futures-timer = "2.0.2"
+gdk-pixbuf = "0.8.0"
+gio = "0.8.0"
+glib = "0.9.1"
+gtk = "0.8.0"
 mio = "0.6.19"
 ringbuf = "0.2.1"
 sample = "0.10.0"
