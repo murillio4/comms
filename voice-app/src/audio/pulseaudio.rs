@@ -6,25 +6,18 @@ use std::rc::Rc;
 use libpulse_binding::stream::{Stream, PeekResult, SeekMode};
 use libpulse_binding::def::{BufferAttr, Retval};
 use libpulse_binding::stream::flags::ADJUST_LATENCY;
-use voice_lib::packet::{AudioFromClient, Packet};
-use std::sync::mpsc::{Receiver, Sender, SendError};
-use ringbuf::Consumer;
-use std::collections::HashMap;
-use sample::Sample;
+use std::sync::mpsc::Receiver;
 use libpulse_binding::error::PAErr;
-use mio::{SetReadiness, Ready};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use voice_lib::{serialize, SerializeError};
-use std::{io, process, fmt};
+use std::{process, fmt};
 use crate::network::AudioCommand;
-use serde::Serialize;
 use libpulse_binding::mainloop::standard::{Mainloop, IterateResult};
 use libpulse_binding::context::flags::NOAUTOSPAWN;
 use libpulse_binding::context;
 use std::fmt::Formatter;
 use std::error::Error;
-use crate::audio::{AudioError, ReceiveFromNetworkThread, SendToNetworkThread};
+use voice_lib::packet;
+use crate::audio::{AudioError, ReceiveFromNetworkThread};
+use crate::network;
 
 const SPEC: Spec = Spec {
     channels: 1,
@@ -33,18 +26,19 @@ const SPEC: Spec = Spec {
 };
 const PULSE_LATENCY: MicroSeconds = MicroSeconds(30000);
 
-pub fn run(pulseaudio_server: Option<&str>, send: SendToNetworkThread, receive: ReceiveFromNetworkThread) -> Result<(), AudioError> {
+pub fn run(pulseaudio_server: Option<String>, network_handle: network::Handle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
     let mut mainloop = Mainloop::new().ok_or(AudioError::PulseInitializationFailed)?;
     let mut context = Context::new(&mainloop, "voip-client").ok_or(AudioError::PulseInitializationFailed)?;
-    context.connect(pulseaudio_server, NOAUTOSPAWN, None)?;
+    let receive_from_network_thread = ReceiveFromNetworkThread::new(receiver);
+    context.connect(pulseaudio_server.as_deref(), NOAUTOSPAWN, None)?;
     context.wait(&mut mainloop)?;
-    record(&mut context, send)?;
-    playback(&mut context, receive)?;
+    record(&mut context, network_handle)?;
+    playback(&mut context, receive_from_network_thread)?;
     mainloop.run()?;
     Ok(())
 }
 
-fn record(pulse_context: &mut Context, send: SendToNetworkThread) -> Result<(), AudioError> {
+fn record(pulse_context: &mut Context, network_handle: network::Handle) -> Result<(), AudioError> {
     let stream_rc = Rc::new(RefCell::new(
         Stream::new(pulse_context, "record", &SPEC, None).ok_or(AudioError::StreamCreation)?
     ));
@@ -81,7 +75,7 @@ fn record(pulse_context: &mut Context, send: SendToNetworkThread) -> Result<(), 
 
     stream.set_read_callback(Some(Box::new(move |_| {
         let mut stream = stream_rc.borrow_mut();
-        if let Err(e) = on_record_callback(&mut stream, &send) {
+        if let Err(e) = on_record_callback(&mut stream, &network_handle) {
             eprintln!("Encountered an error while handling microphone audio, stopping");
             eprintln!("Error details: {:?}", e);
             process::exit(1);
@@ -90,15 +84,15 @@ fn record(pulse_context: &mut Context, send: SendToNetworkThread) -> Result<(), 
     Ok(())
 }
 
-fn on_record_callback(stream: &mut Stream, send_to_network_thread: &SendToNetworkThread) -> Result<(), AudioError> {
+fn on_record_callback(stream: &mut Stream, handle: &network::Handle) -> Result<(), AudioError> {
     match stream.peek() {
         Ok(data) => {
             match data {
                 PeekResult::Empty => println!("empty"),
                 PeekResult::Hole(_) => println!("hole detected"),
                 PeekResult::Data(data) => {
-                    let packet = AudioFromClient(data);
-                    send_to_network_thread.send(packet)?;
+                    let packet = packet::AudioFromClient(data);
+                    handle.send_single(packet).unwrap();
                 }
             }
         },

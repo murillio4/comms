@@ -8,7 +8,7 @@ use sample::Sample;
 #[cfg(windows)] mod wasapi;
 
 #[cfg(unix)]
-pub fn run(pulseaudio_server: Option<&str>, network_handle: Handle, receiver: Receiver) -> Result<(), AudioError> {
+pub fn run(pulseaudio_server: Option<String>, network_handle: Handle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
     pulseaudio::run(pulseaudio_server, network_handle, receiver)
 }
 

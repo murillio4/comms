@@ -29,7 +29,7 @@ fn main() -> Result<(), CommsError> {
     });
 
     {
-        let pulseaudio_server = env::var_os("PULSEAUDIO_SERVER").map(|s| s.to_string_lossy().into());
+        let pulseaudio_server = env::var_os("PULSEAUDIO_SERVER").map(|s| s.to_string_lossy().to_string());
         let network_handle = network_handle.clone();
         std::thread::spawn(move || {
             #[cfg(windows)]
