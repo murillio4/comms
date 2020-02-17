@@ -62,7 +62,7 @@ pub async fn disconnect_from_server(handle: network::Handle) -> Result<(), Disco
     DisconnectFuture::new(&handle).await
 }
 
-pub async fn request<'a, Response: packet::Packet<'a> + DeserializeOwned>(handle: &network::Handle, request: impl packet::Packet<'_> + Serialize) -> Response {
+pub async fn request<'a, Response: packet::PacketBody<'a> + DeserializeOwned>(handle: &network::Handle, request: impl packet::PacketBody<'_> + Serialize) -> Response {
     RequestFuture::new(handle, request).await
 }
 
@@ -185,7 +185,7 @@ struct RequestFuture<R> {
     waker: Arc<Mutex<Option<Waker>>>,
 }
 
-impl<'a, R: packet::Packet<'a> + DeserializeOwned> Future for RequestFuture<R> {
+impl<'a, R: packet::PacketBody<'a> + DeserializeOwned> Future for RequestFuture<R> {
     type Output = R;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -207,11 +207,11 @@ impl<'a, R: packet::Packet<'a> + DeserializeOwned> Future for RequestFuture<R> {
     }
 }
 
-impl<'a, R: packet::Packet<'a>> RequestFuture<R> {
-    pub fn new<'outgoing>(handle: &network::Handle, outgoing_packet: impl packet::Packet<'outgoing> + Serialize) -> Self {
+impl<'a, R: packet::PacketBody<'a>> RequestFuture<R> {
+    pub fn new<'outgoing>(handle: &network::Handle, outgoing_packet: impl packet::PacketBody<'outgoing> + Serialize) -> Self {
         let (sender, receiver) = oneshot::channel();
         let waker = Arc::new(Mutex::new(None));
-        handle.request(outgoing_packet, R::HEADER_TYPE, SendResponse {sender, waker: waker.clone() }).unwrap();
+        handle.request(outgoing_packet, R::KIND_ID, SendResponse {sender, waker: waker.clone() }).unwrap();
 
         RequestFuture {
             receiver: Arc::new(Mutex::new(receiver)),

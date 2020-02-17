@@ -7,7 +7,7 @@ use voice_lib::{packet, SerializeError, serialize};
 use std::sync::mpsc::{Receiver, Sender, SendError, RecvError};
 use std::sync::mpsc;
 use ringbuf::{Producer, Consumer, RingBuffer};
-use voice_lib::packet::{Packet, AudioToClient};
+use voice_lib::packet::{PacketBody, AudioToClient};
 use bincode::deserialize;
 use std::collections::{HashMap, VecDeque};
 use crate::network::future::SendResponse;
@@ -154,7 +154,7 @@ impl Worker {
 
                                         let raw_packet = &buffer[0..size];
                                         let (header, data) = raw_packet.header_and_data();
-                                        if header == packet::AudioToClient::HEADER_TYPE {
+                                        if header == packet::AudioToClient::KIND_ID {
                                             let audio_to_client: AudioToClient = match deserialize(data) {
                                                 Ok(packet) => packet,
                                                 Err(_) => {
@@ -302,12 +302,12 @@ impl Handle {
         Ok(())
     }
 
-    pub fn send_single<'a>(&self, packet: impl Packet<'a> + Serialize) -> Result<(), SendToNetworkThreadError> {
+    pub fn send_single<'a>(&self, packet: impl PacketBody<'a> + Serialize) -> Result<(), SendToNetworkThreadError> {
         let raw_packet = serialize(packet)?;
         self.command(Command::OneDirection(raw_packet))
     }
 
-    pub fn request<'a>(&self, outgoing_packet: impl Packet<'a> + Serialize, expected_response_packet: u8, send_response: SendResponse<Vec<u8>>) -> Result<(), SendToNetworkThreadError> {
+    pub fn request<'a>(&self, outgoing_packet: impl PacketBody<'a> + Serialize, expected_response_packet: u8, send_response: SendResponse<Vec<u8>>) -> Result<(), SendToNetworkThreadError> {
         let raw_packet = serialize(outgoing_packet)?;
         self.command(Command::Request {
             outgoing: raw_packet,

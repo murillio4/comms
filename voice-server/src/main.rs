@@ -7,126 +7,169 @@
 //! precisely synchronised.
 
 use mio::net::UdpSocket;
+use mio::net::TcpListener;
+use mio::net::TcpStream;
 use std::io;
 use mio::{Poll, Token, Ready, PollOpt, Events};
-use voice_lib::{packet, deserialize, serialize};
-use voice_lib::packet::{Packet, AudioFromClient};
+use voice_lib::DeserializeError;
 use std::net::SocketAddr;
-use std::rc::Rc;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
+use std::collections::HashMap;
+use std::io::Error;
+use std::num::NonZeroU64;
+use std::cell::UnsafeCell;
+use std::sync::Arc;
+use crate::task::SyncUnsafeCell;
+use voice_lib::packet::ClientId;
 
-// TODO handle keep-alive
+mod task;
+mod tcp;
+mod udp;
 
-struct Client {
-    socket_addr: SocketAddr,
+pub struct ConnectingClient {
+    next_packet_id: NonZeroU64,
+    tcp_token: Token,
+    tcp_stream: TcpStream,
+    udp_addr: Option<SocketAddr>,
+}
+
+pub struct Client {
+    next_packet_id: NonZeroU64,
+    tcp_stream: TcpStream,
+    udp_addr: SocketAddr,
     username: String,
 }
 
-fn main() -> io::Result<()> {
+fn main() -> Result<(), CommsServerError> {
     #[cfg(windows)]
     bump_priority();
-    let socket = UdpSocket::bind(&"0.0.0.0:18847".parse().unwrap())?;
+
+    let mut raw_next_client_id: ClientId = 0;
+    let mut next_client_id = move || {
+        let id = raw_next_client_id;
+        raw_next_client_id += 1;
+        id
+    };
+
+    let (task_executor, spawner) = task::new();
+    let task_executor_token = Token(next_client_id() as usize);
+
+    let udp_socket = UdpSocket::bind(&"0.0.0.0:18847".parse().unwrap())?;
+    let udp_token = Token(next_client_id() as usize);
+    let tcp_listener = TcpListener::bind(&"0.0.0.0:18847".parse().unwrap())?;
+    let tcp_listener_token = Token(next_client_id() as usize);
+
+    let (udp_handle, mut udp_outgoing_queue) = udp::queue_and_handle();
+    let udp_queue_token = Token(next_client_id() as usize);
 
     let poll = Poll::new()?;
-    poll.register(&socket, Token(0), Ready::all(), PollOpt::edge())?;
+    poll.register(&task_executor, task_executor_token, Ready::readable(), PollOpt::edge())?;
+    poll.register(&udp_socket, udp_token, Ready::all(), PollOpt::edge())?;
+    poll.register(&tcp_listener, tcp_listener_token, Ready::readable(), PollOpt::edge())?;
+    poll.register(&udp_outgoing_queue, udp_queue_token, Ready::readable(), PollOpt::edge())?;
 
     let mut events = Events::with_capacity(1024);
     let mut buffer = [0u8; 65535];
 
-    let mut clients = Vec::<Client>::new();
-    let mut outgoing_queue = Vec::<(Rc<Vec<u8>>, SocketAddr)>::new();
-    let mut socket_writable = false;
+    let connecting_clients = Arc::new(SyncUnsafeCell(UnsafeCell::new(HashMap::<ClientId, ConnectingClient>::new())));
+    let clients = Arc::new(SyncUnsafeCell(UnsafeCell::new(HashMap::<ClientId, Client>::new())));
+
+    let mut udp_socket_writable = false;
 
     loop {
         poll.poll(&mut events, None)?;
         for event in events.iter() {
-            let readiness = event.readiness();
-            if readiness.is_readable() {
-                let (size, remote_addr) = match socket.recv_from(&mut buffer) {
-                    Ok(tuple) => tuple,
-                    Err(e) if e.kind() == io::ErrorKind::ConnectionReset => continue,
-                    Err(e) => {
-                        return Err(e);
-                    }
-                };
+            let token = event.token();
+            if token == task_executor_token {
+                println!("Async time y'all :) :) :) fugg");
+                task_executor.run();
+            } else if token == udp_token {
+                let readiness = event.readiness();
+                if readiness.is_readable() {
+                    println!("Attempting to read UDP packet");
+                    let (size, remote_addr) = match udp_socket.recv_from(&mut buffer) {
+                        Ok(tuple) => tuple,
+                        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => continue,
+                        Err(_) => return Err(CommsServerError::IoError),
+                    };
 
-                if size == 0 {
-                    continue;
+                    if size == 0 {
+                        continue;
+                    }
+
+                    let buffer = &buffer[0..size];
+                    udp::handle_packet(buffer, &clients, &connecting_clients, &spawner, remote_addr, &udp_handle).unwrap();
                 }
-
-                let buffer = &buffer[0..size];
-                let (packet_type, packet) = (buffer[0], &buffer[1..]);
-                match packet_type {
-                    packet::Connect::HEADER_TYPE => {
-
-                        let connect: packet::Connect = deserialize(&packet).unwrap();
-                        println!("[{:?}] {} connected", &remote_addr, &connect.username);
-                        clients.push(Client {
-                            socket_addr: remote_addr,
-                            username: connect.username.to_string(),
-                        });
-
-                        let usernames = clients.iter()
-                            .map(|c| c.username.to_string())
-                            .collect();
-
-                        let connect_accepted = packet::ConnectAccepted {
-                            users: usernames,
-                        };
-
-                        outgoing_queue.push((Rc::new(serialize(connect_accepted).unwrap()), remote_addr));
-                        attempt_write(&mut outgoing_queue, &socket, &mut socket_writable);
-                    }
-                    packet::AudioFromClient::HEADER_TYPE => {
-                        let audio_from_client: AudioFromClient = match deserialize(&packet) {
-                            Ok(packet) => packet,
-                            Err(_) => {
-                                println!("[{:?}] Failed to parse packet, ignoring", &remote_addr);
-                                continue;
-                            }
-                        };
-                        let audio_to_client = packet::AudioToClient {
-                            bytes: audio_from_client.0,
-                            author: &remote_addr.to_string(),
-                        };
-                        let packet = Rc::new(serialize(audio_to_client).unwrap());
-
-                        for client in clients.iter()
-                            .filter(|c| c.socket_addr != remote_addr)
-                            {
-                            outgoing_queue.push((packet.clone(), client.socket_addr.clone()))
-                        }
-                        attempt_write(&mut outgoing_queue, &socket, &mut socket_writable);
-                    }
-                    packet::Disconnect::HEADER_TYPE => {
-                        clients.retain(|c| c.socket_addr != remote_addr);
-                        println!("[{:?}] removed client", &remote_addr);
-                    }
-                    _ => {
-                        println!("Received unknown packet type {} from {:?}", packet_type, remote_addr);
-                    }
+                if readiness.is_writable() {
+                    println!("Attempting to output UDP packet (socket writable)");
+                    let mut clients = unsafe { &mut *clients.get() };
+                    let mut connecting_clients = unsafe { &mut *connecting_clients.get() };
+                    udp::attempt_write_packet(&udp_socket, &mut udp_outgoing_queue, &mut udp_socket_writable, &mut clients, &mut connecting_clients);
                 }
-            }
-            if readiness.is_writable() {
-                socket_writable = true;
-                attempt_write(&mut outgoing_queue, &socket, &mut socket_writable)
+            } else if token == udp_queue_token {
+                println!("Attempting to output UDP packet (packet pushed)");
+                if udp_socket_writable {
+                    let mut clients = unsafe { &mut *clients.get() };
+                    let mut connecting_clients = unsafe { &mut *connecting_clients.get() };
+                    udp::attempt_write_packet(&udp_socket, &mut udp_outgoing_queue, &mut udp_socket_writable, &mut clients, &mut connecting_clients);
+                }
+            } else if token == tcp_listener_token {
+                let (stream, _) = tcp_listener.accept()?;
+                let id = next_client_id();
+                let token = Token(id as usize);
+                poll.register(&stream, token, Ready::all(), PollOpt::edge())?;
+
+                println!("TCP Connection opened with id {}", &id);
+
+                let connecting_clients = unsafe { &mut *connecting_clients.get() };
+                connecting_clients.insert(id, ConnectingClient {
+                    next_packet_id: NonZeroU64::new(1).unwrap(),
+                    tcp_token: token,
+                    tcp_stream: stream,
+                    udp_addr: None,
+                });
+            } else { // it's a TCP stream event
+                println!("Some other event with id {} \\_:)_/", token.0);
+//                if let Some(client) = clients.get_mut(&token) {
+//                    println!("handle packet to client");
+//                } else if let Some((id, connecting_client)) = connecting_clients
+//                    .iter_mut()
+//                    .find(|(id, c)| c.tcp_token == token) {
+//                    match read_from_tcp_stream(&mut connecting_client.tcp_stream)? {
+//                        TcpRead::ConnectionClosed => connecting_clients.remove(id),
+//                        TcpRead::Data(buffer) => {
+//                            let (packet_type, packet) = (buffer[0], &buffer[1..]);
+//                            if packet_type == packet::Connect::KIND_ID {
+//
+//                            } else {
+//                                let response_packet = packet::ErrorResponse;
+//                                // todo respond with packet
+////                                outgoing_queue.push((Rc::new(serialize(packet::AssociateUdpAccepted)?), remote_addr));
+////                                attempt_write(&mut outgoing_queue, &udp_socket, &mut udp_writable);
+//                            }
+//                        }
+//                    }
+//                }
             }
         }
     };
 }
 
-fn attempt_write(outgoing_queue: &mut Vec<(Rc<Vec<u8>>, SocketAddr)>, socket: &UdpSocket, socket_writable: &mut bool) {
-    if !outgoing_queue.is_empty() && *socket_writable {
-        let (packet, client) = outgoing_queue.remove(0);
-        match socket.send_to(&packet, &client) {
-            Ok(_) => (),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                outgoing_queue.insert(0, (packet, client));
-                return;
-            },
-            Err(e) => panic!(e),
-        };
-        *socket_writable = false;
+#[derive(Debug)]
+enum CommsServerError {
+    DeserializeError,
+    IoError,
+}
+
+impl From<io::Error> for CommsServerError {
+    fn from(_: Error) -> Self {
+        CommsServerError::IoError
+    }
+}
+
+impl From<DeserializeError> for CommsServerError {
+    fn from(_: DeserializeError) -> Self {
+        CommsServerError::DeserializeError
     }
 }

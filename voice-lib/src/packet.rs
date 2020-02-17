@@ -1,54 +1,88 @@
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU64;
 
 pub const MAX_AUDIO_BUFFER_SIZE: usize = 2000;
+pub type ClientId = u16;
 
-pub trait Packet<'a> {
-    const HEADER_TYPE: u8;
+#[derive(Serialize, Deserialize)]
+pub struct Packet<T: PacketBody> {
+    pub id: NonZeroU64,
+    pub reply_to: Option<NonZeroU64>,
+    pub body: T,
+}
+
+impl<T: PacketBody> Packet<T> {
+    pub fn new(id: NonZeroU64, reply_to: Option<NonZeroU64>, body: T) -> Self {
+        Packet {
+            id,
+            reply_to,
+            body,
+        }
+    }
+}
+
+pub trait PacketBody {
+    const KIND_ID: u8;
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Connect<'a> {
-    pub username: &'a str,
+pub struct AssociateUdp {
+    pub client_id: u16,
 }
 
-impl<'a> Packet<'a> for Connect<'a> {
-    const HEADER_TYPE: u8 = 1u8;
+impl PacketBody for AssociateUdp {
+    const KIND_ID: u8 = 0u8;
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AssociateUdpAccepted;
+
+impl PacketBody for AssociateUdpAccepted {
+    const KIND_ID: u8 = 1u8;
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Connect {
+    pub username: String,
+}
+
+impl PacketBody for Connect {
+    const KIND_ID: u8 = 2u8;
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct AudioFromClient<'a>(
+pub struct AudioFromClient(
     #[serde(with = "serde_bytes")]
-    pub &'a [u8]
+    pub Vec<u8>
 );
 
-impl<'a> Packet<'a> for AudioFromClient<'a> {
-    const HEADER_TYPE: u8 = 2u8;
+impl PacketBody for AudioFromClient {
+    const KIND_ID: u8 = 3u8;
 }
 
 
 #[derive(Serialize, Deserialize)]
-pub struct Disconnect();
+pub struct Disconnect;
 
-impl<'a> Packet<'a> for Disconnect {
-    const HEADER_TYPE: u8 = 3u8;
+impl PacketBody for Disconnect {
+    const KIND_ID: u8 = 4u8;
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct KeepAlive();
+pub struct KeepAlive;
 
-impl<'a> Packet<'a> for KeepAlive {
-    const HEADER_TYPE: u8 = 4u8;
+impl PacketBody for KeepAlive {
+    const KIND_ID: u8 = 5u8;
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct AudioToClient<'a> {
+pub struct AudioToClient {
     #[serde(with = "serde_bytes")]
-    pub bytes: &'a [u8],
-    pub author: &'a str,
+    pub bytes: Vec<u8>,
 }
 
-impl<'a> Packet<'a> for AudioToClient<'a> {
-    const HEADER_TYPE: u8 = 5u8;
+impl PacketBody for AudioToClient {
+    const KIND_ID: u8 = 6u8;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -56,6 +90,24 @@ pub struct ConnectAccepted {
     pub users: Vec<String>,
 }
 
-impl<'a> Packet<'a> for ConnectAccepted {
-    const HEADER_TYPE: u8 = 6u8;
+impl PacketBody for ConnectAccepted {
+    const KIND_ID: u8 = 7u8;
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum ErrorResponse {
+    ConnectFirst,
+}
+
+impl PacketBody for ErrorResponse {
+    const KIND_ID: u8 = 8u8;
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AssignId {
+    pub id: ClientId
+}
+
+impl PacketBody for AssignId {
+    const KIND_ID: u8 = 9u8;
 }
