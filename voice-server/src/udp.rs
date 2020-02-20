@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use crate::{ConnectingClient, Client, udp};
 use std::net::SocketAddr;
 use mio::net::UdpSocket;
-use crate::task::{UdpFinish, Spawner, UdpFuture, SyncUnsafeCell};
+use crate::task::{PacketFinish, Spawner, PacketFuture, SyncUnsafeCell};
 use std::io;
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel, SyncSender};
 use mio::{SetReadiness, Ready, Registration, Evented, Token, PollOpt, IoVec};
@@ -129,19 +129,19 @@ pub fn handle_packet(
     Ok(())
 }
 
-async fn send_packet<B>(handle: &UdpHandle, dest: ClientId, packet: B)
+pub async fn send_packet<B>(handle: &UdpHandle, dest: ClientId, packet: B)
     where B: packet::PacketBody + Serialize
 {
     let raw_body = Arc::new(serialize_body(packet).unwrap());
     handle.send(dest, B::KIND_ID, raw_body).await.unwrap();
 }
 
-async fn send_packet_to_many<B>(handle: &UdpHandle, clients: Vec<ClientId>, packet: B)
+pub async fn send_packet_to_many<B>(handle: &UdpHandle, clients: Vec<ClientId>, packet: B)
     where B: packet::PacketBody + Serialize
 {
     let raw_body = Arc::new(serialize_body(packet).unwrap());
 
-    let futures: Vec<UdpFuture> = clients.into_iter()
+    let futures: Vec<PacketFuture> = clients.into_iter()
         .map(|c| handle.send(c, B::KIND_ID, raw_body.clone()))
         .collect();
     for result in join_all(futures).await {
@@ -165,7 +165,8 @@ pub fn attempt_write_packet(socket: &UdpSocket, outgoing: &mut UdpOutgoingQueue,
             client.next_packet_id = NonZeroU64::new(packet_id.get() + 1).unwrap();
             (packet_id, client.udp_addr.expect("attempting to send UDP packet to client that hasn't associated yet").clone())
         } else {
-            unimplemented!("Should not try to send packet to client that doesn't exist");
+            eprintln!("Attempted to send UDP packet to client {} that doesn't exist", destination_id);
+            return PacketSendStatus::SkipPacket;
         };
 
         let packet_header = PacketHeader {
@@ -185,10 +186,10 @@ pub fn attempt_write_packet(socket: &UdpSocket, outgoing: &mut UdpOutgoingQueue,
 
         match socket.send_bufs(&buffers) {
             Ok(_) => {
-                println!("Sent packet of kind {}", packet_kind);
+                println!("Sent UDP packet of kind {} to {}", packet_kind, destination_id);
                 return PacketSendStatus::Done
             },
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return PacketSendStatus::TryAgain,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return PacketSendStatus::SocketUnavailable,
             Err(e) => panic!(e),
         }
     }) {
@@ -201,7 +202,7 @@ struct OutgoingPacket {
     dest: ClientId,
     kind: u8,
     raw_body: Arc<Vec<u8>>,
-    finish: UdpFinish,
+    finish: PacketFinish,
 }
 
 pub struct UdpOutgoingQueue {
@@ -211,25 +212,37 @@ pub struct UdpOutgoingQueue {
 }
 
 impl UdpOutgoingQueue {
-    fn next_packet<F>(&mut self, op: F) -> WriteAttempt
-        where F: FnOnce(ClientId, u8, &Arc<Vec<u8>>) -> PacketSendStatus
+    fn next_packet<F>(&mut self, mut op: F) -> WriteAttempt
+        where F: FnMut(ClientId, u8, &Arc<Vec<u8>>) -> PacketSendStatus
     {
-        let packet = if let Some(body) = self.peek_item.take() {
-            body
-        } else {
-            match self.receiver.try_recv() {
-                Ok(packet) => packet,
-                Err(e) if e == TryRecvError::Empty => return WriteAttempt::NoPacketAvailable,
-                Err(e) => panic!(e),
+        // There might be a cleaner way of doing this.
+        // We need the loop to try a new packet if the one first attempted
+        // targets a client that is no longer connected.
+        loop {
+            let packet = if let Some(body) = self.peek_item.take() {
+                body
+            } else {
+                match self.receiver.try_recv() {
+                    Ok(packet) => packet,
+                    Err(e) if e == TryRecvError::Empty => return WriteAttempt::NoPacketAvailable,
+                    Err(e) => panic!(e),
+                }
+            };
+
+            match op(packet.dest, packet.kind, &packet.raw_body) {
+                PacketSendStatus::SocketUnavailable => {
+                    self.peek_item = Some(packet);
+                    return WriteAttempt::WriteAttempted;
+                },
+                PacketSendStatus::Done => {
+                    packet.finish.done(Ok(()));
+                    return WriteAttempt::WriteAttempted;
+                },
+                PacketSendStatus::SkipPacket => {
+                    continue;
+                }
             }
-        };
-
-        match op(packet.dest, packet.kind, &packet.raw_body) {
-            PacketSendStatus::TryAgain => self.peek_item = Some(packet),
-            PacketSendStatus::Done => packet.finish.done(Ok(())),
         }
-
-        WriteAttempt::WriteAttempted
     }
 }
 
@@ -251,7 +264,8 @@ impl Evented for UdpOutgoingQueue {
 
 enum PacketSendStatus {
     Done,
-    TryAgain,
+    SocketUnavailable,
+    SkipPacket,
 }
 
 #[derive(Clone)]
@@ -261,8 +275,8 @@ pub struct UdpHandle {
 }
 
 impl UdpHandle {
-    pub fn send(&self, dest: ClientId, kind: u8, raw_body: Arc<Vec<u8>>) -> UdpFuture {
-        let (future, finish) = UdpFuture::new();
+    pub fn send(&self, dest: ClientId, kind: u8, raw_body: Arc<Vec<u8>>) -> PacketFuture {
+        let (future, finish) = PacketFuture::new();
         self.sender.send(OutgoingPacket {
             dest,
             kind,

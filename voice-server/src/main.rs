@@ -22,21 +22,26 @@ use std::cell::UnsafeCell;
 use std::sync::Arc;
 use crate::task::SyncUnsafeCell;
 use voice_lib::packet::ClientId;
+use crate::tcp::hello_todo;
 
 mod task;
 mod tcp;
 mod udp;
 
+pub struct TcpConnection {
+    tcp_stream: TcpStream,
+    tcp_writable: bool,
+}
+
 pub struct ConnectingClient {
     next_packet_id: NonZeroU64,
-    tcp_token: Token,
-    tcp_stream: TcpStream,
+    tcp_connection: TcpConnection,
     udp_addr: Option<SocketAddr>,
 }
 
 pub struct Client {
     next_packet_id: NonZeroU64,
-    tcp_stream: TcpStream,
+    tcp_connection: TcpConnection,
     udp_addr: SocketAddr,
     username: String,
 }
@@ -63,11 +68,15 @@ fn main() -> Result<(), CommsServerError> {
     let (udp_handle, mut udp_outgoing_queue) = udp::queue_and_handle();
     let udp_queue_token = Token(next_client_id() as usize);
 
+    let (tcp_handle, mut tcp_outgoing_queue) = tcp::queue_and_handle();
+    let tcp_queue_token = Token(next_client_id() as usize);
+
     let poll = Poll::new()?;
     poll.register(&task_executor, task_executor_token, Ready::readable(), PollOpt::edge())?;
     poll.register(&udp_socket, udp_token, Ready::all(), PollOpt::edge())?;
     poll.register(&tcp_listener, tcp_listener_token, Ready::readable(), PollOpt::edge())?;
     poll.register(&udp_outgoing_queue, udp_queue_token, Ready::readable(), PollOpt::edge())?;
+    poll.register(&tcp_outgoing_queue, tcp_queue_token, Ready::readable(), PollOpt::edge())?;
 
     let mut events = Events::with_capacity(1024);
     let mut buffer = [0u8; 65535];
@@ -114,23 +123,46 @@ fn main() -> Result<(), CommsServerError> {
                     let mut connecting_clients = unsafe { &mut *connecting_clients.get() };
                     udp::attempt_write_packet(&udp_socket, &mut udp_outgoing_queue, &mut udp_socket_writable, &mut clients, &mut connecting_clients);
                 }
+            } else if token == tcp_queue_token {
+                println!("Attempting to output TCP packet (packet pushed)");
+                let mut clients = unsafe { &mut *clients.get() };
+                let mut connecting_clients = unsafe { &mut *connecting_clients.get() };
+                tcp::attempt_write_any_packet(&mut tcp_outgoing_queue, &mut clients, &mut connecting_clients);
             } else if token == tcp_listener_token {
                 let (stream, _) = tcp_listener.accept()?;
-                let id = next_client_id();
+                let id = next_client_id() as ClientId;
                 let token = Token(id as usize);
                 poll.register(&stream, token, Ready::all(), PollOpt::edge())?;
 
                 println!("TCP Connection opened with id {}", &id);
-
                 let connecting_clients = unsafe { &mut *connecting_clients.get() };
                 connecting_clients.insert(id, ConnectingClient {
                     next_packet_id: NonZeroU64::new(1).unwrap(),
-                    tcp_token: token,
-                    tcp_stream: stream,
+                    tcp_connection: TcpConnection {
+                        tcp_stream: stream,
+                        tcp_writable: false,
+                    },
                     udp_addr: None,
                 });
+
+                spawner.spawn(hello_todo(id, tcp_handle.clone()));
             } else { // it's a TCP stream event
-                println!("Some other event with id {} \\_:)_/", token.0);
+                let readiness = event.readiness();
+                if readiness.is_readable() {
+                    println!("TCP read event for {}", token.0);
+                }
+                if readiness.is_writable() {
+                    println!("TCP stream for {} is writable, sending next packet (if any)", token.0);
+                    let mut clients = unsafe { &mut *clients.get() };
+                    let mut connecting_clients = unsafe { &mut *connecting_clients.get() };
+                    let client_id = token.0 as ClientId;
+
+                    clients.get_mut(&client_id).map(|c| &mut c.tcp_connection)
+                        .or_else(|| connecting_clients.get_mut(&client_id).map(|c| &mut c.tcp_connection))
+                        .map(|c| c.tcp_writable = true);
+
+                    tcp::attempt_write_client_packet(client_id, &mut tcp_outgoing_queue, &mut clients, &mut connecting_clients);
+                }
 //                if let Some(client) = clients.get_mut(&token) {
 //                    println!("handle packet to client");
 //                } else if let Some((id, connecting_client)) = connecting_clients

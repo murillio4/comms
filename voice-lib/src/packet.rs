@@ -4,7 +4,7 @@ use std::num::NonZeroU64;
 pub const MAX_AUDIO_BUFFER_SIZE: usize = 2000;
 pub type ClientId = u16;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Packet<T: PacketBody> {
     pub id: NonZeroU64,
     pub reply_to: Option<NonZeroU64>,
@@ -34,7 +34,7 @@ impl PacketBody for AssociateUdp {
     const KIND_ID: u8 = 0u8;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AssociateUdpAccepted;
 
 impl PacketBody for AssociateUdpAccepted {
@@ -103,11 +103,11 @@ impl PacketBody for ErrorResponse {
     const KIND_ID: u8 = 8u8;
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct AssignId {
-    pub id: ClientId
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Hello {
+    pub client_id: ClientId
 }
 
-impl PacketBody for AssignId {
+impl PacketBody for Hello {
     const KIND_ID: u8 = 9u8;
 }

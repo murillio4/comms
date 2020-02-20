@@ -12,12 +12,12 @@ use std::pin::Pin;
 use std::cell::UnsafeCell;
 use std::ops::Deref;
 
-pub struct UdpFuture {
+pub struct PacketFuture {
     receiver: Arc<SyncUnsafeCell<oneshot::Receiver<Result<(), ()>>>>,
     waker: Arc<SyncUnsafeCell<Option<Waker>>>,
 }
 
-impl Future for UdpFuture {
+impl Future for PacketFuture {
     type Output = Result<(), ()>; // TODO need to be result? Need output at all?
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -34,17 +34,17 @@ impl Future for UdpFuture {
     }
 }
 
-impl UdpFuture {
-    pub fn new() -> (Self, UdpFinish) {
+impl PacketFuture {
+    pub fn new() -> (Self, PacketFinish) {
         let (sender, receiver) = oneshot::channel();
         let waker = Arc::new(SyncUnsafeCell(UnsafeCell::new(None)));
 
         (
-            UdpFuture {
+            PacketFuture {
                 receiver: Arc::new(SyncUnsafeCell(UnsafeCell::new(receiver))),
                 waker: waker.clone(),
             },
-            UdpFinish {
+            PacketFinish {
                 sender,
                 waker,
             },
@@ -52,12 +52,12 @@ impl UdpFuture {
     }
 }
 
-pub struct UdpFinish {
+pub struct PacketFinish {
     sender: oneshot::Sender<Result<(), ()>>,
     waker: Arc<SyncUnsafeCell<Option<Waker>>>,
 }
 
-impl UdpFinish {
+impl PacketFinish {
     pub fn done(self, response: Result<(), ()>) {
         let _ = self.sender.send(response);
         let waker = unsafe { &mut *self.waker.get() };

@@ -1,14 +1,31 @@
 use std::net::{UdpSocket, TcpStream};
 use std::time::{SystemTime, Duration};
-use voice_lib::{packet, serialize, serialize_head, PacketHeader, serialize_body};
+use voice_lib::{packet, serialize, serialize_head, PacketHeader, serialize_body, deserialize_header, deserialize_remaining};
 use clap::{App, Arg};
 use std::io;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
-use voice_lib::packet::Packet;
+use voice_lib::packet::{Packet, Hello, PacketBody, AssociateUdpAccepted};
 use std::num::NonZeroU64;
 use sample::ring_buffer::Slice;
 use std::mem::size_of;
+use std::io::{Read, Error};
+use std::cmp::min;
+
+#[derive(Debug)]
+struct Marker(usize);
+struct MarkerRead<'a>(&'a [u8], &'a mut Marker);
+
+impl Read for MarkerRead<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+        let marker = (self.1).0;
+        let target_slice = &self.0[marker..(marker + buf.len())];
+        let len = min(target_slice.len(), buf.len());
+        buf[..len].copy_from_slice(target_slice);
+        (self.1).0 += buf.len();
+        Ok(len)
+    }
+}
 
 fn main() -> Result<(), BeepClientErr> {
     #[cfg(windows)]
@@ -30,24 +47,39 @@ fn main() -> Result<(), BeepClientErr> {
     let server_address_with_port = format!("{}:18847", server_address);
     println!("Connecting to {}...", server_address_with_port);
 
-    let tcp = TcpStream::connect(server_address_with_port.clone())?;
-    let udp = UdpSocket::bind("0.0.0.0:0")?;
+    let mut tcp = TcpStream::connect(server_address_with_port.clone())?;
+    let mut udp = UdpSocket::bind("0.0.0.0:0")?;
     udp.connect(server_address_with_port)?;
-    dbg!(size_of::<NonZeroU64>());
-    dbg!(size_of::<PacketHeader>());
+
+    let mut buffer = [0u8; 65535];
+    tcp.read(&mut buffer);
+
+    let mut marker = Marker(0);
+    let marker_reader = MarkerRead(&buffer, &mut marker);
+    let header = deserialize_header(marker_reader).unwrap();
+    let hello: Packet<Hello> = deserialize_remaining(&buffer[marker.0..], header).unwrap();
+    dbg!(&hello);
 
     let associate = packet::AssociateUdp {
-        client_id: 4,
+        client_id: hello.body.client_id,
     };
     let raw_packet = [
         serialize_head(PacketHeader {
             id: NonZeroU64::new(1).unwrap(),
-            reply_to: None,
-            kind: 00,
+            reply_to: Some(hello.id),
+            kind: packet::AssociateUdp::KIND_ID,
         }).unwrap().as_slice(),
         &serialize_body(associate).unwrap().as_slice()
     ].concat();
     udp.send(&raw_packet)?;
+
+    udp.recv(&mut buffer);
+    let mut marker = Marker(0);
+    let marker_reader = MarkerRead(&buffer, &mut marker);
+    let header = deserialize_header(marker_reader).unwrap();
+    let accepted: Packet<AssociateUdpAccepted> = deserialize_remaining(&buffer[marker.0..], header).unwrap();
+    dbg!(&accepted);
+
     Ok(())
 
 //    let sample_rate = 48000f32;
