@@ -11,7 +11,7 @@ use mio::net::TcpListener;
 use mio::net::TcpStream;
 use std::io;
 use mio::{Poll, Token, Ready, PollOpt, Events};
-use voice_lib::DeserializeError;
+use voice_lib::{DeserializeError, packet};
 use std::net::SocketAddr;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
@@ -22,7 +22,7 @@ use std::cell::UnsafeCell;
 use std::sync::Arc;
 use crate::task::SyncUnsafeCell;
 use voice_lib::packet::ClientId;
-use crate::tcp::TcpRead;
+use crate::tcp::{TcpRead, TcpHandle};
 
 mod task;
 mod tcp;
@@ -88,6 +88,13 @@ impl Clients {
     }
 }
 
+pub async fn on_connect(tcp_handle: TcpHandle, client_id: ClientId) {
+    println!("Saying hello to new client {}", &client_id);
+    tcp::send_packet(&tcp_handle, client_id, packet::Hello {
+        client_id
+    }).await;
+}
+
 fn main() -> Result<(), CommsServerError> {
     #[cfg(windows)]
     bump_priority();
@@ -130,12 +137,10 @@ fn main() -> Result<(), CommsServerError> {
         for event in events.iter() {
             let token = event.token();
             if token == task_executor_token {
-                println!("Async time y'all :) :) :) fugg");
                 task_executor.run();
             } else if token == udp_token {
                 let readiness = event.readiness();
                 if readiness.is_readable() {
-                    println!("Attempting to read UDP packet");
                     let (size, remote_addr) = match udp_socket.recv_from(&mut buffer) {
                         Ok(tuple) => tuple,
                         Err(e) if e.kind() == io::ErrorKind::ConnectionReset => continue,
@@ -150,18 +155,16 @@ fn main() -> Result<(), CommsServerError> {
                     udp::handle_packet(remote_addr, buffer, clients.clone(), &spawner, udp_handle.clone(), tcp_handle.clone()).unwrap();
                 }
                 if readiness.is_writable() {
-                    println!("Attempting to output UDP packet (socket writable)");
                     let mut clients = unsafe { &mut *clients.get() };
+                    println!("UDP socket is writable");
                     udp::attempt_write_packet(&udp_socket, &mut udp_outgoing_queue, &mut udp_socket_writable, &mut clients);
                 }
             } else if token == udp_queue_token {
-                println!("Attempting to output UDP packet (packet pushed)");
                 if udp_socket_writable {
                     let mut clients = unsafe { &mut *clients.get() };
                     udp::attempt_write_packet(&udp_socket, &mut udp_outgoing_queue, &mut udp_socket_writable, &mut clients);
                 }
             } else if token == tcp_queue_token {
-                println!("Attempting to output TCP packet (packet pushed)");
                 let mut clients = unsafe { &mut *clients.get() };
                 tcp::attempt_write_any_packet(&mut tcp_outgoing_queue, &mut clients);
             } else if token == tcp_listener_token {
@@ -170,7 +173,6 @@ fn main() -> Result<(), CommsServerError> {
                 let token = Token(client_id as usize);
                 poll.register(&stream, token, Ready::all(), PollOpt::edge())?;
 
-                println!("TCP Connection opened with id {}", &client_id);
                 let clients = unsafe { &mut *clients.get() };
                 clients.connecting.insert(client_id, ConnectingClient {
                     client_id,
@@ -181,10 +183,11 @@ fn main() -> Result<(), CommsServerError> {
                     },
                     udp_addr: None,
                 });
+
+                spawner.spawn(on_connect(tcp_handle.clone(), client_id));
             } else { // it's a TCP stream event
                 let readiness = event.readiness();
                 if readiness.is_readable() {
-                    println!("TCP read event for {}", token.0);
                     let client_id = token.0 as ClientId;
                     let tcp_read = {
                         let clients = unsafe { &mut *clients.get() };
@@ -201,13 +204,13 @@ fn main() -> Result<(), CommsServerError> {
                         Ok(TcpRead::ConnectionClosed) => {
                             let clients = unsafe { &mut *clients.get() };
                             let client = clients.remove(&client_id).expect("tried to remove client that doesn't exist");
+                            println!("deregistering client: {}", &client_id);
                             poll.deregister(&client.tcp_stream).unwrap();
                         },
                         Err(_) => continue,
                     }
                 }
                 if readiness.is_writable() {
-                    println!("TCP stream for {} is writable, sending next packet (if any)", token.0);
                     let client_id = token.0 as ClientId;
 
                     let mut clients = unsafe { &mut *clients.get() };

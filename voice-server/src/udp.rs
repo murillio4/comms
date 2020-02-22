@@ -4,9 +4,9 @@ use mio::net::UdpSocket;
 use crate::task::{PacketFinish, Spawner, PacketFuture, SyncUnsafeCell};
 use std::io;
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel, SyncSender};
-use mio::{SetReadiness, Ready, Registration, Evented, Token, PollOpt, IoVec};
+use mio::{SetReadiness, Ready, Registration, Evented, Token, PollOpt};
 use voice_lib::packet::{AssociateUdp, PacketBody, AudioFromClient, Packet, ClientId};
-use voice_lib::{serialize_body, PacketHeader, serialize_head, deserialize_remaining, DeserializeError, deserialize_header};
+use voice_lib::{PacketHeader, DeserializeError, WritePacketBuilder, HeaderParsedPacket};
 use voice_lib::packet;
 use futures::future::join_all;
 use voice_lib::Serialize;
@@ -14,6 +14,7 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::fmt::Debug;
 use crate::tcp::TcpHandle;
+use std::cell::UnsafeCell;
 
 pub struct Context {
     pub clients: Arc<SyncUnsafeCell<Clients>>,
@@ -22,9 +23,9 @@ pub struct Context {
     pub tcp_handle: TcpHandle,
 }
 
-async fn associate_udp(context: Context, packet: Packet<AssociateUdp>, addr: SocketAddr) {
+async fn associate_udp(udp_handle: UdpHandle, clients: Arc<SyncUnsafeCell<Clients>>, addr: SocketAddr, packet: Packet<AssociateUdp>) {
     let client_id = {
-        let clients = unsafe { &mut *context.clients.get() };
+        let clients = unsafe { &mut *clients.get() };
         let mut client = match clients.connecting.get_mut(&packet.body.client_id) {
             Some(client) => client,
             None => return,
@@ -32,7 +33,7 @@ async fn associate_udp(context: Context, packet: Packet<AssociateUdp>, addr: Soc
         client.udp_addr = Some(addr);
         client.client_id
     };
-    udp::send_packet(&context.udp_handle, client_id, packet::AssociateUdpAccepted).await;
+    udp::send_packet(&udp_handle, client_id, packet::AssociateUdpAccepted).await;
 }
 
 async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) {
@@ -53,7 +54,6 @@ async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) {
 pub enum HandlePacketError {
     DeserializeFailed,
     InvalidPacketType(u8),
-    NeededToBeClient,
 }
 
 impl From<DeserializeError> for HandlePacketError {
@@ -70,16 +70,23 @@ pub fn handle_packet(
     udp_handle: UdpHandle,
     tcp_handle: TcpHandle,
 ) -> Result<(), HandlePacketError> {
-    let (body_offset, header) = deserialize_header(raw_packet)?;
-    let raw_body = &raw_packet[body_offset..];
+    let parsed_packet = HeaderParsedPacket::from_raw(raw_packet)?;
+    if parsed_packet.kind == packet::AssociateUdp::KIND_ID {
+        // This is the only packet that doesn't need to be sent from a client
+        println!("Received UDP packet of type {}", parsed_packet.kind);
+        spawner.spawn(associate_udp(udp_handle, clients, addr, parsed_packet.finish_parse()?));
+        return Ok(());
+    }
 
     let client_id = {
         let clients = unsafe { &mut *clients.get() };
         match clients.id_by_socket_addr(&addr) {
             Some(client_id) => client_id,
-            None => return Err(HandlePacketError::NeededToBeClient)
+            None => return Ok(())
         }
     };
+
+    println!("Received UDP packet of type {} from {}", parsed_packet.kind, client_id);
 
     let context = Context {
         client_id,
@@ -88,10 +95,9 @@ pub fn handle_packet(
         tcp_handle,
     };
 
-    match header.kind {
-        packet::AssociateUdp::KIND_ID => spawner.spawn(associate_udp(context, deserialize_remaining(raw_body, header)?, addr)),
-        packet::AudioFromClient::KIND_ID => spawner.spawn(audio_from_client(context, deserialize_remaining(raw_body, header)?)),
-        _ => return Err(HandlePacketError::InvalidPacketType(header.kind)),
+    match parsed_packet.kind {
+        packet::AudioFromClient::KIND_ID => spawner.spawn(audio_from_client(context, parsed_packet.finish_parse()?)),
+        _ => return Err(HandlePacketError::InvalidPacketType(parsed_packet.kind)),
     }
     Ok(())
 }
@@ -99,17 +105,19 @@ pub fn handle_packet(
 pub async fn send_packet<B>(handle: &UdpHandle, dest: ClientId, packet: B)
     where B: packet::PacketBody + Serialize
 {
-    let raw_body = Arc::new(serialize_body(packet).unwrap());
-    handle.send(dest, B::KIND_ID, raw_body).await.unwrap();
+    println!("queueing UDP packet of type {}", B::KIND_ID);
+    let builder = WritePacketBuilder::new(packet).unwrap();
+    handle.send(dest, B::KIND_ID, Arc::new(SyncUnsafeCell(UnsafeCell::new(builder)))).await.unwrap();
 }
 
 pub async fn send_packet_to_many<B>(handle: &UdpHandle, clients: Vec<ClientId>, packet: B)
     where B: packet::PacketBody + Serialize
 {
-    let raw_body = Arc::new(serialize_body(packet).unwrap());
+    let builder = WritePacketBuilder::new(packet).unwrap();
+    let raw = Arc::new(SyncUnsafeCell(UnsafeCell::new(builder)));
 
     let futures: Vec<PacketFuture> = clients.into_iter()
-        .map(|c| handle.send(c, B::KIND_ID, raw_body.clone()))
+        .map(|c| handle.send(c, B::KIND_ID, raw.clone()))
         .collect();
     for result in join_all(futures).await {
         result.unwrap();
@@ -122,7 +130,7 @@ pub enum WriteAttempt {
 }
 
 pub fn attempt_write_packet(socket: &UdpSocket, outgoing: &mut UdpOutgoingQueue, socket_writable: &mut bool, clients: &mut Clients) {
-    match outgoing.next_packet(|destination_id, packet_kind, body| {
+    match outgoing.next_packet(|destination_id, packet_kind, builder| {
         let (packet_id, addr) = if let Some(client) = clients.established.get_mut(&destination_id) {
             let packet_id = client.next_packet_id;
             client.next_packet_id = NonZeroU64::new(packet_id.get() + 1).unwrap();
@@ -142,16 +150,8 @@ pub fn attempt_write_packet(socket: &UdpSocket, outgoing: &mut UdpOutgoingQueue,
             kind: packet_kind,
         };
 
-        socket.connect(addr).unwrap();
-        let header = serialize_head(packet_header).unwrap();
-        let buffers: Vec<&IoVec> = vec![
-            IoVec::from_bytes(&header),
-            IoVec::from_bytes(body),
-        ].into_iter()
-            .filter_map(|o| o)
-            .collect();
-
-        match socket.send_bufs(&buffers) {
+        builder.header(packet_header).unwrap();
+        match socket.send_to(&builder.raw, &addr) {
             Ok(_) => {
                 println!("Sent UDP packet of kind {} to {}", packet_kind, destination_id);
                 return PacketSendStatus::Done
@@ -168,7 +168,7 @@ pub fn attempt_write_packet(socket: &UdpSocket, outgoing: &mut UdpOutgoingQueue,
 struct OutgoingPacket {
     dest: ClientId,
     kind: u8,
-    raw_body: Arc<Vec<u8>>,
+    builder: Arc<SyncUnsafeCell<WritePacketBuilder>>,
     finish: PacketFinish,
 }
 
@@ -180,7 +180,7 @@ pub struct UdpOutgoingQueue {
 
 impl UdpOutgoingQueue {
     fn next_packet<F>(&mut self, mut op: F) -> WriteAttempt
-        where F: FnMut(ClientId, u8, &Arc<Vec<u8>>) -> PacketSendStatus
+        where F: FnMut(ClientId, u8, &mut WritePacketBuilder) -> PacketSendStatus
     {
         // There might be a cleaner way of doing this.
         // We need the loop to try a new packet if the one first attempted
@@ -196,7 +196,8 @@ impl UdpOutgoingQueue {
                 }
             };
 
-            match op(packet.dest, packet.kind, &packet.raw_body) {
+            let builder = unsafe { &mut *packet.builder.get() };
+            match op(packet.dest, packet.kind, builder) {
                 PacketSendStatus::SocketUnavailable => {
                     self.peek_item = Some(packet);
                     return WriteAttempt::WriteAttempted;
@@ -242,12 +243,12 @@ pub struct UdpHandle {
 }
 
 impl UdpHandle {
-    pub fn send(&self, dest: ClientId, kind: u8, raw_body: Arc<Vec<u8>>) -> PacketFuture {
+    fn send(&self, dest: ClientId, kind: u8, builder: Arc<SyncUnsafeCell<WritePacketBuilder>>) -> PacketFuture {
         let (future, finish) = PacketFuture::new();
         self.sender.send(OutgoingPacket {
             dest,
             kind,
-            raw_body,
+            builder,
             finish,
         }).unwrap();
         self.set_queue_readiness.set_readiness(Ready::readable()).unwrap();

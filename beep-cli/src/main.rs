@@ -1,15 +1,15 @@
 use std::net::{UdpSocket, TcpStream};
 use std::time::{SystemTime, Duration};
-use voice_lib::{packet, serialize, serialize_head, PacketHeader, serialize_body, deserialize_remaining, deserialize_header};
+use voice_lib::{packet, serialize_head, PacketHeader, serialize_body, serialize_new, HeaderParsedPacket};
 use clap::{App, Arg};
 use std::io;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
-use voice_lib::packet::{Packet, Hello, PacketBody, AssociateUdpAccepted};
+use voice_lib::packet::{Packet, Hello, PacketBody, AssociateUdpAccepted, FinishConnect, AssociateUdp, FinishConnectAccepted};
 use std::num::NonZeroU64;
 use sample::ring_buffer::Slice;
 use std::mem::size_of;
-use std::io::{Read, Error};
+use std::io::{Read, Error, Write};
 use std::cmp::min;
 
 #[derive(Debug)]
@@ -52,29 +52,46 @@ fn main() -> Result<(), BeepClientErr> {
     udp.connect(server_address_with_port)?;
 
     let mut buffer = [0u8; 65535];
-    tcp.read(&mut buffer);
 
-    let (body_offset, header) = deserialize_header(&buffer)?;
-    let hello: Packet<Hello> = deserialize_remaining(&buffer[body_offset..], header).unwrap();
+    tcp.read(&mut buffer);
+    let parsed_packet = HeaderParsedPacket::from_raw(&buffer)?;
+    assert_eq!(parsed_packet.kind, Hello::KIND_ID);
+    let hello: Packet<Hello> = parsed_packet.finish_parse()?;
     dbg!(&hello);
 
-    let associate = packet::AssociateUdp {
-        client_id: hello.body.client_id,
-    };
-    let raw_packet = [
-        serialize_head(PacketHeader {
+    udp.send(&serialize_new(
+        PacketHeader {
             id: NonZeroU64::new(1).unwrap(),
-            reply_to: Some(hello.id),
-            kind: packet::AssociateUdp::KIND_ID,
-        }).unwrap().as_slice(),
-        &serialize_body(associate).unwrap().as_slice()
-    ].concat();
-    udp.send(&raw_packet)?;
+            reply_to: None,
+            kind: AssociateUdp::KIND_ID,
+        },
+        AssociateUdp {
+            client_id: hello.body.client_id,
+        }
+    )?)?;
 
     udp.recv(&mut buffer);
-    let (body_offset, header) = deserialize_header(&buffer)?;
-    let accepted: Packet<AssociateUdpAccepted> = deserialize_remaining(&buffer[body_offset..], header).unwrap();
+    let parsed_packet = HeaderParsedPacket::from_raw(&buffer)?;
+    assert_eq!(parsed_packet.kind, AssociateUdpAccepted::KIND_ID);
+    let accepted: Packet<AssociateUdpAccepted> = parsed_packet.finish_parse()?;
     dbg!(&accepted);
+
+    tcp.write(&serialize_new(
+        PacketHeader {
+            id: NonZeroU64::new(2).unwrap(),
+            reply_to: None,
+            kind: FinishConnect::KIND_ID,
+        },
+        FinishConnect {
+            username: "yeet".to_string(),
+        }
+    )?)?;
+
+    tcp.read(&mut buffer);
+    let parsed_packet = HeaderParsedPacket::from_raw(&buffer)?;
+    assert_eq!(parsed_packet.kind, FinishConnectAccepted::KIND_ID);
+    let finish_connect_accepted: Packet<FinishConnectAccepted> = parsed_packet.finish_parse()?;
+    dbg!(&finish_connect_accepted);
 
     Ok(())
 

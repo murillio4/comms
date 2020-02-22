@@ -2,7 +2,7 @@ use voice_lib::packet::{ClientId, Packet, PacketBody};
 use std::collections::{HashMap, VecDeque};
 use crate::{Clients, Client};
 use std::num::NonZeroU64;
-use voice_lib::{PacketHeader, serialize_head, packet, serialize_body, deserialize_header, deserialize_remaining};
+use voice_lib::{PacketHeader, serialize_head, packet, serialize_body, HeaderParsedPacket};
 use mio::{IoVec, Registration, Evented, Token, Ready, PollOpt, SetReadiness};
 use std::io;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use crate::udp::{UdpHandle, HandlePacketError, Context};
 use mio::net::TcpStream;
 use std::io::Read;
 
-async fn connect(context: Context, packet: Packet<packet::Connect>) {
+async fn finish_connect(context: Context, packet: Packet<packet::FinishConnect>) {
     // TODO respond with packet saying "you need to associate udp first" if failed
     let users = {
         let clients = unsafe { &mut *context.clients.get() };
@@ -36,7 +36,7 @@ async fn connect(context: Context, packet: Packet<packet::Connect>) {
         }
     };
 
-    send_packet(&context.tcp_handle, context.client_id, packet::ConnectAccepted {
+    send_packet(&context.tcp_handle, context.client_id, packet::FinishConnectAccepted {
         users,
     }).await;
 }
@@ -49,8 +49,8 @@ pub fn handle_packet(
     udp_handle: UdpHandle,
     tcp_handle: TcpHandle,
 ) -> Result<(), HandlePacketError> {
-    let (body_offset, header) = deserialize_header(raw_packet)?;
-    let raw_body = &raw_packet[body_offset..];
+    let parsed_packet = HeaderParsedPacket::from_raw(&raw_packet)?;
+    println!("Received TCP packet of type {} from {}", parsed_packet.kind, client_id);
 
     let context = Context {
         client_id,
@@ -58,9 +58,10 @@ pub fn handle_packet(
         udp_handle,
         tcp_handle,
     };
-    match header.kind {
-        packet::Connect::KIND_ID => spawner.spawn(connect(context, deserialize_remaining(raw_body, header)?)),
-        _ => return Err(HandlePacketError::InvalidPacketType(header.kind)),
+
+    match parsed_packet.kind {
+        packet::FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, parsed_packet.finish_parse()?)),
+        _ => return Err(HandlePacketError::InvalidPacketType(parsed_packet.kind)),
     }
     Ok(())
 }
@@ -72,7 +73,7 @@ pub async fn send_packet<B>(handle: &TcpHandle, dest: ClientId, packet: B)
     handle.send(dest, B::KIND_ID, raw_body).await.unwrap();
 }
 
-pub async fn send_packet_to_many<B>(handle: &UdpHandle, clients: Vec<ClientId>, packet: B)
+pub async fn send_packet_to_many<B>(handle: &TcpHandle, clients: Vec<ClientId>, packet: B)
     where B: packet::PacketBody + Serialize
 {
     let raw_body = Arc::new(serialize_body(packet).unwrap());
@@ -119,6 +120,8 @@ fn attempt_write_packet(client_id: ClientId, packet_kind: u8, body: &Arc<Vec<u8>
         reply_to: None,
         kind: packet_kind,
     };
+
+
     let header = serialize_head(packet_header).unwrap();
     let buffers: Vec<&IoVec> = vec![
         IoVec::from_bytes(&header),

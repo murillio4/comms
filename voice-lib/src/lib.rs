@@ -1,9 +1,8 @@
-use std::io::{Write, ErrorKind, Read};
-use std::io;
+use std::io::{Write, ErrorKind, Cursor};
+use std::mem;
 pub use serde::{Deserialize, Serialize};
 use crate::packet::Packet;
 use std::num::NonZeroU64;
-use std::cmp::min;
 
 pub mod packet;
 #[cfg(windows)]
@@ -25,7 +24,7 @@ pub fn serialize<B>(packet: Packet<B>) -> Result<Vec<u8>, SerializeError>
         match buffer.write(&[B::KIND_ID]) {
             Ok(_) => break,
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-            Err(e) => return Err(SerializeError::WritingHeaderTypeFailed(e))
+            Err(_) => return Err(SerializeError)
         }
     }
     match bincode::serialize_into(&mut buffer, &packet) {
@@ -34,8 +33,33 @@ pub fn serialize<B>(packet: Packet<B>) -> Result<Vec<u8>, SerializeError>
     }
 }
 
+pub fn serialize_new<B>(header: PacketHeader, packet: B) -> Result<Vec<u8>, SerializeError>
+    where B: packet::PacketBody + Serialize
+{
+    bincode::serialize(&header)
+        .and_then(|mut raw_packet| {
+            // pad header to minimum size
+            let header_size = mem::size_of::<PacketHeader>();
+            for _ in raw_packet.len()..header_size {
+                raw_packet.push(0);
+            }
+            bincode::serialize_into(&mut raw_packet, &packet)
+                .map(|_| raw_packet)
+        })
+        .map_err(|e| e.into())
+
+}
+
 pub fn serialize_head(header: PacketHeader) -> Result<Vec<u8>, SerializeError> {
-    bincode::serialize(&header).map_err(|e| e.into())
+    bincode::serialize(&header)
+        .map(|mut vec| {
+            // header must be constant size, so pad to that size
+            for _ in vec.len()..mem::size_of::<PacketHeader>() {
+                vec.push(0);
+            }
+            vec
+        })
+        .map_err(|e| e.into())
 }
 
 pub fn serialize_body<B>(packet: B) -> Result<Vec<u8>, SerializeError>
@@ -44,52 +68,67 @@ pub fn serialize_body<B>(packet: B) -> Result<Vec<u8>, SerializeError>
     bincode::serialize(&packet).map_err(|e| e.into())
 }
 
-#[derive(Debug)]
-pub struct Marker(pub usize);
-pub struct MarkerRead<'a>(&'a [u8], &'a mut Marker);
+pub struct WritePacketBuilder {
+    pub raw: Vec<u8>,
+    has_header: bool,
+}
 
-impl Read for MarkerRead<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
-        let marker = (self.1).0;
-        let target_slice = &self.0[marker..(marker + buf.len())];
-        let len = min(target_slice.len(), buf.len());
-        buf[..len].copy_from_slice(target_slice);
-        (self.1).0 += buf.len();
-        Ok(len)
+impl WritePacketBuilder {
+    pub fn new<B>(body: B) -> Result<Self, SerializeError>
+        where B: packet::PacketBody + Serialize
+    {
+        let raw = vec![0u8; mem::size_of::<PacketHeader>()];
+        let mut instance = WritePacketBuilder {
+            raw,
+            has_header: false,
+        };
+        bincode::serialize_into(&mut instance.raw, &body).map_err(|_| SerializeError)?;
+        Ok(instance)
+    }
+
+    pub fn header(&mut self, header: PacketHeader) -> Result<(), SerializeError> {
+        assert!(!self.has_header);
+        self.has_header = true;
+
+        let mut cursor = Cursor::new(&mut self.raw);
+        cursor.set_position(0);
+        bincode::serialize_into(cursor, &header)
+            .map_err(|_| SerializeError)
     }
 }
 
-pub fn deserialize_header(raw_packet: &[u8]) -> Result<(usize, PacketHeader), DeserializeError> {
-    let mut marker = Marker(0);
-    let marker_reader = MarkerRead(raw_packet, &mut marker);
-    bincode::deserialize_from(marker_reader)
-        .map_err(|_| DeserializeError)
-        .map(|header| (marker.0, header))
+pub struct HeaderParsedPacket<'a> {
+    pub kind: u8,
+    header: PacketHeader,
+    raw_body: &'a [u8],
 }
 
-pub fn deserialize_remaining<'a, B>(bytes: &'a [u8], header: PacketHeader) -> Result<Packet<B>, DeserializeError>
-    where B: packet::PacketBody + Deserialize<'a>
-{
-    let body = bincode::deserialize(bytes).map_err(|_| DeserializeError)?;
-    Ok(Packet::new(header.id, header.reply_to, body))
-}
+impl<'a> HeaderParsedPacket<'a> {
+    pub fn from_raw(raw: &'a [u8]) -> Result<Self, DeserializeError> {
+        let raw_header_size = mem::size_of::<PacketHeader>();
+        let header: PacketHeader = bincode::deserialize(&raw[0..raw_header_size])
+            .map_err(|_| DeserializeError)?;
+        Ok(Self {
+            raw_body: &raw[raw_header_size..],
+            kind: header.kind,
+            header,
+        })
+    }
 
-#[deprecated]
-pub fn deserialize<'a, B>(packet_bytes: &'a [u8]) -> Result<Packet<B>, DeserializeError>
-    where B: packet::PacketBody + Deserialize<'a>
-{
-    bincode::deserialize(packet_bytes).map_err(|_| DeserializeError)
+    pub fn finish_parse<B>(self) -> Result<Packet<B>, DeserializeError>
+        where B: packet::PacketBody + Deserialize<'a>
+    {
+        let body = bincode::deserialize(&self.raw_body).map_err(|_| DeserializeError)?;
+        Ok(Packet::new(self.header.id, self.header.reply_to, body))
+    }
 }
 
 #[derive(Debug)]
-pub enum SerializeError {
-    WritingHeaderTypeFailed(io::Error),
-    SerializingFailed(bincode::Error),
-}
+pub struct SerializeError;
 
 impl From<bincode::Error> for SerializeError {
-    fn from(e: bincode::Error) -> Self {
-        SerializeError::SerializingFailed(e)
+    fn from(_: bincode::Error) -> Self {
+        SerializeError
     }
 }
 

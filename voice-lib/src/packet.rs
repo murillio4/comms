@@ -42,11 +42,11 @@ impl PacketBody for AssociateUdpAccepted {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Connect {
+pub struct FinishConnect {
     pub username: String,
 }
 
-impl PacketBody for Connect {
+impl PacketBody for FinishConnect {
     const KIND_ID: u8 = 2u8;
 }
 
@@ -60,19 +60,11 @@ impl PacketBody for AudioFromClient {
     const KIND_ID: u8 = 3u8;
 }
 
-
-#[derive(Serialize, Deserialize)]
-pub struct Disconnect;
-
-impl PacketBody for Disconnect {
-    const KIND_ID: u8 = 4u8;
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct KeepAlive;
 
 impl PacketBody for KeepAlive {
-    const KIND_ID: u8 = 5u8;
+    const KIND_ID: u8 = 4u8;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -82,16 +74,16 @@ pub struct AudioToClient {
 }
 
 impl PacketBody for AudioToClient {
-    const KIND_ID: u8 = 6u8;
+    const KIND_ID: u8 = 5u8;
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ConnectAccepted {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FinishConnectAccepted {
     pub users: Vec<String>,
 }
 
-impl PacketBody for ConnectAccepted {
-    const KIND_ID: u8 = 7u8;
+impl PacketBody for FinishConnectAccepted {
+    const KIND_ID: u8 = 6u8;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -100,14 +92,14 @@ pub enum ErrorResponse {
 }
 
 impl PacketBody for ErrorResponse {
-    const KIND_ID: u8 = 8u8;
+    const KIND_ID: u8 = 7u8;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Hello {
-    pub client_id: ClientId
+    pub client_id: u16,
 }
 
 impl PacketBody for Hello {
-    const KIND_ID: u8 = 9u8;
+    const KIND_ID: u8 = 8u8;
 }

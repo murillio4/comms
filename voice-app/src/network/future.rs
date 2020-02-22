@@ -36,9 +36,9 @@ async fn connect_to_server_without_timeout(handle: network::Handle, destination:
     };
 
     ConnectFuture::new(&handle, destination).await?;
-    let connect_accepted: packet::ConnectAccepted = request(
+    let connect_accepted: packet::FinishConnectAccepted = request(
         &handle,
-        packet::Connect {
+        packet::FinishConnect {
             username: &username
         }
     ).await;
