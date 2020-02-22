@@ -3,6 +3,7 @@ use std::num::NonZeroU64;
 
 pub const MAX_AUDIO_BUFFER_SIZE: usize = 2000;
 pub type ClientId = u16;
+pub type PacketKind = u8;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Packet<T: PacketBody> {
@@ -22,7 +23,7 @@ impl<T: PacketBody> Packet<T> {
 }
 
 pub trait PacketBody {
-    const KIND_ID: u8;
+    const KIND_ID: PacketKind;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -31,14 +32,14 @@ pub struct AssociateUdp {
 }
 
 impl PacketBody for AssociateUdp {
-    const KIND_ID: u8 = 0u8;
+    const KIND_ID: PacketKind = 0u8;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AssociateUdpAccepted;
 
 impl PacketBody for AssociateUdpAccepted {
-    const KIND_ID: u8 = 1u8;
+    const KIND_ID: PacketKind = 1u8;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -47,7 +48,7 @@ pub struct FinishConnect {
 }
 
 impl PacketBody for FinishConnect {
-    const KIND_ID: u8 = 2u8;
+    const KIND_ID: PacketKind = 2u8;
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -57,24 +58,25 @@ pub struct AudioFromClient(
 );
 
 impl PacketBody for AudioFromClient {
-    const KIND_ID: u8 = 3u8;
+    const KIND_ID: PacketKind = 3u8;
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct KeepAlive;
 
 impl PacketBody for KeepAlive {
-    const KIND_ID: u8 = 4u8;
+    const KIND_ID: PacketKind = 4u8;
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct AudioToClient {
     #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
+    pub author: ClientId,
 }
 
 impl PacketBody for AudioToClient {
-    const KIND_ID: u8 = 5u8;
+    const KIND_ID: PacketKind = 5u8;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -83,7 +85,7 @@ pub struct FinishConnectAccepted {
 }
 
 impl PacketBody for FinishConnectAccepted {
-    const KIND_ID: u8 = 6u8;
+    const KIND_ID: PacketKind = 6u8;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -92,7 +94,7 @@ pub enum ErrorResponse {
 }
 
 impl PacketBody for ErrorResponse {
-    const KIND_ID: u8 = 7u8;
+    const KIND_ID: PacketKind = 7u8;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,5 +103,5 @@ pub struct Hello {
 }
 
 impl PacketBody for Hello {
-    const KIND_ID: u8 = 8u8;
+    const KIND_ID: PacketKind = 8u8;
 }

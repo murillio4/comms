@@ -45,6 +45,7 @@ async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) {
             .collect()
     };
     let audio_to_client = packet::AudioToClient {
+        author: context.client_id,
         bytes: packet.body.0,
     };
     udp::send_packet_to_many(&context.udp_handle, client_ids, audio_to_client).await;
@@ -71,9 +72,10 @@ pub fn handle_packet(
     tcp_handle: TcpHandle,
 ) -> Result<(), HandlePacketError> {
     let parsed_packet = HeaderParsedPacket::from_raw(raw_packet)?;
-    if parsed_packet.kind == packet::AssociateUdp::KIND_ID {
+    let kind = parsed_packet.kind();
+    if kind == packet::AssociateUdp::KIND_ID {
         // This is the only packet that doesn't need to be sent from a client
-        println!("Received UDP packet of type {}", parsed_packet.kind);
+        println!("Received UDP packet of type {}", kind);
         spawner.spawn(associate_udp(udp_handle, clients, addr, parsed_packet.finish_parse()?));
         return Ok(());
     }
@@ -86,7 +88,7 @@ pub fn handle_packet(
         }
     };
 
-    println!("Received UDP packet of type {} from {}", parsed_packet.kind, client_id);
+    println!("Received UDP packet of type {} from {}", kind, client_id);
 
     let context = Context {
         client_id,
@@ -95,9 +97,9 @@ pub fn handle_packet(
         tcp_handle,
     };
 
-    match parsed_packet.kind {
+    match kind {
         packet::AudioFromClient::KIND_ID => spawner.spawn(audio_from_client(context, parsed_packet.finish_parse()?)),
-        _ => return Err(HandlePacketError::InvalidPacketType(parsed_packet.kind)),
+        _ => return Err(HandlePacketError::InvalidPacketType(kind)),
     }
     Ok(())
 }
@@ -150,8 +152,8 @@ pub fn attempt_write_packet(socket: &UdpSocket, outgoing: &mut UdpOutgoingQueue,
             kind: packet_kind,
         };
 
-        builder.header(packet_header).unwrap();
-        match socket.send_to(&builder.raw, &addr) {
+        let raw = builder.as_raw(packet_header).unwrap();
+        match socket.send_to(&raw, &addr) {
             Ok(_) => {
                 println!("Sent UDP packet of kind {} to {}", packet_kind, destination_id);
                 return PacketSendStatus::Done

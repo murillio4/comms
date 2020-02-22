@@ -3,13 +3,10 @@ use std::task::{Waker, Context, Poll};
 use std::future::Future;
 use std::pin::Pin;
 use futures::channel::oneshot;
-use bincode::deserialize_from;
-use voice_lib::packet;
+use voice_lib::{packet, OwnedHeaderParsedPacket};
 use crate::network;
-use std::io::Cursor;
-use serde::Serialize;
+use serde::{Serialize};
 use serde::de::DeserializeOwned;
-use std::marker::PhantomData;
 use crate::network::{Command, ConnectError, DisconnectError};
 use std::fmt::{Debug, Formatter, Error};
 use std::time::Duration;
@@ -19,6 +16,7 @@ use futures::future::Either;
 use futures::pin_mut;
 use async_std::net::ToSocketAddrs;
 use std::net::SocketAddr;
+use voice_lib::packet::{PacketBody, FinishConnectAccepted, Packet};
 
 async fn connect_to_server_without_timeout(handle: network::Handle, destination: String, username: String) -> Result<Vec<String>, ConnectError> {
     let destination_with_port = format!("{}:18847", destination);
@@ -36,13 +34,15 @@ async fn connect_to_server_without_timeout(handle: network::Handle, destination:
     };
 
     ConnectFuture::new(&handle, destination).await?;
-    let connect_accepted: packet::FinishConnectAccepted = request(
+    let connect_accepted: Packet<FinishConnectAccepted> = request(
         &handle,
         packet::FinishConnect {
-            username: &username
+            username
         }
-    ).await;
-    Ok(connect_accepted.users)
+    ).await
+        .map_err(|_| ConnectError::NetworkError)?;
+
+    Ok(connect_accepted.body.users)
 }
 
 pub async fn connect_to_server(handle: network::Handle, destination: String, username: String) -> Result<Vec<String>, ConnectError> {
@@ -62,8 +62,26 @@ pub async fn disconnect_from_server(handle: network::Handle) -> Result<(), Disco
     DisconnectFuture::new(&handle).await
 }
 
-pub async fn request<'a, Response: packet::PacketBody<'a> + DeserializeOwned>(handle: &network::Handle, request: impl packet::PacketBody<'_> + Serialize) -> Response {
+pub async fn request_with_unknown_response<Req>(handle: &network::Handle, request: Req) -> OwnedHeaderParsedPacket
+    where Req: PacketBody + Serialize,
+{
     RequestFuture::new(handle, request).await
+}
+
+pub async fn request<Req, Res>(handle: &network::Handle, request: Req) -> Result<Packet<Res>, RequestError>
+    where Req: PacketBody + Serialize,
+          Res: PacketBody + DeserializeOwned,
+{
+    let parsed_packet = request_with_unknown_response(handle, request).await;
+    if parsed_packet.kind() != Res::KIND_ID {
+        return Err(RequestError::InvalidResponsePacket)
+    }
+    parsed_packet.finish_parse().map_err(|_| RequestError::DeserializeError)
+}
+
+pub enum RequestError {
+    DeserializeError,
+    InvalidResponsePacket,
 }
 
 pub struct SendResponse<T: Debug> {
@@ -179,21 +197,19 @@ impl DisconnectFuture {
     }
 }
 
-struct RequestFuture<R> {
-    phantom: PhantomData<R>,
-    receiver: Arc<Mutex<oneshot::Receiver<Vec<u8>>>>,
+struct RequestFuture {
+    receiver: Arc<Mutex<oneshot::Receiver<OwnedHeaderParsedPacket>>>,
     waker: Arc<Mutex<Option<Waker>>>,
 }
 
-impl<'a, R: packet::PacketBody<'a> + DeserializeOwned> Future for RequestFuture<R> {
-    type Output = R;
+impl Future for RequestFuture {
+    type Output = OwnedHeaderParsedPacket;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut receiver = self.receiver.lock().unwrap();
         match receiver.try_recv() {
             Ok(Some(response)) => {
-                let packet = deserialize_from(Cursor::new(response)).unwrap();
-                Poll::Ready(packet)
+                Poll::Ready(response)
             },
             Ok(None) => {
                 let mut waker = self.waker.lock().unwrap();
@@ -207,16 +223,15 @@ impl<'a, R: packet::PacketBody<'a> + DeserializeOwned> Future for RequestFuture<
     }
 }
 
-impl<'a, R: packet::PacketBody<'a>> RequestFuture<R> {
-    pub fn new<'outgoing>(handle: &network::Handle, outgoing_packet: impl packet::PacketBody<'outgoing> + Serialize) -> Self {
+impl RequestFuture {
+    pub fn new(handle: &network::Handle, outgoing_packet: impl packet::PacketBody + Serialize) -> Self {
         let (sender, receiver) = oneshot::channel();
         let waker = Arc::new(Mutex::new(None));
-        handle.request(outgoing_packet, R::KIND_ID, SendResponse {sender, waker: waker.clone() }).unwrap();
+        handle.request(outgoing_packet, SendResponse {sender, waker: waker.clone() }).unwrap();
 
         RequestFuture {
             receiver: Arc::new(Mutex::new(receiver)),
             waker,
-            phantom: PhantomData,
         }
     }
 }

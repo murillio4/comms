@@ -50,7 +50,8 @@ pub fn handle_packet(
     tcp_handle: TcpHandle,
 ) -> Result<(), HandlePacketError> {
     let parsed_packet = HeaderParsedPacket::from_raw(&raw_packet)?;
-    println!("Received TCP packet of type {} from {}", parsed_packet.kind, client_id);
+    let kind = parsed_packet.kind();
+    println!("Received TCP packet of type {} from {}", kind, client_id);
 
     let context = Context {
         client_id,
@@ -59,9 +60,9 @@ pub fn handle_packet(
         tcp_handle,
     };
 
-    match parsed_packet.kind {
+    match kind {
         packet::FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, parsed_packet.finish_parse()?)),
-        _ => return Err(HandlePacketError::InvalidPacketType(parsed_packet.kind)),
+        _ => return Err(HandlePacketError::InvalidPacketType(kind)),
     }
     Ok(())
 }
