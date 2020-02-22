@@ -1,6 +1,6 @@
 use std::net::{UdpSocket, TcpStream};
 use std::time::{SystemTime, Duration};
-use voice_lib::{packet, serialize, serialize_head, PacketHeader, serialize_body, deserialize_header, deserialize_remaining};
+use voice_lib::{packet, serialize, serialize_head, PacketHeader, serialize_body, deserialize_remaining, deserialize_header};
 use clap::{App, Arg};
 use std::io;
 #[cfg(windows)]
@@ -54,10 +54,8 @@ fn main() -> Result<(), BeepClientErr> {
     let mut buffer = [0u8; 65535];
     tcp.read(&mut buffer);
 
-    let mut marker = Marker(0);
-    let marker_reader = MarkerRead(&buffer, &mut marker);
-    let header = deserialize_header(marker_reader).unwrap();
-    let hello: Packet<Hello> = deserialize_remaining(&buffer[marker.0..], header).unwrap();
+    let (body_offset, header) = deserialize_header(&buffer)?;
+    let hello: Packet<Hello> = deserialize_remaining(&buffer[body_offset..], header).unwrap();
     dbg!(&hello);
 
     let associate = packet::AssociateUdp {
@@ -74,10 +72,8 @@ fn main() -> Result<(), BeepClientErr> {
     udp.send(&raw_packet)?;
 
     udp.recv(&mut buffer);
-    let mut marker = Marker(0);
-    let marker_reader = MarkerRead(&buffer, &mut marker);
-    let header = deserialize_header(marker_reader).unwrap();
-    let accepted: Packet<AssociateUdpAccepted> = deserialize_remaining(&buffer[marker.0..], header).unwrap();
+    let (body_offset, header) = deserialize_header(&buffer)?;
+    let accepted: Packet<AssociateUdpAccepted> = deserialize_remaining(&buffer[body_offset..], header).unwrap();
     dbg!(&accepted);
 
     Ok(())
@@ -119,11 +115,18 @@ enum BeepClientErr {
     Usage,
     Io(io::Error),
     Serialize,
+    Deserialize,
 }
 
 impl From<io::Error> for BeepClientErr {
     fn from(e: io::Error) -> Self {
         BeepClientErr::Io(e)
+    }
+}
+
+impl From<voice_lib::DeserializeError> for BeepClientErr {
+    fn from(e: voice_lib::DeserializeError) -> Self {
+        BeepClientErr::Deserialize
     }
 }
 

@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use crate::{ConnectingClient, Client, udp};
+use crate::{udp, Clients};
 use std::net::SocketAddr;
 use mio::net::UdpSocket;
 use crate::task::{PacketFinish, Spawner, PacketFuture, SyncUnsafeCell};
@@ -7,60 +6,41 @@ use std::io;
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel, SyncSender};
 use mio::{SetReadiness, Ready, Registration, Evented, Token, PollOpt, IoVec};
 use voice_lib::packet::{AssociateUdp, PacketBody, AudioFromClient, Packet, ClientId};
-use voice_lib::{serialize_body, PacketHeader, serialize_head, deserialize_header, deserialize_remaining, DeserializeError};
+use voice_lib::{serialize_body, PacketHeader, serialize_head, deserialize_remaining, DeserializeError, deserialize_header};
 use voice_lib::packet;
 use futures::future::join_all;
 use voice_lib::Serialize;
 use std::num::NonZeroU64;
 use std::sync::Arc;
-use std::io::Read;
 use std::fmt::Debug;
-use futures::io::Error;
-use std::cmp::min;
+use crate::tcp::TcpHandle;
 
-struct Context {
-    clients: Arc<SyncUnsafeCell<HashMap<ClientId, Client>>>,
-    connecting_clients: Arc<SyncUnsafeCell<HashMap<ClientId, ConnectingClient>>>,
-    addr: SocketAddr,
-    udp_handle: UdpHandle,
+pub struct Context {
+    pub clients: Arc<SyncUnsafeCell<Clients>>,
+    pub client_id: ClientId,
+    pub udp_handle: UdpHandle,
+    pub tcp_handle: TcpHandle,
 }
 
-impl Context {
-    fn get_current_client_id(&self) -> ClientId {
-        let connecting_clients = unsafe { &*self.connecting_clients.get() };
-        let clients = unsafe { &*self.clients.get() };
-
-        let connecting_iter = connecting_clients.iter()
-            .filter(|(_, c)| c.udp_addr == Some(self.addr))
-            .map(|(id, _)| id.clone());
-
-        clients.iter()
-            .filter(|(_, c)| c.udp_addr == self.addr)
-            .map(|(id, _)| id.clone())
-            .chain(connecting_iter)
-            .next()
-            .unwrap()
-    }
-}
-
-async fn associate_udp(context: Context, packet: Packet<AssociateUdp>) {
-    {
-        let connecting_clients = unsafe { &mut *context.connecting_clients.get() };
-        let mut client = match connecting_clients.get_mut(&packet.body.client_id) {
+async fn associate_udp(context: Context, packet: Packet<AssociateUdp>, addr: SocketAddr) {
+    let client_id = {
+        let clients = unsafe { &mut *context.clients.get() };
+        let mut client = match clients.connecting.get_mut(&packet.body.client_id) {
             Some(client) => client,
             None => return,
         };
-        client.udp_addr = Some(context.addr.clone());
-    }
-    udp::send_packet(&context.udp_handle, context.get_current_client_id(), packet::AssociateUdpAccepted).await;
+        client.udp_addr = Some(addr);
+        client.client_id
+    };
+    udp::send_packet(&context.udp_handle, client_id, packet::AssociateUdpAccepted).await;
 }
 
 async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) {
     let client_ids = {
         let clients = unsafe { &*context.clients.get() };
-        clients.iter()
+        clients.established.iter()
             .map(|(id, _)| id.clone())
-            .filter(|id| id != &context.get_current_client_id())
+            .filter(|id| id != &context.client_id)
             .collect()
     };
     let audio_to_client = packet::AudioToClient {
@@ -72,7 +52,8 @@ async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) {
 #[derive(Debug)]
 pub enum HandlePacketError {
     DeserializeFailed,
-    InvalidPacketType(u8, SocketAddr)
+    InvalidPacketType(u8),
+    NeededToBeClient,
 }
 
 impl From<DeserializeError> for HandlePacketError {
@@ -81,50 +62,36 @@ impl From<DeserializeError> for HandlePacketError {
     }
 }
 
-#[derive(Debug)]
-struct Marker(usize);
-struct MarkerRead<'a>(&'a [u8], &'a mut Marker);
-
-impl Read for MarkerRead<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-        let marker = (self.1).0;
-        let target_slice = &self.0[marker..(marker + buf.len())];
-        let len = min(target_slice.len(), buf.len());
-        buf[..len].copy_from_slice(target_slice);
-        (self.1).0 += buf.len();
-        Ok(len)
-    }
-}
-
 pub fn handle_packet(
+    addr: SocketAddr,
     raw_packet: &[u8],
-    clients: &Arc<SyncUnsafeCell<HashMap<ClientId, Client>>>,
-    connecting_clients: &Arc<SyncUnsafeCell<HashMap<ClientId, ConnectingClient>>>,
+    clients: Arc<SyncUnsafeCell<Clients>>,
     spawner: &Spawner,
-    client: SocketAddr,
-    udp_handle: &UdpHandle
+    udp_handle: UdpHandle,
+    tcp_handle: TcpHandle,
 ) -> Result<(), HandlePacketError> {
-    let mut marker = Marker(0);
-    let marker_reader = MarkerRead(&raw_packet, &mut marker);
-    let header = deserialize_header(marker_reader)?;
-    let raw_body = &raw_packet[marker.0..];
+    let (body_offset, header) = deserialize_header(raw_packet)?;
+    let raw_body = &raw_packet[body_offset..];
+
+    let client_id = {
+        let clients = unsafe { &mut *clients.get() };
+        match clients.id_by_socket_addr(&addr) {
+            Some(client_id) => client_id,
+            None => return Err(HandlePacketError::NeededToBeClient)
+        }
+    };
 
     let context = Context {
-        clients: clients.clone(),
-        connecting_clients: connecting_clients.clone(),
-        addr: client,
-        udp_handle: udp_handle.clone(),
+        client_id,
+        clients,
+        udp_handle,
+        tcp_handle,
     };
+
     match header.kind {
-        packet::AssociateUdp::KIND_ID => {
-            spawner.spawn(associate_udp(context, deserialize_remaining(raw_body, header)?));
-        },
-        packet::AudioFromClient::KIND_ID => {
-            spawner.spawn(audio_from_client(context, deserialize_remaining(raw_body, header)?))
-        },
-        _ => {
-            return Err(HandlePacketError::InvalidPacketType(header.kind, context.addr));
-        }
+        packet::AssociateUdp::KIND_ID => spawner.spawn(associate_udp(context, deserialize_remaining(raw_body, header)?, addr)),
+        packet::AudioFromClient::KIND_ID => spawner.spawn(audio_from_client(context, deserialize_remaining(raw_body, header)?)),
+        _ => return Err(HandlePacketError::InvalidPacketType(header.kind)),
     }
     Ok(())
 }
@@ -154,13 +121,13 @@ pub enum WriteAttempt {
     WriteAttempted,
 }
 
-pub fn attempt_write_packet(socket: &UdpSocket, outgoing: &mut UdpOutgoingQueue, socket_writable: &mut bool, clients: &mut HashMap<ClientId, Client>, connecting_clients: &mut HashMap<ClientId, ConnectingClient>) {
+pub fn attempt_write_packet(socket: &UdpSocket, outgoing: &mut UdpOutgoingQueue, socket_writable: &mut bool, clients: &mut Clients) {
     match outgoing.next_packet(|destination_id, packet_kind, body| {
-        let (packet_id, addr) = if let Some(client) = clients.get_mut(&destination_id) {
+        let (packet_id, addr) = if let Some(client) = clients.established.get_mut(&destination_id) {
             let packet_id = client.next_packet_id;
             client.next_packet_id = NonZeroU64::new(packet_id.get() + 1).unwrap();
             (packet_id, client.udp_addr.clone())
-        } else if let Some(client) = connecting_clients.get_mut(&destination_id) {
+        } else if let Some(client) = clients.connecting.get_mut(&destination_id) {
             let packet_id = client.next_packet_id;
             client.next_packet_id = NonZeroU64::new(packet_id.get() + 1).unwrap();
             (packet_id, client.udp_addr.expect("attempting to send UDP packet to client that hasn't associated yet").clone())

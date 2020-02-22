@@ -1,42 +1,68 @@
-// TODO impl tcp
-//fn read_from_tcp_stream(stream: &mut TcpStream) -> Result<TcpRead, io::Error> {
-//    let mut received_data = Vec::new();
-//    loop {
-//        let mut buf = [0; 256];
-//        match stream.read(&mut buf) {
-//            Ok(0) => return Ok(TcpRead::ConnectionClosed),
-//            Ok(n) => received_data.extend_from_slice(&buf[..n]),
-//            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(TcpRead::Data(received_data)),
-//            Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
-//            Err(err) => return Err(err),
-//        }
-//    }
-//}
-//
-//enum TcpRead {
-//    ConnectionClosed,
-//    Data(Vec<u8>),
-//}
-
-use voice_lib::packet::ClientId;
+use voice_lib::packet::{ClientId, Packet, PacketBody};
 use std::collections::{HashMap, VecDeque};
-use crate::{Client, ConnectingClient};
+use crate::{Clients, Client};
 use std::num::NonZeroU64;
-use voice_lib::{PacketHeader, serialize_head, packet, serialize_body};
+use voice_lib::{PacketHeader, serialize_head, packet, serialize_body, deserialize_header, deserialize_remaining};
 use mio::{IoVec, Registration, Evented, Token, Ready, PollOpt, SetReadiness};
 use std::io;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use voice_lib::Serialize;
 use futures::future::join_all;
-use crate::task::{PacketFuture, PacketFinish};
-use crate::udp::UdpHandle;
+use crate::task::{PacketFuture, PacketFinish, SyncUnsafeCell, Spawner};
+use crate::udp::{UdpHandle, HandlePacketError, Context};
+use mio::net::TcpStream;
+use std::io::Read;
 
-pub async fn hello_todo(client_id: ClientId, tcp_handle: TcpHandle) {
-    println!("queue-ing hello packet");
-    send_packet(&tcp_handle, client_id, packet::Hello {
-        client_id: client_id,
+async fn connect(context: Context, packet: Packet<packet::Connect>) {
+    // TODO respond with packet saying "you need to associate udp first" if failed
+    let users = {
+        let clients = unsafe { &mut *context.clients.get() };
+        if let Some((addr, client)) = clients.connecting.remove(&context.client_id)
+            .and_then(|mut client| client.udp_addr.take().map(|addr| (addr, client)))
+        {
+            clients.established.insert(context.client_id, Client {
+                client_id: context.client_id,
+                udp_addr: addr,
+                tcp_connection: client.tcp_connection,
+                next_packet_id: client.next_packet_id,
+                username: packet.body.username,
+            });
+            clients.established.values()
+                .map(|c| c.username.clone())
+                .collect()
+        } else {
+            return;
+        }
+    };
+
+    send_packet(&context.tcp_handle, context.client_id, packet::ConnectAccepted {
+        users,
     }).await;
+}
+
+pub fn handle_packet(
+    client_id: ClientId,
+    raw_packet: &[u8],
+    clients: Arc<SyncUnsafeCell<Clients>>,
+    spawner: &Spawner,
+    udp_handle: UdpHandle,
+    tcp_handle: TcpHandle,
+) -> Result<(), HandlePacketError> {
+    let (body_offset, header) = deserialize_header(raw_packet)?;
+    let raw_body = &raw_packet[body_offset..];
+
+    let context = Context {
+        client_id,
+        clients,
+        udp_handle,
+        tcp_handle,
+    };
+    match header.kind {
+        packet::Connect::KIND_ID => spawner.spawn(connect(context, deserialize_remaining(raw_body, header)?)),
+        _ => return Err(HandlePacketError::InvalidPacketType(header.kind)),
+    }
+    Ok(())
 }
 
 pub async fn send_packet<B>(handle: &TcpHandle, dest: ClientId, packet: B)
@@ -70,12 +96,12 @@ enum PacketSendStatus {
     SkipPacket,
 }
 
-fn attempt_write_packet(client_id: ClientId, packet_kind: u8, body: &Arc<Vec<u8>>, clients: &mut HashMap<ClientId, Client>, connecting_clients: &mut HashMap<ClientId, ConnectingClient>) -> PacketSendStatus {
-    let (packet_id, connection) = if let Some(client) = clients.get_mut(&client_id) {
+fn attempt_write_packet(client_id: ClientId, packet_kind: u8, body: &Arc<Vec<u8>>, clients: &mut Clients) -> PacketSendStatus {
+    let (packet_id, connection) = if let Some(client) = clients.established.get_mut(&client_id) {
         let packet_id = client.next_packet_id;
         client.next_packet_id = NonZeroU64::new(packet_id.get() + 1).unwrap();
         (packet_id, &mut client.tcp_connection)
-    } else if let Some(client) = connecting_clients.get_mut(&client_id) {
+    } else if let Some(client) = clients.connecting.get_mut(&client_id) {
         let packet_id = client.next_packet_id;
         client.next_packet_id = NonZeroU64::new(packet_id.get() + 1).unwrap();
         (packet_id, &mut client.tcp_connection)
@@ -115,15 +141,15 @@ fn attempt_write_packet(client_id: ClientId, packet_kind: u8, body: &Arc<Vec<u8>
     }
 }
 
-pub fn attempt_write_client_packet(client_id: ClientId, outgoing: &mut TcpOutgoingQueue, clients: &mut HashMap<ClientId, Client>, connecting_clients: &mut HashMap<ClientId, ConnectingClient>) {
+pub fn attempt_write_client_packet(client_id: ClientId, outgoing: &mut TcpOutgoingQueue, clients: &mut Clients) {
     outgoing.next_packet(client_id, |packet_kind, body| {
-        attempt_write_packet(client_id, packet_kind, body, clients, connecting_clients)
+        attempt_write_packet(client_id, packet_kind, body, clients)
     });
 }
 
-pub fn attempt_write_any_packet(outgoing: &mut TcpOutgoingQueue, clients: &mut HashMap<ClientId, Client>, connecting_clients: &mut HashMap<ClientId, ConnectingClient>) {
+pub fn attempt_write_any_packet(outgoing: &mut TcpOutgoingQueue, clients: &mut Clients) {
     outgoing.any_next_packet(|destination_id, packet_kind, body| {
-        attempt_write_packet(destination_id, packet_kind, body, clients, connecting_clients)
+        attempt_write_packet(destination_id, packet_kind, body, clients)
     });
 }
 
@@ -151,7 +177,7 @@ impl TcpOutgoingQueue {
         }
     }
 
-    // TODO we could iterating through the packets, trying to send until either
+    // TODO we could iterate through the packets, trying to send until either
     // one sends _OR_ we've exhausted all potential clients/sockets
     fn any_next_packet<F>(&mut self, mut op: F) -> WriteAttempt
         where F: FnMut(ClientId, u8, &Arc<Vec<u8>>) -> PacketSendStatus
@@ -275,4 +301,24 @@ pub fn queue_and_handle() -> (TcpHandle, TcpOutgoingQueue) {
             queue_per_connection: HashMap::new(),
         }
     )
+}
+
+// TODO use buffer from main()
+pub fn read_buffer_from_tcp_stream(stream: &mut TcpStream) -> Result<TcpRead, io::Error> {
+   let mut received_data = Vec::new();
+   loop {
+       let mut buf = [0; 256];
+       match stream.read(&mut buf) {
+           Ok(0) => return Ok(TcpRead::ConnectionClosed),
+           Ok(n) => received_data.extend_from_slice(&buf[..n]),
+           Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(TcpRead::Data(received_data)),
+           Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
+           Err(err) => return Err(err),
+       }
+   }
+}
+
+pub enum TcpRead {
+   ConnectionClosed,
+   Data(Vec<u8>),
 }

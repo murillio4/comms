@@ -22,7 +22,7 @@ use std::cell::UnsafeCell;
 use std::sync::Arc;
 use crate::task::SyncUnsafeCell;
 use voice_lib::packet::ClientId;
-use crate::tcp::hello_todo;
+use crate::tcp::TcpRead;
 
 mod task;
 mod tcp;
@@ -34,16 +34,58 @@ pub struct TcpConnection {
 }
 
 pub struct ConnectingClient {
+    client_id: ClientId,
     next_packet_id: NonZeroU64,
     tcp_connection: TcpConnection,
     udp_addr: Option<SocketAddr>,
 }
 
 pub struct Client {
+    client_id: ClientId,
     next_packet_id: NonZeroU64,
     tcp_connection: TcpConnection,
     udp_addr: SocketAddr,
     username: String,
+}
+
+pub struct Clients {
+    pub established: HashMap<ClientId, Client>,
+    pub connecting: HashMap<ClientId, ConnectingClient>,
+}
+
+impl Clients {
+    fn new() -> Self {
+        Clients {
+            established: HashMap::new(),
+            connecting: HashMap::new(),
+        }
+    }
+
+    pub fn remove(&mut self, client_id: &ClientId) -> Option<TcpConnection> {
+        self.established.remove(client_id)
+            .map(|c| c.tcp_connection)
+            .or_else(|| self.connecting.remove(client_id).map(|c| c.tcp_connection))
+    }
+
+    pub fn id_by_socket_addr(&self, addr: &SocketAddr) -> Option<ClientId> {
+        self.established.values()
+            .find(|c| &c.udp_addr == addr)
+            .map(|c| c.client_id)
+            .or_else(|| {
+                self.connecting.values()
+                    .find(|c| c.udp_addr == Some(*addr))
+                    .map(|c| c.client_id)
+            })
+    }
+
+    pub fn tcp_connection_by_id<F, R>(&mut self, client_id: &ClientId, cb: F) -> R
+        where F: FnOnce(Option<&mut TcpConnection>) -> R
+    {
+        let established_connection = self.established.get_mut(client_id).map(|c| &mut c.tcp_connection);
+        let connecting = self.connecting.get_mut(client_id).map(|c| &mut c.tcp_connection);
+
+        cb(established_connection.or(connecting))
+    }
 }
 
 fn main() -> Result<(), CommsServerError> {
@@ -80,11 +122,8 @@ fn main() -> Result<(), CommsServerError> {
 
     let mut events = Events::with_capacity(1024);
     let mut buffer = [0u8; 65535];
-
-    let connecting_clients = Arc::new(SyncUnsafeCell(UnsafeCell::new(HashMap::<ClientId, ConnectingClient>::new())));
-    let clients = Arc::new(SyncUnsafeCell(UnsafeCell::new(HashMap::<ClientId, Client>::new())));
-
     let mut udp_socket_writable = false;
+    let clients = Arc::new(SyncUnsafeCell(UnsafeCell::new(Clients::new())));
 
     loop {
         poll.poll(&mut events, None)?;
@@ -108,35 +147,33 @@ fn main() -> Result<(), CommsServerError> {
                     }
 
                     let buffer = &buffer[0..size];
-                    udp::handle_packet(buffer, &clients, &connecting_clients, &spawner, remote_addr, &udp_handle).unwrap();
+                    udp::handle_packet(remote_addr, buffer, clients.clone(), &spawner, udp_handle.clone(), tcp_handle.clone()).unwrap();
                 }
                 if readiness.is_writable() {
                     println!("Attempting to output UDP packet (socket writable)");
                     let mut clients = unsafe { &mut *clients.get() };
-                    let mut connecting_clients = unsafe { &mut *connecting_clients.get() };
-                    udp::attempt_write_packet(&udp_socket, &mut udp_outgoing_queue, &mut udp_socket_writable, &mut clients, &mut connecting_clients);
+                    udp::attempt_write_packet(&udp_socket, &mut udp_outgoing_queue, &mut udp_socket_writable, &mut clients);
                 }
             } else if token == udp_queue_token {
                 println!("Attempting to output UDP packet (packet pushed)");
                 if udp_socket_writable {
                     let mut clients = unsafe { &mut *clients.get() };
-                    let mut connecting_clients = unsafe { &mut *connecting_clients.get() };
-                    udp::attempt_write_packet(&udp_socket, &mut udp_outgoing_queue, &mut udp_socket_writable, &mut clients, &mut connecting_clients);
+                    udp::attempt_write_packet(&udp_socket, &mut udp_outgoing_queue, &mut udp_socket_writable, &mut clients);
                 }
             } else if token == tcp_queue_token {
                 println!("Attempting to output TCP packet (packet pushed)");
                 let mut clients = unsafe { &mut *clients.get() };
-                let mut connecting_clients = unsafe { &mut *connecting_clients.get() };
-                tcp::attempt_write_any_packet(&mut tcp_outgoing_queue, &mut clients, &mut connecting_clients);
+                tcp::attempt_write_any_packet(&mut tcp_outgoing_queue, &mut clients);
             } else if token == tcp_listener_token {
                 let (stream, _) = tcp_listener.accept()?;
-                let id = next_client_id() as ClientId;
-                let token = Token(id as usize);
+                let client_id = next_client_id() as ClientId;
+                let token = Token(client_id as usize);
                 poll.register(&stream, token, Ready::all(), PollOpt::edge())?;
 
-                println!("TCP Connection opened with id {}", &id);
-                let connecting_clients = unsafe { &mut *connecting_clients.get() };
-                connecting_clients.insert(id, ConnectingClient {
+                println!("TCP Connection opened with id {}", &client_id);
+                let clients = unsafe { &mut *clients.get() };
+                clients.connecting.insert(client_id, ConnectingClient {
+                    client_id,
                     next_packet_id: NonZeroU64::new(1).unwrap(),
                     tcp_connection: TcpConnection {
                         tcp_stream: stream,
@@ -144,45 +181,39 @@ fn main() -> Result<(), CommsServerError> {
                     },
                     udp_addr: None,
                 });
-
-                spawner.spawn(hello_todo(id, tcp_handle.clone()));
             } else { // it's a TCP stream event
                 let readiness = event.readiness();
                 if readiness.is_readable() {
                     println!("TCP read event for {}", token.0);
+                    let client_id = token.0 as ClientId;
+                    let tcp_read = {
+                        let clients = unsafe { &mut *clients.get() };
+
+                        clients.tcp_connection_by_id(&client_id, |connection| {
+                            connection
+                                .map(|connection| tcp::read_buffer_from_tcp_stream(&mut connection.tcp_stream))
+                                .expect("received 'readable' event for non-existant client")
+                        })
+                    };
+
+                    match tcp_read {
+                        Ok(TcpRead::Data(buffer)) => tcp::handle_packet(client_id, &buffer, clients.clone(), &spawner, udp_handle.clone(), tcp_handle.clone()).unwrap(),
+                        Ok(TcpRead::ConnectionClosed) => {
+                            let clients = unsafe { &mut *clients.get() };
+                            let client = clients.remove(&client_id).expect("tried to remove client that doesn't exist");
+                            poll.deregister(&client.tcp_stream).unwrap();
+                        },
+                        Err(_) => continue,
+                    }
                 }
                 if readiness.is_writable() {
                     println!("TCP stream for {} is writable, sending next packet (if any)", token.0);
-                    let mut clients = unsafe { &mut *clients.get() };
-                    let mut connecting_clients = unsafe { &mut *connecting_clients.get() };
                     let client_id = token.0 as ClientId;
 
-                    clients.get_mut(&client_id).map(|c| &mut c.tcp_connection)
-                        .or_else(|| connecting_clients.get_mut(&client_id).map(|c| &mut c.tcp_connection))
-                        .map(|c| c.tcp_writable = true);
-
-                    tcp::attempt_write_client_packet(client_id, &mut tcp_outgoing_queue, &mut clients, &mut connecting_clients);
+                    let mut clients = unsafe { &mut *clients.get() };
+                    clients.tcp_connection_by_id(&client_id, |c| c.map(|c| c.tcp_writable = true));
+                    tcp::attempt_write_client_packet(client_id, &mut tcp_outgoing_queue, &mut clients);
                 }
-//                if let Some(client) = clients.get_mut(&token) {
-//                    println!("handle packet to client");
-//                } else if let Some((id, connecting_client)) = connecting_clients
-//                    .iter_mut()
-//                    .find(|(id, c)| c.tcp_token == token) {
-//                    match read_from_tcp_stream(&mut connecting_client.tcp_stream)? {
-//                        TcpRead::ConnectionClosed => connecting_clients.remove(id),
-//                        TcpRead::Data(buffer) => {
-//                            let (packet_type, packet) = (buffer[0], &buffer[1..]);
-//                            if packet_type == packet::Connect::KIND_ID {
-//
-//                            } else {
-//                                let response_packet = packet::ErrorResponse;
-//                                // todo respond with packet
-////                                outgoing_queue.push((Rc::new(serialize(packet::AssociateUdpAccepted)?), remote_addr));
-////                                attempt_write(&mut outgoing_queue, &udp_socket, &mut udp_writable);
-//                            }
-//                        }
-//                    }
-//                }
             }
         }
     };
