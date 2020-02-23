@@ -10,7 +10,7 @@ use std::num::NonZeroU64;
 pub fn serialize<B>(id: NonZeroU64, reply_to: Option<NonZeroU64>, packet: B) -> Result<Vec<u8>, SerializeError>
     where B: PacketBody + Serialize
 {
-    WritePacketBuilder::new(reply_to, packet)?.into_raw(id)
+    WritePacketBuilder::new(reply_to, &packet)?.into_raw(id)
 }
 
 pub struct WritePacketBuilder {
@@ -20,11 +20,11 @@ pub struct WritePacketBuilder {
 }
 
 impl WritePacketBuilder {
-    pub fn new<B>(reply_to: Option<NonZeroU64>, body: B) -> Result<Self, SerializeError>
+    pub fn new<B>(reply_to: Option<NonZeroU64>, body: &B) -> Result<Self, SerializeError>
         where B: PacketBody + Serialize
     {
         let mut raw = vec![0u8; mem::size_of::<PacketHeader>()];
-        bincode::serialize_into(&mut raw, &body).map_err(|_| SerializeError)?;
+        bincode::serialize_into(&mut raw, body).map_err(|_| SerializeError)?;
         Ok(WritePacketBuilder {
             raw,
             kind: B::KIND_ID,

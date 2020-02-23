@@ -1,4 +1,4 @@
-use voice_lib::packet::{ClientId, Packet, PacketBody, FinishConnect, FinishConnectAccepted};
+use voice_lib::packet::{ClientId, Packet, PacketBody, FinishConnect, FinishConnectAccepted, ErrorResponse};
 use std::collections::{HashMap, VecDeque};
 use crate::{Clients, Client, CurrentClient};
 use std::num::NonZeroU64;
@@ -7,38 +7,46 @@ use std::io;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use futures::future::join_all;
-use crate::task::{PacketFuture, PacketFinish, SyncUnsafeCell, Spawner};
+use crate::task::{PacketFuture, PacketFinish, SyncUnsafeCell, Spawner, HandlePacketError};
 use crate::udp::{UdpHandle, HandleReadableStreamError, Context};
-use voice_lib::serialization::WritePacketBuilder;
+use voice_lib::serialization::{WritePacketBuilder};
 use voice_lib::Serialize;
 use voice_lib::network::{UpdateFromStream, StreamPacket};
 use std::io::Write;
 use std::cell::UnsafeCell;
+use std::fmt::Debug;
 
-async fn finish_connect(context: Context, packet: Packet<FinishConnect>) {
-    // TODO respond with packet saying "you need to associate udp first" if failed
-    let users = {
+async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Result<(), HandlePacketError> {
+    let packet: OutgoingPacketBuilder = {
         let clients = unsafe { &mut *context.clients.get() };
-        if let Some((addr, client)) = clients.connecting.remove(&context.client_id)
-            .and_then(|mut client| client.udp_addr.take().map(|addr| (addr, client)))
-        {
-            clients.established.insert(context.client_id, Client {
-                udp_addr: addr,
-                tcp_connection: client.tcp_connection,
-                next_packet_id: client.next_packet_id,
-                username: packet.body.username,
-            });
-            clients.established.values()
-                .map(|c| c.username.clone())
-                .collect()
-        } else {
-            return;
+        let mut client = match clients.connecting.remove(&context.client_id) {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        match client.udp_addr.take() {
+            None => {
+                clients.connecting.insert(context.client_id, client);
+                OutgoingPacketBuilder::new(Some(packet.id),  ErrorResponse::AssociateUdpFirst)?
+            }
+            Some(addr) => {
+                clients.established.insert(context.client_id, Client {
+                    udp_addr: addr,
+                    tcp_connection: client.tcp_connection,
+                    next_packet_id: client.next_packet_id,
+                    username: packet.body.username,
+                });
+                OutgoingPacketBuilder::new(Some(packet.id),  FinishConnectAccepted {
+                    users: clients.established.values()
+                        .map(|c| c.username.clone())
+                        .collect()
+                })?
+            }
         }
     };
 
-    send_packet(&context.tcp_handle, context.client_id, Some(packet.id), FinishConnectAccepted {
-        users,
-    }).await;
+    packet.send_packet_tcp(&context.tcp_handle, context.client_id).await;
+    Ok(())
 }
 
 fn handle_packet(spawner: &Spawner, context: Context, stream_packet: StreamPacket) -> Result<(), HandleReadableStreamError> {
@@ -106,24 +114,45 @@ pub fn handle_readable_stream(
     Ok(())
 }
 
-pub async fn send_packet<B>(handle: &TcpHandle, dest: ClientId, reply_to: Option<NonZeroU64>, packet: B)
-    where B: PacketBody + Serialize
-{
-    let builder = WritePacketBuilder::new(reply_to, packet).unwrap();
-    handle.send(dest, Arc::new(SyncUnsafeCell(UnsafeCell::new(builder)))).await.unwrap();
+pub struct OutgoingPacketBuilder {
+    builder: Arc<SyncUnsafeCell<WritePacketBuilder>>,
 }
 
-pub async fn send_packet_to_many<B>(handle: &TcpHandle, clients: Vec<ClientId>, reply_to: Option<NonZeroU64>, packet: B)
-    where B: PacketBody + Serialize
-{
-    let builder = WritePacketBuilder::new(reply_to, packet).unwrap();
-    let raw = Arc::new(SyncUnsafeCell(UnsafeCell::new(builder)));
+impl OutgoingPacketBuilder {
+    pub fn new<B>(reply_to: Option<NonZeroU64>, packet: B) -> Result<Self, HandlePacketError>
+        where B: PacketBody + Serialize + Debug + 'static
+    {
+        let builder = WritePacketBuilder::new(reply_to, &packet)
+            .map_err(|_| HandlePacketError::SerializeFailed { kind: B::KIND_ID, packet: Box::new(packet) })?;
+        Ok(Self {
+            builder: Arc::new(SyncUnsafeCell(UnsafeCell::new(builder))),
+        })
+    }
 
-    let futures: Vec<PacketFuture> = clients.into_iter()
-        .map(|c| handle.send(c, raw.clone()))
-        .collect();
-    for result in join_all(futures).await {
-        result.unwrap();
+    pub async fn send_packet_tcp(self, handle: &TcpHandle, dest: ClientId) {
+        handle.send(dest, self.builder).await
+    }
+
+    pub async fn send_packet_udp(self, handle: &UdpHandle, dest: ClientId) {
+        handle.send(dest, self.builder).await
+    }
+
+    pub async fn send_packet_to_many_tcp(self, handle: &TcpHandle, clients: Vec<ClientId>) {
+        let arc = self.builder;
+
+        let futures: Vec<PacketFuture> = clients.into_iter()
+            .map(|c| handle.send(c, arc.clone()))
+            .collect();
+        join_all(futures).await;
+    }
+
+    pub async fn send_packet_to_many_udp(self, handle: &UdpHandle, clients: Vec<ClientId>) {
+        let arc = self.builder;
+
+        let futures: Vec<PacketFuture> = clients.into_iter()
+            .map(|c| handle.send(c, arc.clone()))
+            .collect();
+        join_all(futures).await;
     }
 }
 
@@ -233,7 +262,7 @@ impl TcpOutgoingQueue {
                     return WriteAttempt::WriteAttempted;
                 }
                 PacketSendStatus::Done => {
-                    packet.finish.done(Ok(()));
+                    packet.finish.done();
                     return WriteAttempt::WriteAttempted;
                 }
                 PacketSendStatus::SkipPacket => {
@@ -269,7 +298,7 @@ impl TcpOutgoingQueue {
                         .position(|id| id == &client_id)
                         .expect("packet_order queue is out of sync with queue_per_connection");
                     self.packet_order.remove(position);
-                    packet.finish.done(Ok(()));
+                    packet.finish.done();
                     return WriteAttempt::WriteAttempted;
                 }
                 PacketSendStatus::SkipPacket => {

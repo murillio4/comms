@@ -23,6 +23,7 @@ impl<T: PacketBody> Packet<T> {
 
 pub trait PacketBody {
     const KIND_ID: PacketKind;
+    fn kind_id() -> PacketKind { Self::KIND_ID }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -67,7 +68,7 @@ impl PacketBody for KeepAlive {
     const KIND_ID: PacketKind = 4u8;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AudioToClient {
     #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
@@ -87,9 +88,9 @@ impl PacketBody for FinishConnectAccepted {
     const KIND_ID: PacketKind = 6u8;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ErrorResponse {
-    ConnectFirst,
+    AssociateUdpFirst,
 }
 
 impl PacketBody for ErrorResponse {

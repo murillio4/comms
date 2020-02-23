@@ -11,14 +11,16 @@ use std::task::Waker;
 use std::pin::Pin;
 use std::cell::UnsafeCell;
 use std::ops::Deref;
+use voice_lib::packet::PacketKind;
+use std::fmt::Debug;
 
 pub struct PacketFuture {
-    receiver: Arc<SyncUnsafeCell<oneshot::Receiver<Result<(), ()>>>>,
+    receiver: Arc<SyncUnsafeCell<oneshot::Receiver<()>>>,
     waker: Arc<SyncUnsafeCell<Option<Waker>>>,
 }
 
 impl Future for PacketFuture {
-    type Output = Result<(), ()>; // TODO need to be result? Need output at all?
+    type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let receiver = self.receiver.0.get();
@@ -53,13 +55,13 @@ impl PacketFuture {
 }
 
 pub struct PacketFinish {
-    sender: oneshot::Sender<Result<(), ()>>,
+    sender: oneshot::Sender<()>,
     waker: Arc<SyncUnsafeCell<Option<Waker>>>,
 }
 
 impl PacketFinish {
-    pub fn done(self, response: Result<(), ()>) {
-        let _ = self.sender.send(response);
+    pub fn done(self) {
+        let _ = self.sender.send(());
         let waker = unsafe { &mut *self.waker.get() };
         if let Some(waker) = waker.take() {
             waker.wake();
@@ -83,8 +85,13 @@ impl TaskExecutor {
                     if let Some(mut future) = future_slot.take() {
                         let waker = waker_ref(&task);
                         let context = &mut Context::from_waker(&*waker);
-                        if let Poll::Pending = future.as_mut().poll(context) {
-                            *future_slot = Some(future)
+                        match future.as_mut().poll(context) {
+                            Poll::Pending => *future_slot = Some(future),
+                            Poll::Ready(result) => {
+                                if let Err(e) = result {
+                                    panic!(format!("Packet-handling function failed: {:?}", e));
+                                }
+                            }
                         }
                     }
                 }
@@ -113,8 +120,16 @@ pub struct Spawner {
     task_scheduler: Scheduler,
 }
 
+#[derive(Debug)]
+pub enum HandlePacketError {
+    SerializeFailed {
+        kind: PacketKind,
+        packet: Box<dyn Debug>
+    },
+}
+
 impl Spawner {
-    pub fn spawn(&self, future: impl Future<Output = ()> + 'static + Send) {
+    pub fn spawn(&self, future: impl Future<Output = Result<(), HandlePacketError>> + 'static + Send) {
         let future = future.boxed();
         let task = Arc::new(Task {
             future: SyncUnsafeCell(UnsafeCell::new(Some(future))),
@@ -149,7 +164,7 @@ impl<T> Deref for SyncUnsafeCell<T> {
 }
 
 struct Task {
-    future: SyncUnsafeCell<Option<BoxFuture<'static, ()>>>,
+    future: SyncUnsafeCell<Option<BoxFuture<'static, Result<(), HandlePacketError>>>>,
     task_scheduler: Scheduler,
 }
 

@@ -19,9 +19,9 @@ use std::io::Error;
 use std::num::NonZeroU64;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
-use crate::task::SyncUnsafeCell;
+use crate::task::{SyncUnsafeCell, HandlePacketError};
 use voice_lib::packet::ClientId;
-use crate::tcp::TcpHandle;
+use crate::tcp::{TcpHandle, OutgoingPacketBuilder};
 use voice_lib::network::{CommsTcpStream};
 use voice_lib::serialization::DeserializeError;
 
@@ -97,11 +97,12 @@ impl Clients {
     }
 }
 
-pub async fn on_connect(tcp_handle: TcpHandle, client_id: ClientId) {
-    println!("Saying hello to new client {}", &client_id);
-    tcp::send_packet(&tcp_handle, client_id, None, packet::Hello {
+pub async fn on_connect(tcp_handle: TcpHandle, client_id: ClientId) -> Result<(), HandlePacketError> {
+    let outgoing = OutgoingPacketBuilder::new(None, packet::Hello {
         client_id
-    }).await;
+    })?;
+    outgoing.send_packet_tcp(&tcp_handle, client_id).await;
+    Ok(())
 }
 
 fn main() -> Result<(), CommsServerError> {

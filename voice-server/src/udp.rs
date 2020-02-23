@@ -1,17 +1,15 @@
-use crate::{udp, Clients};
+use crate::Clients;
 use std::net::SocketAddr;
 use mio::net::UdpSocket;
-use crate::task::{PacketFinish, Spawner, PacketFuture, SyncUnsafeCell};
+use crate::task::{PacketFinish, Spawner, PacketFuture, SyncUnsafeCell, HandlePacketError};
 use std::io;
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel, SyncSender};
 use mio::{SetReadiness, Ready, Registration, Evented, Token, PollOpt};
-use futures::future::join_all;
-use voice_lib::{Serialize, packet};
+use voice_lib::packet;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::fmt::Debug;
-use crate::tcp::TcpHandle;
-use std::cell::UnsafeCell;
+use crate::tcp::{TcpHandle, OutgoingPacketBuilder};
 use voice_lib::packet::{ClientId, Packet, AssociateUdp, AssociateUdpAccepted, AudioFromClient, PacketBody, AudioToClient};
 use voice_lib::serialization::{DeserializeError, HeaderParsedPacket, WritePacketBuilder};
 
@@ -22,20 +20,21 @@ pub struct Context {
     pub tcp_handle: TcpHandle,
 }
 
-async fn associate_udp(udp_handle: UdpHandle, clients: Arc<SyncUnsafeCell<Clients>>, addr: SocketAddr, packet: Packet<AssociateUdp>) {
-    let client_id = {
+async fn associate_udp(udp_handle: UdpHandle, clients: Arc<SyncUnsafeCell<Clients>>, addr: SocketAddr, packet: Packet<AssociateUdp>) -> Result<(), HandlePacketError> {
+    let outgoing = {
         let clients = unsafe { &mut *clients.get() };
         let mut client = match clients.connecting.get_mut(&packet.body.client_id) {
             Some(client) => client,
-            None => return,
+            None => return Ok(()),
         };
         client.udp_addr = Some(addr);
-        packet.body.client_id
+        OutgoingPacketBuilder::new(Some(packet.id), AssociateUdpAccepted)?
     };
-    udp::send_packet(&udp_handle, client_id, Some(packet.id), AssociateUdpAccepted).await;
+    outgoing.send_packet_udp(&udp_handle, packet.body.client_id).await;
+    Ok(())
 }
 
-async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) {
+async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) -> Result<(), HandlePacketError> {
     let client_ids = {
         let clients = unsafe { &*context.clients.get() };
         clients.established.iter()
@@ -43,11 +42,12 @@ async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) {
             .filter(|id| id != &context.client_id)
             .collect()
     };
-    let audio_to_client = packet::AudioToClient {
+    let outgoing = OutgoingPacketBuilder::new(None, AudioToClient {
         author: context.client_id,
         bytes: packet.body.0,
-    };
-    udp::send_packet_to_many(&context.udp_handle, client_ids, None, audio_to_client).await;
+    })?;
+    outgoing.send_packet_to_many_udp(&context.udp_handle, client_ids).await;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -110,28 +110,6 @@ pub fn handle_packet(
         _ => return Err(HandleReadableStreamError::InvalidPacketType(kind)),
     }
     Ok(())
-}
-
-pub async fn send_packet<B>(handle: &UdpHandle, dest: ClientId, reply_to: Option<NonZeroU64>, packet: B)
-    where B: packet::PacketBody + Serialize
-{
-    println!("queueing UDP packet of type {}", B::KIND_ID);
-    let builder = WritePacketBuilder::new(reply_to,packet).unwrap();
-    handle.send(dest, Arc::new(SyncUnsafeCell(UnsafeCell::new(builder)))).await.unwrap();
-}
-
-pub async fn send_packet_to_many<B>(handle: &UdpHandle, clients: Vec<ClientId>, reply_to: Option<NonZeroU64>, packet: B)
-    where B: packet::PacketBody + Serialize
-{
-    let builder = WritePacketBuilder::new(reply_to, packet).unwrap();
-    let raw = Arc::new(SyncUnsafeCell(UnsafeCell::new(builder)));
-
-    let futures: Vec<PacketFuture> = clients.into_iter()
-        .map(|c| handle.send(c, raw.clone()))
-        .collect();
-    for result in join_all(futures).await {
-        result.unwrap();
-    }
 }
 
 pub enum WriteAttempt {
@@ -208,7 +186,7 @@ impl UdpOutgoingQueue {
                     return WriteAttempt::WriteAttempted;
                 },
                 PacketSendStatus::Done => {
-                    packet.finish.done(Ok(()));
+                    packet.finish.done();
                     return WriteAttempt::WriteAttempted;
                 },
                 PacketSendStatus::SkipPacket => {
@@ -248,7 +226,7 @@ pub struct UdpHandle {
 }
 
 impl UdpHandle {
-    fn send(&self, dest: ClientId, builder: Arc<SyncUnsafeCell<WritePacketBuilder>>) -> PacketFuture {
+    pub fn send(&self, dest: ClientId, builder: Arc<SyncUnsafeCell<WritePacketBuilder>>) -> PacketFuture {
         let (future, finish) = PacketFuture::new();
         self.sender.send(OutgoingPacket {
             dest,
