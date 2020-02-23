@@ -1,4 +1,4 @@
-use voice_lib::packet::{ClientId, Packet, PacketBody, FinishConnect, FinishConnectAccepted, ErrorResponse};
+use voice_lib::packet::{ClientId, Packet, PacketBody, FinishConnect, FinishConnectAccepted, ErrorResponse, PacketId};
 use std::sync::Arc;
 use crate::task::{SyncUnsafeCell, Spawner, EndpointError};
 use crate::udp::{HandlePacketError, Context};
@@ -39,11 +39,17 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
     Ok(())
 }
 
-fn packet_to_endpoint(spawner: &Spawner, context: Context, stream_packet: IncomingStreamPacket) -> Result<(), HandlePacketError> {
-    let kind = stream_packet.header.kind;
+pub async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> Result<(), EndpointError> {
+    let outgoing = SendPacket::new(Some(packet_id), ErrorResponse::UnexpectedPacket(packet_id))?;
+    outgoing.tcp(&context.network_handle, context.client_id).await;
+    Ok(())
+}
+
+fn packet_to_endpoint(spawner: &Spawner, context: Context, packet: IncomingStreamPacket) -> Result<(), HandlePacketError> {
+    let kind = packet.header.kind;
     match kind {
-        FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, stream_packet.finish_parse()?)),
-        _ => return Err(HandlePacketError::InvalidPacketType(kind)),
+        FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, packet.finish_parse()?)),
+        _ => spawner.spawn(sent_wrong_packet(context, packet.header.id)),
     };
     Ok(())
 }

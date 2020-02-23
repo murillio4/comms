@@ -15,7 +15,7 @@ use std::num::NonZeroU64;
 use mio::net::TcpStream;
 use voice_lib::serialization::{OwnedHeaderParsedPacket, DeserializeError, HeaderParsedPacket, WritePacketBuilder, SerializeError};
 use voice_lib::packet;
-use voice_lib::network::{CommsTcpStream, UpdateFromStream, IncomingStreamPacket};
+use voice_lib::network::{CommsTcpStream, UpdateFromStream, IncomingStreamPacket, Protocol};
 use std::io::Write;
 
 pub mod future;
@@ -427,7 +427,7 @@ impl Handle {
     {
         self.command(Command::Packet {
             protocol: Protocol::Udp,
-            outgoing: WritePacketBuilder::new(None, packet)?,
+            outgoing: WritePacketBuilder::new(None, &packet)?,
             send_response: None,
         });
         Ok(())

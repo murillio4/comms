@@ -20,7 +20,8 @@ use crate::task::{SyncUnsafeCell, EndpointError};
 use voice_lib::packet::ClientId;
 use voice_lib::serialization::DeserializeError;
 use crate::network::{NetworkHandle, SendPacket};
-use crate::client::{Clients, ConnectingClient, Connection};
+use crate::client::{Clients, ConnectingClient, Connection, AnyClient};
+use crate::udp::HandlePacketError;
 
 mod client;
 mod network;
@@ -89,7 +90,17 @@ fn main() -> Result<(), CommsServerError> {
                     }
 
                     let buffer = &buffer[0..size];
-                    udp::handle_raw_packet(remote_addr, buffer, clients.clone(), &spawner, network_handle.clone()).unwrap();
+                    match udp::handle_raw_packet(remote_addr.clone(), buffer, clients.clone(), &spawner, network_handle.clone()) {
+                        Err(HandlePacketError::CommunicationFailure) => {
+                            let clients = unsafe { &mut *clients.get() };
+                            match clients.remove_client_by_socket_addr(&remote_addr) {
+                                Some(AnyClient::Established(client)) => poll.deregister(&client.connection.stream.internal).unwrap(),
+                                Some(AnyClient::Connecting(client)) => poll.deregister(&client.connection.stream.internal).unwrap(),
+                                _ => ()
+                            }
+                        },
+                        _ => ()
+                    };
                 }
                 if readiness.is_writable() {
                     udp_socket_writable = true;

@@ -8,6 +8,7 @@ use voice_lib::packet::{ClientId, Packet, AssociateUdp, AssociateUdpAccepted, Au
 use voice_lib::serialization::{DeserializeError, HeaderParsedPacket};
 use crate::network::{NetworkHandle, SendPacket};
 use crate::client::Clients;
+use crate::tcp::sent_wrong_packet;
 
 pub struct Context {
     pub clients: Arc<SyncUnsafeCell<Clients>>,
@@ -47,20 +48,18 @@ async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) ->
 
 #[derive(Debug)]
 pub enum HandlePacketError {
-    Io,
-    DeserializeFailed,
-    InvalidPacketType(u8),
+    CommunicationFailure,
 }
 
 impl From<DeserializeError> for HandlePacketError {
     fn from(_: DeserializeError) -> Self {
-        HandlePacketError::DeserializeFailed
+        HandlePacketError::CommunicationFailure
     }
 }
 
 impl From<io::Error> for HandlePacketError {
     fn from(_: io::Error) -> Self {
-        HandlePacketError::Io
+        HandlePacketError::CommunicationFailure
     }
 }
 
@@ -72,7 +71,7 @@ fn packet_to_endpoint(spawner: &Spawner, packet: HeaderParsedPacket, context: Co
 
     match kind {
         AudioFromClient::KIND_ID => spawner.spawn(audio_from_client(context, packet.finish_parse()?)),
-        _ => return Err(HandlePacketError::InvalidPacketType(kind)),
+        _ => spawner.spawn(sent_wrong_packet(context, packet.header.id))
     };
     Ok(())
 }

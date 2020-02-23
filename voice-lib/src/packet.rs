@@ -92,6 +92,7 @@ impl PacketBody for FinishConnectAccepted {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ErrorResponse {
     AssociateUdpFirst,
+    UnexpectedPacket(PacketId)
 }
 
 impl PacketBody for ErrorResponse {

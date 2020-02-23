@@ -6,7 +6,7 @@ use futures::channel::oneshot;
 use crate::network;
 use serde::{Serialize};
 use serde::de::DeserializeOwned;
-use crate::network::{Command, ConnectError, DisconnectError, Protocol};
+use crate::network::{Command, ConnectError, DisconnectError};
 use std::fmt::{Debug, Formatter, Error};
 use std::time::Duration;
 use futures_timer::Delay;
@@ -17,6 +17,7 @@ use async_std::net::ToSocketAddrs;
 use voice_lib::packet::{PacketBody, FinishConnectAccepted, Packet, AssociateUdp, FinishConnect, AssociateUdpAccepted};
 use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
 use std::num::NonZeroU64;
+use voice_lib::network::Protocol;
 
 async fn connect_without_timeout(handle: &network::Handle, destination: String, username: String) -> Result<Vec<String>, ConnectError> {
     let destination_with_port = format!("{}:18847", destination);
@@ -79,7 +80,7 @@ pub async fn disconnect(handle: &network::Handle) -> Result<(), DisconnectError>
 pub async fn request_any<Req>(handle: &network::Handle, packet_type: Protocol, reply_to: Option<NonZeroU64>, request: Req) -> Result<OwnedHeaderParsedPacket, SerializeError>
     where Req: PacketBody + Serialize,
 {
-    let outgoing = WritePacketBuilder::new(reply_to, request)?;
+    let outgoing = WritePacketBuilder::new(reply_to, &request)?;
     Ok(NetworkFuture::new(handle, |s| Command::Packet {
         protocol: packet_type,
         outgoing,
@@ -104,7 +105,7 @@ pub fn send<Req>(handle: &network::Handle, packet_type: Protocol, reply_to: Opti
 {
     handle.command(Command::Packet {
         protocol: packet_type,
-        outgoing: WritePacketBuilder::new(reply_to, request)?,
+        outgoing: WritePacketBuilder::new(reply_to, &request)?,
         send_response: None,
     });
     Ok(())

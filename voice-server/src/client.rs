@@ -103,6 +103,14 @@ impl Clients {
         established_connection.or(connecting)
     }
 
+    pub fn remove_client_by_socket_addr(&mut self, addr: &SocketAddr) -> Option<AnyClient> {
+        self.id_by_socket_addr(addr)
+            .and_then(|id| {
+                self.established.remove(&id).map(|c| AnyClient::Established(c))
+                    .or(self.connecting.remove(&id).map(|c| AnyClient::Connecting(c)))
+            })
+    }
+
     pub fn client_by_id(&mut self, client_id: &ClientId) -> Option<AnyClientRef> {
         self.established.get_mut(client_id)
             .map(|c| AnyClientRef::Established(c))
