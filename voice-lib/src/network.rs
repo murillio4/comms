@@ -7,7 +7,7 @@ use crate::serialization::{DeserializeError, OwnedHeaderParsedPacket};
 use crate::packet::{Packet, PacketBody};
 use serde::de::DeserializeOwned;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Protocol {
     Tcp,
     Udp,

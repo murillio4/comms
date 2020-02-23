@@ -45,7 +45,7 @@ impl PacketBody for AssociateUdpAccepted {
 
 #[derive(Serialize, Deserialize)]
 pub struct FinishConnect {
-    pub username: String,
+    pub name: String,
 }
 
 impl PacketBody for FinishConnect {
@@ -82,7 +82,7 @@ impl PacketBody for AudioToClient {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FinishConnectAccepted {
-    pub users: Vec<String>,
+    pub users: Vec<(ClientId, String)>,
 }
 
 impl PacketBody for FinishConnectAccepted {
@@ -106,4 +106,38 @@ pub struct Hello {
 
 impl PacketBody for Hello {
     const KIND_ID: PacketKind = 8u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserJoined {
+    pub id: u16,
+    pub name: String,
+}
+
+impl PacketBody for UserJoined {
+    const KIND_ID: PacketKind = 9u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserLeft {
+    pub id: u16,
+}
+
+impl PacketBody for UserLeft {
+    const KIND_ID: PacketKind = 10u8;
+}
+
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub enum DisconnectReason {
+    Leaving,
+    MalformedData,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Disconnect {
+    pub reason: DisconnectReason,
+}
+
+impl PacketBody for Disconnect {
+    const KIND_ID: PacketKind = 11u8;
 }

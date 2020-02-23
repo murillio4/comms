@@ -17,29 +17,28 @@ use std::io::Error;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
 use crate::task::{SyncUnsafeCell, EndpointError};
-use voice_lib::packet::ClientId;
+use voice_lib::packet::{ClientId, DisconnectReason};
 use voice_lib::serialization::DeserializeError;
-use crate::network::{NetworkHandle, SendPacket};
-use crate::client::{Clients, ConnectingClient, Connection, AnyClient};
-use crate::udp::HandlePacketError;
+use crate::network::{NetworkHandle, SendPacket, Target, CommunicationFailure};
+use crate::client::{Clients, ConnectingClient, Connection};
+use crate::endpoints::{handle_udp_packet, HandlePacketError, handle_tcp_stream, spawn_close_connection, StreamStatus};
 
 mod client;
+mod endpoints;
 mod network;
 mod task;
-mod tcp;
-mod udp;
 
 pub async fn on_connect(network_handle: NetworkHandle, client_id: ClientId) -> Result<(), EndpointError> {
-    let outgoing = SendPacket::new(None, packet::Hello {
+    let outgoing = SendPacket::tcp(Target::One(client_id), None, packet::Hello {
         client_id
     })?;
-    outgoing.tcp(&network_handle, client_id).await;
+    outgoing.send(&network_handle).await;
     Ok(())
 }
 
 fn main() -> Result<(), CommsServerError> {
     #[cfg(windows)]
-    bump_priority();
+        bump_priority();
 
     let mut raw_next_client_id: ClientId = 0;
     let mut next_client_id = move || {
@@ -65,13 +64,18 @@ fn main() -> Result<(), CommsServerError> {
     poll.register(&tcp_listener, tcp_listener_token, Ready::readable(), PollOpt::edge())?;
     poll.register(&outgoing_queue, outgoing_token, Ready::readable(), PollOpt::edge())?;
 
+    let poll = Arc::new(SyncUnsafeCell(UnsafeCell::new(poll)));
+
     let mut events = Events::with_capacity(1024);
     let mut buffer = [0u8; 65535];
     let mut udp_socket_writable = false;
     let clients = Arc::new(SyncUnsafeCell(UnsafeCell::new(Clients::new())));
 
     loop {
-        poll.poll(&mut events, None)?;
+        {
+            let poll = unsafe { &mut *poll.get() };
+            poll.poll(&mut events, None)?;
+        }
         for event in events.iter() {
             let token = event.token();
             if token == task_executor_token {
@@ -90,31 +94,42 @@ fn main() -> Result<(), CommsServerError> {
                     }
 
                     let buffer = &buffer[0..size];
-                    match udp::handle_raw_packet(remote_addr.clone(), buffer, clients.clone(), &spawner, network_handle.clone()) {
+                    match handle_udp_packet(remote_addr.clone(), buffer, clients.clone(), &spawner, network_handle.clone()) {
                         Err(HandlePacketError::CommunicationFailure) => {
-                            let clients = unsafe { &mut *clients.get() };
-                            match clients.remove_client_by_socket_addr(&remote_addr) {
-                                Some(AnyClient::Established(client)) => poll.deregister(&client.connection.stream.internal).unwrap(),
-                                Some(AnyClient::Connecting(client)) => poll.deregister(&client.connection.stream.internal).unwrap(),
-                                _ => ()
+                            if let Some(client_id) = {
+                                let clients = unsafe { &mut *clients.get() };
+                                clients.id_by_socket_addr(&remote_addr)
+                            } {
+                                spawn_close_connection(client_id, DisconnectReason::MalformedData, &network_handle, &clients, &poll, &spawner);
                             }
-                        },
+                        }
                         _ => ()
                     };
                 }
                 if readiness.is_writable() {
                     udp_socket_writable = true;
-                    let mut clients = unsafe { &mut *clients.get() };
-                    outgoing_queue.attempt_write_udp(&udp_socket, &mut udp_socket_writable, &mut clients);
+                    if let Err(CommunicationFailure(client_id)) = {
+                        let mut clients = unsafe { &mut *clients.get() };
+                        outgoing_queue.attempt_write_udp(&udp_socket, &mut udp_socket_writable, &mut clients)
+                    } {
+                        spawn_close_connection(client_id, DisconnectReason::MalformedData, &network_handle, &clients, &poll, &spawner);
+                    }
                 }
             } else if token == outgoing_token {
-                let mut clients = unsafe { &mut *clients.get() };
-                outgoing_queue.sort_incoming_packets();
-                outgoing_queue.attempt_write_all(&udp_socket, &mut udp_socket_writable, &mut clients);
+                if let Err(failing_clients) = {
+                    let mut clients = unsafe { &mut *clients.get() };
+                    outgoing_queue.sort_from_handle(&mut clients);
+                    outgoing_queue.attempt_write_all(&udp_socket, &mut udp_socket_writable, &mut clients)
+                } {
+                    for failure in failing_clients {
+                        spawn_close_connection(failure.0, DisconnectReason::MalformedData, &network_handle, &clients, &poll, &spawner);
+                    }
+                }
             } else if token == tcp_listener_token {
                 let (stream, _) = tcp_listener.accept()?;
                 let client_id = next_client_id() as ClientId;
                 let token = Token(client_id as usize);
+                let poll = unsafe { &mut *poll.get() };
                 poll.register(&stream, token, Ready::all(), PollOpt::edge())?;
 
                 let clients = unsafe { &mut *clients.get() };
@@ -128,7 +143,15 @@ fn main() -> Result<(), CommsServerError> {
                 let readiness = event.readiness();
                 if readiness.is_readable() {
                     let client_id = token.0 as ClientId;
-                    tcp::handle_readable_stream(client_id, clients.clone(), &spawner, &network_handle, &poll).unwrap();
+                    match handle_tcp_stream(client_id, clients.clone(), &spawner, &network_handle) {
+                        Ok(StreamStatus::Closed) => {
+                            spawn_close_connection(client_id, DisconnectReason::Leaving, &network_handle, &clients, &poll, &spawner);
+                        }
+                        Err(HandlePacketError::CommunicationFailure) => {
+                            spawn_close_connection(client_id, DisconnectReason::MalformedData, &network_handle, &clients, &poll, &spawner);
+                        }
+                        _ => (),
+                    }
                 }
                 if readiness.is_writable() {
                     let client_id = token.0 as ClientId;

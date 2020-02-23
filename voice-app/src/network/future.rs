@@ -14,12 +14,12 @@ use futures::future;
 use futures::future::Either;
 use futures::pin_mut;
 use async_std::net::ToSocketAddrs;
-use voice_lib::packet::{PacketBody, FinishConnectAccepted, Packet, AssociateUdp, FinishConnect, AssociateUdpAccepted};
+use voice_lib::packet::{PacketBody, FinishConnectAccepted, Packet, AssociateUdp, FinishConnect, AssociateUdpAccepted, ClientId};
 use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
 use std::num::NonZeroU64;
 use voice_lib::network::Protocol;
 
-async fn connect_without_timeout(handle: &network::Handle, destination: String, username: String) -> Result<Vec<String>, ConnectError> {
+async fn connect_without_timeout(handle: &network::Handle, destination: String, username: String) -> Result<Vec<(ClientId, String)>, ConnectError> {
     let destination_with_port = format!("{}:18847", destination);
     let destination = match destination_with_port.to_socket_addrs().await {
         Ok(mut addresses) => {
@@ -50,7 +50,7 @@ async fn connect_without_timeout(handle: &network::Handle, destination: String, 
         Protocol::Tcp,
         None,
         FinishConnect {
-            username
+            name: username
         }
     ).await?;
     dbg!(&connect_accepted);
@@ -58,7 +58,7 @@ async fn connect_without_timeout(handle: &network::Handle, destination: String, 
     Ok(connect_accepted.body.users)
 }
 
-pub async fn connect(handle: &network::Handle, destination: String, username: String) -> Result<Vec<String>, ConnectError> {
+pub async fn connect(handle: &network::Handle, destination: String, username: String) -> Result<Vec<(ClientId, String)>, ConnectError> {
     let timeout = Delay::new(Duration::from_secs(1));
     let connect_future = connect_without_timeout(&handle, destination, username);
     pin_mut!(connect_future);

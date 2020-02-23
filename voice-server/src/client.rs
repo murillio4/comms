@@ -1,8 +1,9 @@
 use voice_lib::packet::{PacketId, ClientId};
 use voice_lib::network::CommsTcpStream;
 use std::net::SocketAddr;
-use std::collections::HashMap;
-use mio::tcp::TcpStream;
+use std::collections::{HashMap, VecDeque};
+use mio::net::TcpStream;
+use crate::network::OutgoingPacket;
 
 pub struct NextPacketId(PacketId);
 
@@ -22,6 +23,7 @@ pub struct Connection {
     next_packet_id: NextPacketId,
     pub stream: CommsTcpStream,
     pub tcp_writable: bool,
+    pub outgoing_queue: VecDeque<OutgoingPacket>
 }
 
 impl Connection {
@@ -30,6 +32,7 @@ impl Connection {
             stream: CommsTcpStream::new(stream),
             tcp_writable: false,
             next_packet_id: NextPacketId::new(),
+            outgoing_queue: VecDeque::new(),
         }
     }
 
@@ -57,6 +60,15 @@ pub struct Clients {
 pub enum AnyClient {
     Established(Client),
     Connecting(ConnectingClient),
+}
+
+impl AnyClient {
+    pub fn connection(&self) -> &Connection {
+        match self {
+            AnyClient::Established(client) => &client.connection,
+            AnyClient::Connecting(client) => &client.connection,
+        }
+    }
 }
 
 pub enum AnyClientRef<'a> {
@@ -103,27 +115,19 @@ impl Clients {
         established_connection.or(connecting)
     }
 
-    pub fn remove_client_by_socket_addr(&mut self, addr: &SocketAddr) -> Option<AnyClient> {
-        self.id_by_socket_addr(addr)
-            .and_then(|id| {
-                self.established.remove(&id).map(|c| AnyClient::Established(c))
-                    .or(self.connecting.remove(&id).map(|c| AnyClient::Connecting(c)))
-            })
-    }
-
     pub fn client_by_id(&mut self, client_id: &ClientId) -> Option<AnyClientRef> {
         self.established.get_mut(client_id)
             .map(|c| AnyClientRef::Established(c))
             .or(self.connecting.get_mut(client_id).map(|c| AnyClientRef::Connecting(c)))
     }
 
-    pub fn use_current_client(&mut self, client_id: &ClientId) -> Option<AnyClient> {
+    pub fn remove_client(&mut self, client_id: &ClientId) -> Option<AnyClient> {
         self.established.remove(client_id)
             .map(|c| AnyClient::Established(c))
             .or(self.connecting.remove(client_id).map(|c| AnyClient::Connecting(c)))
     }
 
-    pub fn put_current_client_back(&mut self, client_id: ClientId, client: AnyClient) {
+    pub fn insert_client(&mut self, client_id: ClientId, client: AnyClient) {
         match client {
             AnyClient::Established(client) => { self.established.insert(client_id, client); },
             AnyClient::Connecting(client) => { self.connecting.insert(client_id, client); },

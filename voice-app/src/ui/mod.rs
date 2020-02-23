@@ -56,7 +56,7 @@ async fn connect_to_server(
                 Columns::Username as u32,
             ];
 
-            for user in users.iter() {
+            for (_, user) in users.iter() {
                 let values: [&dyn ToValue; 1] = [&user];
                 user_list_model.insert_with_values(None, &col_indices, &values);
             }

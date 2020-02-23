@@ -59,7 +59,7 @@ fn main() -> Result<(), BeepClientErr> {
         NonZeroU64::new(2).unwrap(),
         None,
         FinishConnect {
-            username: "beep".to_string(),
+            name: "beep".to_string(),
         },
     )?)?;
 
