@@ -70,7 +70,7 @@ impl PacketFinish {
 }
 
 pub struct TaskExecutor {
-    ready_queue: Receiver<Arc<Task>>, // TODO do this and other needs Arcs?
+    ready_queue: Receiver<Arc<Task>>,
     registration: Registration,
 }
 

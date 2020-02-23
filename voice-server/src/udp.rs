@@ -3,10 +3,9 @@ use std::net::SocketAddr;
 use mio::net::UdpSocket;
 use crate::task::{PacketFinish, Spawner, PacketFuture, SyncUnsafeCell, HandlePacketError};
 use std::io;
-use std::sync::mpsc::{Receiver, TryRecvError, sync_channel, SyncSender};
+use std::sync::mpsc::{Receiver, sync_channel, SyncSender};
 use mio::{SetReadiness, Ready, Registration, Evented, Token, PollOpt};
 use voice_lib::packet;
-use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::fmt::Debug;
 use crate::tcp::{TcpHandle, OutgoingPacketBuilder};
@@ -112,43 +111,6 @@ pub fn handle_packet(
     Ok(())
 }
 
-pub enum WriteAttempt {
-    NoPacketAvailable,
-    WriteAttempted,
-}
-
-pub fn attempt_write_packet(socket: &UdpSocket, outgoing: &mut UdpOutgoingQueue, socket_writable: &mut bool, clients: &mut Clients) {
-    match outgoing.next_packet(|destination_id, builder| {
-        let (packet_id, addr) = if let Some(client) = clients.established.get_mut(&destination_id) {
-            let packet_id = client.next_packet_id;
-            client.next_packet_id = NonZeroU64::new(packet_id.get() + 1).unwrap();
-            (packet_id, client.udp_addr.clone())
-        } else if let Some(client) = clients.connecting.get_mut(&destination_id) {
-            let packet_id = client.next_packet_id;
-            client.next_packet_id = NonZeroU64::new(packet_id.get() + 1).unwrap();
-            (packet_id, client.udp_addr.expect("attempting to send UDP packet to client that hasn't associated yet").clone())
-        } else {
-            eprintln!("Attempted to send UDP packet to client {} that doesn't exist", destination_id);
-            return PacketSendStatus::SkipPacket;
-        };
-
-        let raw = builder.as_raw(packet_id).unwrap();
-        match socket.send_to(&raw, &addr) {
-            Ok(_) => {
-                if builder.kind != AudioToClient::KIND_ID {
-                    println!("Sent UDP packet of kind {} to {}", builder.kind, destination_id);
-                }
-                return PacketSendStatus::Done
-            },
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return PacketSendStatus::SocketUnavailable,
-            Err(e) => panic!(e),
-        }
-    }) {
-        WriteAttempt::NoPacketAvailable => *socket_writable = true,
-        WriteAttempt::WriteAttempted => *socket_writable = false,
-    }
-}
-
 struct OutgoingPacket {
     dest: ClientId,
     builder: Arc<SyncUnsafeCell<WritePacketBuilder>>,
@@ -162,37 +124,42 @@ pub struct UdpOutgoingQueue {
 }
 
 impl UdpOutgoingQueue {
-    fn next_packet<F>(&mut self, mut op: F) -> WriteAttempt
-        where F: FnMut(ClientId, &mut WritePacketBuilder) -> PacketSendStatus
+    pub fn attempt_write_next(&mut self, socket: &UdpSocket, socket_writable: &mut bool, clients: &mut Clients)
     {
-        // There might be a cleaner way of doing this.
-        // We need the loop to try a new packet if the one first attempted
-        // targets a client that is no longer connected.
-        loop {
-            let packet = if let Some(body) = self.peek_item.take() {
-                body
-            } else {
-                match self.receiver.try_recv() {
-                    Ok(packet) => packet,
-                    Err(e) if e == TryRecvError::Empty => return WriteAttempt::NoPacketAvailable,
-                    Err(e) => panic!(e),
-                }
-            };
+        *socket_writable = true;
+        let (packet_id, packet, addr) = match self.peek_item.take()
+            .into_iter()
+            .chain(self.receiver.try_iter())
+            .filter_map(|packet| {
+                let (packet_id, addr) = if let Some(client) = clients.established.get_mut(&packet.dest) {
+                    let packet_id = client.connection.next_packet_id.next();
+                    (packet_id, client.udp_addr.clone())
+                } else if let Some(client) = clients.connecting.get_mut(&packet.dest) {
+                    let packet_id = client.connection.next_packet_id.next();
+                    (packet_id, client.udp_addr.expect("attempting to send UDP packet to client that hasn't associated yet").clone())
+                } else {
+                    eprintln!("Attempted to send UDP packet to client {} that doesn't exist", &packet.dest);
+                    return None;
+                };
+                Some((packet_id, packet, addr))
+            })
+            .next() {
+            Some(tuple) => tuple,
+            None => return,
+        };
 
-            let builder = unsafe { &mut *packet.builder.get() };
-            match op(packet.dest, builder) {
-                PacketSendStatus::SocketUnavailable => {
-                    self.peek_item = Some(packet);
-                    return WriteAttempt::WriteAttempted;
-                },
-                PacketSendStatus::Done => {
-                    packet.finish.done();
-                    return WriteAttempt::WriteAttempted;
-                },
-                PacketSendStatus::SkipPacket => {
-                    continue;
+        *socket_writable = false;
+        let builder = unsafe { &mut *packet.builder.get() };
+        let raw = builder.as_raw(packet_id).unwrap();
+        match socket.send_to(&raw, &addr) {
+            Ok(_) => {
+                if builder.kind != AudioToClient::KIND_ID {
+                    println!("Sent UDP packet of kind {} to {}", builder.kind, &packet.dest);
                 }
+                packet.finish.done();
             }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.peek_item = Some(packet),
+            Err(e) => panic!(e),
         }
     }
 }
@@ -211,12 +178,6 @@ impl Evented for UdpOutgoingQueue {
     fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
         poll.deregister(self)
     }
-}
-
-enum PacketSendStatus {
-    Done,
-    SocketUnavailable,
-    SkipPacket,
 }
 
 #[derive(Clone)]
@@ -251,5 +212,5 @@ pub fn queue_and_handle() -> (UdpHandle, UdpOutgoingQueue) {
             registration,
             peek_item: None,
         }
-    )
+    );
 }

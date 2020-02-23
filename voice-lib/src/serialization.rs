@@ -1,13 +1,12 @@
-use crate::packet::{PacketBody, PacketKind, Packet};
+use crate::packet::{PacketBody, PacketKind, Packet, PacketId};
 use crate::{PacketHeader, PACKET_HEADER_SIZE};
 use std::{mem, fmt};
 use serde::{Serialize, Deserialize};
 use std::io::Cursor;
 use std::fmt::{Formatter, Debug};
 use serde::de::DeserializeOwned;
-use std::num::NonZeroU64;
 
-pub fn serialize<B>(id: NonZeroU64, reply_to: Option<NonZeroU64>, packet: B) -> Result<Vec<u8>, SerializeError>
+pub fn serialize<B>(id: PacketId, reply_to: Option<PacketId>, packet: B) -> Result<Vec<u8>, SerializeError>
     where B: PacketBody + Serialize
 {
     WritePacketBuilder::new(reply_to, &packet)?.into_raw(id)
@@ -16,11 +15,11 @@ pub fn serialize<B>(id: NonZeroU64, reply_to: Option<NonZeroU64>, packet: B) -> 
 pub struct WritePacketBuilder {
     raw: Vec<u8>,
     pub kind: PacketKind,
-    pub reply_to: Option<NonZeroU64>,
+    pub reply_to: Option<PacketId>,
 }
 
 impl WritePacketBuilder {
-    pub fn new<B>(reply_to: Option<NonZeroU64>, body: &B) -> Result<Self, SerializeError>
+    pub fn new<B>(reply_to: Option<PacketId>, body: &B) -> Result<Self, SerializeError>
         where B: PacketBody + Serialize
     {
         let mut raw = vec![0u8; mem::size_of::<PacketHeader>()];
@@ -32,7 +31,7 @@ impl WritePacketBuilder {
         })
     }
 
-    pub fn as_raw(&mut self, id: NonZeroU64) -> Result<&[u8], SerializeError> {
+    pub fn as_raw(&mut self, id: PacketId) -> Result<&[u8], SerializeError> {
         let body_len = self.raw.len() as u16;
         let mut cursor = Cursor::new(&mut self.raw);
         cursor.set_position(0);
@@ -45,7 +44,7 @@ impl WritePacketBuilder {
         Ok(&self.raw)
     }
 
-    pub fn into_raw(mut self, id: NonZeroU64) -> Result<Vec<u8>, SerializeError> {
+    pub fn into_raw(mut self, id: PacketId) -> Result<Vec<u8>, SerializeError> {
         self.as_raw(id)?;
         Ok(self.raw)
     }

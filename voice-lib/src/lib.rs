@@ -1,5 +1,4 @@
-use std::num::NonZeroU64;
-use crate::packet::PacketKind;
+use crate::packet::{PacketKind, PacketId};
 
 pub use serde::{Deserialize, Serialize};
 use std::mem;
@@ -12,8 +11,8 @@ pub mod winlib;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PacketHeader {
-    pub id: NonZeroU64,
-    pub reply_to: Option<NonZeroU64>,
+    pub id: PacketId,
+    pub reply_to: Option<PacketId>,
     pub kind: PacketKind,
     pub body_len: u16,
 }

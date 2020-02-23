@@ -3,16 +3,17 @@ use std::num::NonZeroU64;
 
 pub type ClientId = u16;
 pub type PacketKind = u8;
+pub type PacketId = NonZeroU64;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Packet<T: PacketBody> {
-    pub id: NonZeroU64,
-    pub reply_to: Option<NonZeroU64>,
+    pub id: PacketId,
+    pub reply_to: Option<PacketId>,
     pub body: T,
 }
 
 impl<T: PacketBody> Packet<T> {
-    pub fn new(id: NonZeroU64, reply_to: Option<NonZeroU64>, body: T) -> Self {
+    pub fn new(id: PacketId, reply_to: Option<PacketId>, body: T) -> Self {
         Packet {
             id,
             reply_to,
