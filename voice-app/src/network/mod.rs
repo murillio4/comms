@@ -47,7 +47,7 @@ impl Connection {
             tcp_packet_queue: VecDeque::new(),
             next_packet_id: NonZeroU64::new(1).unwrap(),
             reply_map: HashMap::new(),
-            await_hello: None, // TODO watch for this packet
+            await_hello: None,
         }
     }
 
@@ -169,7 +169,7 @@ impl Worker {
             for event in events.iter() {
                 let readiness = event.readiness();
                 let token = event.token();
-                if token == command_token && readiness.is_readable() { // TODO do I need the is_readable check?
+                if token == command_token && readiness.is_readable() {
                     let command = match command_queue.next() {
                         Some(command) => command,
                         None => { continue }

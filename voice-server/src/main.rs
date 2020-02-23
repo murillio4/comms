@@ -35,14 +35,12 @@ pub struct TcpConnection {
 }
 
 pub struct ConnectingClient {
-    client_id: ClientId,
     next_packet_id: NonZeroU64,
     tcp_connection: TcpConnection,
     udp_addr: Option<SocketAddr>,
 }
 
 pub struct Client {
-    client_id: ClientId, // TODO remove client_id
     next_packet_id: NonZeroU64,
     tcp_connection: TcpConnection,
     udp_addr: SocketAddr,
@@ -81,13 +79,13 @@ impl Clients {
     }
 
     pub fn id_by_socket_addr(&self, addr: &SocketAddr) -> Option<ClientId> {
-        self.established.values()
-            .find(|c| &c.udp_addr == addr)
-            .map(|c| c.client_id)
+        self.established.iter()
+            .find(|(_, c)| &c.udp_addr == addr)
+            .map(|(id, _)| id.clone())
             .or_else(|| {
-                self.connecting.values()
-                    .find(|c| c.udp_addr == Some(*addr))
-                    .map(|c| c.client_id)
+                self.connecting.iter()
+                    .find(|(_, c)| c.udp_addr == Some(*addr))
+                    .map(|(id, _)| id.clone())
             })
     }
 
@@ -185,7 +183,6 @@ fn main() -> Result<(), CommsServerError> {
 
                 let clients = unsafe { &mut *clients.get() };
                 clients.connecting.insert(client_id, ConnectingClient {
-                    client_id,
                     next_packet_id: NonZeroU64::new(1).unwrap(),
                     tcp_connection: TcpConnection {
                         stream: CommsTcpStream::new(stream),

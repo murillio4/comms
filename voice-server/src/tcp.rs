@@ -23,7 +23,6 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) {
             .and_then(|mut client| client.udp_addr.take().map(|addr| (addr, client)))
         {
             clients.established.insert(context.client_id, Client {
-                client_id: context.client_id,
                 udp_addr: addr,
                 tcp_connection: client.tcp_connection,
                 next_packet_id: client.next_packet_id,

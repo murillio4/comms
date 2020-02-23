@@ -30,7 +30,7 @@ async fn associate_udp(udp_handle: UdpHandle, clients: Arc<SyncUnsafeCell<Client
             None => return,
         };
         client.udp_addr = Some(addr);
-        client.client_id
+        packet.body.client_id
     };
     udp::send_packet(&udp_handle, client_id, Some(packet.id), AssociateUdpAccepted).await;
 }
