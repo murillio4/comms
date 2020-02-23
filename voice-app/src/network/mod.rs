@@ -15,7 +15,7 @@ use std::num::NonZeroU64;
 use mio::net::TcpStream;
 use voice_lib::serialization::{OwnedHeaderParsedPacket, DeserializeError, HeaderParsedPacket, WritePacketBuilder, SerializeError};
 use voice_lib::packet;
-use voice_lib::network::{CommsTcpStream, UpdateFromStream, StreamPacket};
+use voice_lib::network::{CommsTcpStream, UpdateFromStream, IncomingStreamPacket};
 use std::io::Write;
 
 pub mod future;
@@ -110,7 +110,7 @@ fn handle_udp_packet(parsed_packet: HeaderParsedPacket, reply_map: &mut HashMap<
     Ok(())
 }
 
-fn handle_tcp_packet(stream_packet: StreamPacket, reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>, await_hello: &mut Option<SendResponse<Result<Hello, ConnectError>>>) -> Result<(), HandlePacketError> {
+fn handle_tcp_packet(stream_packet: IncomingStreamPacket, reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>, await_hello: &mut Option<SendResponse<Result<Hello, ConnectError>>>) -> Result<(), HandlePacketError> {
     if let Some(reply_to) = stream_packet.header.reply_to {
         if let Some(sender) = reply_map.remove(&reply_to) {
             println!("Packet {} of type {} is being responded", stream_packet.header.id, stream_packet.header.kind);
@@ -336,12 +336,6 @@ fn attempt_send_next_tcp_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, s
         },
         Err(e) => return Err(e.into())
     }
-}
-
-#[derive(Debug)]
-pub enum Protocol {
-    Tcp,
-    Udp,
 }
 
 pub enum Command {

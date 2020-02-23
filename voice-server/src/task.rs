@@ -121,7 +121,7 @@ pub struct Spawner {
 }
 
 #[derive(Debug)]
-pub enum HandlePacketError {
+pub enum EndpointError {
     SerializeFailed {
         kind: PacketKind,
         packet: Box<dyn Debug>
@@ -129,7 +129,7 @@ pub enum HandlePacketError {
 }
 
 impl Spawner {
-    pub fn spawn(&self, future: impl Future<Output = Result<(), HandlePacketError>> + 'static + Send) {
+    pub fn spawn(&self, future: impl Future<Output = Result<(), EndpointError>> + 'static + Send) {
         let future = future.boxed();
         let task = Arc::new(Task {
             future: SyncUnsafeCell(UnsafeCell::new(Some(future))),
@@ -164,7 +164,7 @@ impl<T> Deref for SyncUnsafeCell<T> {
 }
 
 struct Task {
-    future: SyncUnsafeCell<Option<BoxFuture<'static, Result<(), HandlePacketError>>>>,
+    future: SyncUnsafeCell<Option<BoxFuture<'static, Result<(), EndpointError>>>>,
     task_scheduler: Scheduler,
 }
 

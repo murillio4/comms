@@ -7,6 +7,12 @@ use crate::serialization::{DeserializeError, OwnedHeaderParsedPacket};
 use crate::packet::{Packet, PacketBody};
 use serde::de::DeserializeOwned;
 
+#[derive(Debug)]
+pub enum Protocol {
+    Tcp,
+    Udp,
+}
+
 pub struct CommsTcpStream {
     pub internal: TcpStream,
     next_header: Option<PacketHeader>,
@@ -38,7 +44,7 @@ impl CommsTcpStream {
         }
     }
 
-    pub fn next_packet(&mut self) -> Result<Option<StreamPacket<'_>>, DeserializeError> {
+    pub fn next_packet(&mut self) -> Result<Option<IncomingStreamPacket<'_>>, DeserializeError> {
         let header = if let Some(header) = self.next_header.take() {
             header
         } else {
@@ -57,18 +63,18 @@ impl CommsTcpStream {
             self.next_header = Some(header);
             return Ok(None);
         }
-        Ok(Some(StreamPacket::new(header, self)))
+        Ok(Some(IncomingStreamPacket::new(header, self)))
     }
 }
 
-pub struct StreamPacket<'a> {
+pub struct IncomingStreamPacket<'a> {
     pub header: PacketHeader,
     stream: &'a mut CommsTcpStream,
 }
 
-impl<'a> StreamPacket<'a> {
+impl<'a> IncomingStreamPacket<'a> {
     pub fn new(header: PacketHeader, stream: &'a mut CommsTcpStream) -> Self {
-        StreamPacket {
+        IncomingStreamPacket {
             header,
             stream,
         }
@@ -103,7 +109,3 @@ pub enum UpdateFromStream {
     ConnectionClosed,
 }
 
-pub enum TcpRead {
-    ConnectionClosed,
-    Data(usize),
-}

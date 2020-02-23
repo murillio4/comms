@@ -45,9 +45,7 @@ impl ReceiveFromNetworkThread {
         let init = init.to_signed_sample();
         self.client_streams.values_mut()
             .fold(init, |acc, consumer| {
-                let next_sample = consumer.pop().unwrap_or_else(|| {
-                    0
-                });
+                let next_sample = consumer.pop().unwrap_or(0);
                 acc.checked_add(next_sample).unwrap_or(std::i16::MAX)
             })
     }
