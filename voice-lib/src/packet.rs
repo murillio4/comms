@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 
-pub const MAX_AUDIO_BUFFER_SIZE: usize = 2000;
 pub type ClientId = u16;
 pub type PacketKind = u8;
 

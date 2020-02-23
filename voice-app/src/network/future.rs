@@ -3,11 +3,10 @@ use std::task::{Waker, Context, Poll};
 use std::future::Future;
 use std::pin::Pin;
 use futures::channel::oneshot;
-use voice_lib::{packet, OwnedHeaderParsedPacket};
 use crate::network;
 use serde::{Serialize};
 use serde::de::DeserializeOwned;
-use crate::network::{Command, ConnectError, DisconnectError};
+use crate::network::{Command, ConnectError, DisconnectError, Protocol};
 use std::fmt::{Debug, Formatter, Error};
 use std::time::Duration;
 use futures_timer::Delay;
@@ -15,10 +14,11 @@ use futures::future;
 use futures::future::Either;
 use futures::pin_mut;
 use async_std::net::ToSocketAddrs;
-use std::net::SocketAddr;
-use voice_lib::packet::{PacketBody, FinishConnectAccepted, Packet};
+use voice_lib::packet::{PacketBody, FinishConnectAccepted, Packet, AssociateUdp, FinishConnect, AssociateUdpAccepted};
+use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
+use std::num::NonZeroU64;
 
-async fn connect_to_server_without_timeout(handle: network::Handle, destination: String, username: String) -> Result<Vec<String>, ConnectError> {
+async fn connect_without_timeout(handle: &network::Handle, destination: String, username: String) -> Result<Vec<String>, ConnectError> {
     let destination_with_port = format!("{}:18847", destination);
     let destination = match destination_with_port.to_socket_addrs().await {
         Ok(mut addresses) => {
@@ -33,58 +33,91 @@ async fn connect_to_server_without_timeout(handle: network::Handle, destination:
         }
     };
 
-    ConnectFuture::new(&handle, destination).await?;
-    let connect_accepted: Packet<FinishConnectAccepted> = request(
+    let hello = NetworkFuture::new(handle, |s| Command::Connect {
+        destination,
+        send_response: s
+    }).await?;
+    dbg!(&hello);
+
+    let _: Packet<AssociateUdpAccepted> = request_expect(&handle, Protocol::Udp, None,AssociateUdp {
+        client_id: hello.client_id,
+    }).await?;
+    dbg!("AssociateUdpAccepted");
+
+    let connect_accepted: Packet<FinishConnectAccepted> = request_expect(
         &handle,
-        packet::FinishConnect {
+        Protocol::Tcp,
+        None,
+        FinishConnect {
             username
         }
-    ).await
-        .map_err(|_| ConnectError::NetworkError)?;
+    ).await?;
+    dbg!(&connect_accepted);
 
     Ok(connect_accepted.body.users)
 }
 
-pub async fn connect_to_server(handle: network::Handle, destination: String, username: String) -> Result<Vec<String>, ConnectError> {
-    let timeout = Delay::new(Duration::from_secs(1)); // TODO timeout should include lookup
-    let connect_future = connect_to_server_without_timeout(handle.clone(), destination, username);
+pub async fn connect(handle: &network::Handle, destination: String, username: String) -> Result<Vec<String>, ConnectError> {
+    let timeout = Delay::new(Duration::from_secs(1));
+    let connect_future = connect_without_timeout(&handle, destination, username);
     pin_mut!(connect_future);
     match future::select(timeout, connect_future).await {
         Either::Left(_) => {
-            let _ = disconnect_from_server(handle).await;
+            let _ = disconnect(handle).await;
             Err(ConnectError::NetworkError)
         },
         Either::Right((result, _)) => result
     }
 }
 
-pub async fn disconnect_from_server(handle: network::Handle) -> Result<(), DisconnectError> {
-    DisconnectFuture::new(&handle).await
+pub async fn disconnect(handle: &network::Handle) -> Result<(), DisconnectError> {
+    NetworkFuture::new(handle, |s| Command::Disconnect {
+        send_response: s
+    }).await
 }
 
-pub async fn request_with_unknown_response<Req>(handle: &network::Handle, request: Req) -> OwnedHeaderParsedPacket
+pub async fn request_any<Req>(handle: &network::Handle, packet_type: Protocol, reply_to: Option<NonZeroU64>, request: Req) -> Result<OwnedHeaderParsedPacket, SerializeError>
     where Req: PacketBody + Serialize,
 {
-    RequestFuture::new(handle, request).await
+    let outgoing = WritePacketBuilder::new(reply_to, request)?;
+    Ok(NetworkFuture::new(handle, |s| Command::Packet {
+        protocol: packet_type,
+        outgoing,
+        send_response: Some(s),
+    }).await)
 }
 
-pub async fn request<Req, Res>(handle: &network::Handle, request: Req) -> Result<Packet<Res>, RequestError>
+pub async fn request_expect<Req, Res>(handle: &network::Handle, packet_type: Protocol, reply_to: Option<NonZeroU64>,request: Req) -> Result<Packet<Res>, RequestError>
     where Req: PacketBody + Serialize,
           Res: PacketBody + DeserializeOwned,
 {
-    let parsed_packet = request_with_unknown_response(handle, request).await;
+    let parsed_packet = request_any(handle, packet_type, reply_to, request).await
+        .map_err(|_| RequestError::SerializeError)?;
     if parsed_packet.kind() != Res::KIND_ID {
         return Err(RequestError::InvalidResponsePacket)
     }
     parsed_packet.finish_parse().map_err(|_| RequestError::DeserializeError)
 }
 
+pub fn send<Req>(handle: &network::Handle, packet_type: Protocol, reply_to: Option<NonZeroU64>, request: Req) -> Result<(), SerializeError>
+    where Req: PacketBody + Serialize,
+{
+    handle.command(Command::Packet {
+        protocol: packet_type,
+        outgoing: WritePacketBuilder::new(reply_to, request)?,
+        send_response: None,
+    });
+    Ok(())
+}
+
+#[derive(Debug)]
 pub enum RequestError {
+    SerializeError,
     DeserializeError,
     InvalidResponsePacket,
 }
 
-pub struct SendResponse<T: Debug> {
+pub struct SendResponse<T> {
     sender: oneshot::Sender<T>,
     waker: Arc<Mutex<Option<Waker>>>,
 }
@@ -105,16 +138,13 @@ impl<T: Debug> SendResponse<T> {
     }
 }
 
-// TODO "there's got to be a better way!" of handling these command futures.
-// They're very similar, but due to Command::$Variant taking send_response at the same
-// level as the other parameters, it's hard to split up nicely. 🤔 worth thinking about how to improve
-struct ConnectFuture {
-    receiver: Arc<Mutex<oneshot::Receiver<Result<(), ConnectError>>>>,
+struct NetworkFuture<T> {
+    receiver: Arc<Mutex<oneshot::Receiver<T>>>,
     waker: Arc<Mutex<Option<Waker>>>,
 }
 
-impl Future for ConnectFuture {
-    type Output = Result<(), ConnectError>;
+impl<T> Future for NetworkFuture<T> {
+    type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut receiver = self.receiver.lock().unwrap();
@@ -134,102 +164,17 @@ impl Future for ConnectFuture {
     }
 }
 
-impl ConnectFuture {
-    pub fn new(handle: &network::Handle, destination: SocketAddr) -> Self {
+impl<T> NetworkFuture<T> {
+    pub fn new(handle: &network::Handle, create_command: impl FnOnce(SendResponse<T>) -> Command) -> Self {
         let (sender, receiver) = oneshot::channel();
         let waker = Arc::new(Mutex::new(None));
-        handle.command(Command::Connect {
-            destination,
-            send_response: SendResponse {
-                sender,
-                waker: waker.clone(),
-            }
-        }).unwrap();
 
-        ConnectFuture {
-            receiver: Arc::new(Mutex::new(receiver)),
-            waker,
-        }
-    }
-}
+        handle.command(create_command(SendResponse {
+            sender,
+            waker: waker.clone(),
+        }));
 
-struct DisconnectFuture {
-    receiver: Arc<Mutex<oneshot::Receiver<Result<(), DisconnectError>>>>,
-    waker: Arc<Mutex<Option<Waker>>>,
-}
-
-impl Future for DisconnectFuture {
-    type Output = Result<(), DisconnectError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut receiver = self.receiver.lock().unwrap();
-        match receiver.try_recv() {
-            Ok(Some(response)) => {
-                Poll::Ready(response)
-            },
-            Ok(None) => {
-                let mut waker = self.waker.lock().unwrap();
-                *waker = Some(cx.waker().clone());
-                Poll::Pending
-            },
-            Err(e) => {
-                panic!(e);
-            },
-        }
-    }
-}
-
-impl DisconnectFuture {
-    pub fn new(handle: &network::Handle) -> Self {
-        let (sender, receiver) = oneshot::channel();
-        let waker = Arc::new(Mutex::new(None));
-        handle.command(Command::Disconnect {
-            send_response: SendResponse {
-                sender,
-                waker: waker.clone(),
-            }
-        }).unwrap();
-
-        DisconnectFuture {
-            receiver: Arc::new(Mutex::new(receiver)),
-            waker,
-        }
-    }
-}
-
-struct RequestFuture {
-    receiver: Arc<Mutex<oneshot::Receiver<OwnedHeaderParsedPacket>>>,
-    waker: Arc<Mutex<Option<Waker>>>,
-}
-
-impl Future for RequestFuture {
-    type Output = OwnedHeaderParsedPacket;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut receiver = self.receiver.lock().unwrap();
-        match receiver.try_recv() {
-            Ok(Some(response)) => {
-                Poll::Ready(response)
-            },
-            Ok(None) => {
-                let mut waker = self.waker.lock().unwrap();
-                *waker = Some(cx.waker().clone());
-                Poll::Pending
-            },
-            Err(e) => {
-                panic!(e);
-            },
-        }
-    }
-}
-
-impl RequestFuture {
-    pub fn new(handle: &network::Handle, outgoing_packet: impl packet::PacketBody + Serialize) -> Self {
-        let (sender, receiver) = oneshot::channel();
-        let waker = Arc::new(Mutex::new(None));
-        handle.request(outgoing_packet, SendResponse {sender, waker: waker.clone() }).unwrap();
-
-        RequestFuture {
+        NetworkFuture {
             receiver: Arc::new(Mutex::new(receiver)),
             waker,
         }

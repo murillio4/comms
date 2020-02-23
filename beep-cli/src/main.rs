@@ -1,6 +1,5 @@
 use std::net::{UdpSocket, TcpStream};
 use std::time::{SystemTime, Duration};
-use voice_lib::{PacketHeader, serialize, HeaderParsedPacket};
 use clap::{App, Arg};
 use std::io;
 #[cfg(windows)]
@@ -8,6 +7,7 @@ use voice_lib::winlib::bump_priority;
 use voice_lib::packet::{Packet, Hello, PacketBody, AssociateUdpAccepted, FinishConnect, AssociateUdp, FinishConnectAccepted, AudioFromClient};
 use std::num::NonZeroU64;
 use std::io::{Read, Write};
+use voice_lib::serialization::{HeaderParsedPacket, serialize, DeserializeError, SerializeError};
 
 fn main() -> Result<(), BeepClientErr> {
     #[cfg(windows)]
@@ -42,11 +42,8 @@ fn main() -> Result<(), BeepClientErr> {
     dbg!(&hello);
 
     udp.send(&serialize(
-        PacketHeader {
-            id: NonZeroU64::new(1).unwrap(),
-            reply_to: None,
-            kind: AssociateUdp::KIND_ID,
-        },
+        NonZeroU64::new(1).unwrap(),
+        None,
         AssociateUdp {
             client_id: hello.body.client_id,
         },
@@ -59,11 +56,8 @@ fn main() -> Result<(), BeepClientErr> {
     dbg!(&accepted);
 
     tcp.write(&serialize(
-        PacketHeader {
-            id: NonZeroU64::new(2).unwrap(),
-            reply_to: None,
-            kind: FinishConnect::KIND_ID,
-        },
+        NonZeroU64::new(2).unwrap(),
+        None,
         FinishConnect {
             username: "beep".to_string(),
         },
@@ -103,11 +97,8 @@ fn main() -> Result<(), BeepClientErr> {
             samples.extend(&value.to_le_bytes());
         }
         udp.send(&serialize(
-            PacketHeader {
-                id: NonZeroU64::new(next_packet_id).unwrap(),
-                reply_to: None,
-                kind: AudioFromClient::KIND_ID,
-            },
+            NonZeroU64::new(next_packet_id).unwrap(),
+            None,
             AudioFromClient(samples),
         )?)?;
         next_packet_id += 1;
@@ -128,14 +119,14 @@ impl From<io::Error> for BeepClientErr {
     }
 }
 
-impl From<voice_lib::DeserializeError> for BeepClientErr {
-    fn from(_: voice_lib::DeserializeError) -> Self {
+impl From<DeserializeError> for BeepClientErr {
+    fn from(_: DeserializeError) -> Self {
         BeepClientErr::Deserialize
     }
 }
 
-impl From<voice_lib::SerializeError> for BeepClientErr {
-    fn from(_: voice_lib::SerializeError) -> Self {
+impl From<SerializeError> for BeepClientErr {
+    fn from(_: SerializeError) -> Self {
         BeepClientErr::Serialize
     }
 }

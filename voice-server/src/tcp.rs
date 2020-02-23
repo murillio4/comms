@@ -1,20 +1,21 @@
-use voice_lib::packet::{ClientId, Packet, PacketBody};
+use voice_lib::packet::{ClientId, Packet, PacketBody, FinishConnect, FinishConnectAccepted};
 use std::collections::{HashMap, VecDeque};
-use crate::{Clients, Client};
+use crate::{Clients, Client, CurrentClient};
 use std::num::NonZeroU64;
-use voice_lib::{PacketHeader, serialize_head, packet, serialize_body, HeaderParsedPacket};
-use mio::{IoVec, Registration, Evented, Token, Ready, PollOpt, SetReadiness};
+use mio::{Registration, Evented, Token, Ready, PollOpt, SetReadiness, Poll};
 use std::io;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use voice_lib::Serialize;
 use futures::future::join_all;
 use crate::task::{PacketFuture, PacketFinish, SyncUnsafeCell, Spawner};
-use crate::udp::{UdpHandle, HandlePacketError, Context};
-use mio::net::TcpStream;
-use std::io::Read;
+use crate::udp::{UdpHandle, HandleReadableStreamError, Context};
+use voice_lib::serialization::WritePacketBuilder;
+use voice_lib::Serialize;
+use voice_lib::network::{UpdateFromStream, StreamPacket};
+use std::io::Write;
+use std::cell::UnsafeCell;
 
-async fn finish_connect(context: Context, packet: Packet<packet::FinishConnect>) {
+async fn finish_connect(context: Context, packet: Packet<FinishConnect>) {
     // TODO respond with packet saying "you need to associate udp first" if failed
     let users = {
         let clients = unsafe { &mut *context.clients.get() };
@@ -36,51 +37,91 @@ async fn finish_connect(context: Context, packet: Packet<packet::FinishConnect>)
         }
     };
 
-    send_packet(&context.tcp_handle, context.client_id, packet::FinishConnectAccepted {
+    send_packet(&context.tcp_handle, context.client_id, Some(packet.id), FinishConnectAccepted {
         users,
     }).await;
 }
 
-pub fn handle_packet(
-    client_id: ClientId,
-    raw_packet: &[u8],
-    clients: Arc<SyncUnsafeCell<Clients>>,
-    spawner: &Spawner,
-    udp_handle: UdpHandle,
-    tcp_handle: TcpHandle,
-) -> Result<(), HandlePacketError> {
-    let parsed_packet = HeaderParsedPacket::from_raw(&raw_packet)?;
-    let kind = parsed_packet.kind();
-    println!("Received TCP packet of type {} from {}", kind, client_id);
-
-    let context = Context {
-        client_id,
-        clients,
-        udp_handle,
-        tcp_handle,
-    };
-
+fn handle_packet(spawner: &Spawner, context: Context, stream_packet: StreamPacket) -> Result<(), HandleReadableStreamError> {
+    let kind = stream_packet.header.kind;
     match kind {
-        packet::FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, parsed_packet.finish_parse()?)),
-        _ => return Err(HandlePacketError::InvalidPacketType(kind)),
-    }
+        FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, stream_packet.finish_parse()?)),
+        _ => return Err(HandleReadableStreamError::InvalidPacketType(kind)),
+    };
     Ok(())
 }
 
-pub async fn send_packet<B>(handle: &TcpHandle, dest: ClientId, packet: B)
-    where B: packet::PacketBody + Serialize
-{
-    let raw_body = Arc::new(serialize_body(packet).unwrap());
-    handle.send(dest, B::KIND_ID, raw_body).await.unwrap();
+pub fn handle_readable_stream(
+    client_id: ClientId,
+    clients: Arc<SyncUnsafeCell<Clients>>,
+    spawner: &Spawner,
+    udp_handle: &UdpHandle,
+    tcp_handle: &TcpHandle,
+    poll: &Poll,
+) -> Result<(), HandleReadableStreamError> {
+    let mut current_client = {
+        let clients = unsafe { &mut *clients.get() };
+        if let Some(client) = clients.use_current_client(&client_id) {
+            client
+        } else {
+            return Ok(());
+        }
+    };
+
+    let connection = match &mut current_client {
+        CurrentClient::Established(client) => &mut client.tcp_connection,
+        CurrentClient::Connecting(client) => &mut client.tcp_connection,
+    };
+
+    if UpdateFromStream::ConnectionClosed == connection.stream.update_from_stream()? {
+        eprintln!("Connection closed for {}. Removing client.", &client_id);
+        poll.deregister(&connection.stream.internal).unwrap();
+        return Ok(());
+    }
+
+    loop {
+        match connection.stream.next_packet() {
+            Ok(Some(stream_packet)) => {
+                println!("Received TCP packet of type {} from {}", &stream_packet.header.kind, &client_id);
+
+                let context = Context {
+                    client_id,
+                    clients: clients.clone(),
+                    udp_handle: udp_handle.clone(),
+                    tcp_handle: tcp_handle.clone(),
+                };
+
+                handle_packet(&spawner, context, stream_packet)?;
+            }
+            Ok(None) => break,
+            Err(_) => {
+                eprintln!("Deserialize error for client {}. Removing client.", &client_id);
+                poll.deregister(&connection.stream.internal).unwrap();
+                break;
+            }
+        }
+    }
+
+    let clients = unsafe { &mut *clients.get() };
+    clients.put_current_client_back(client_id, current_client);
+    Ok(())
 }
 
-pub async fn send_packet_to_many<B>(handle: &TcpHandle, clients: Vec<ClientId>, packet: B)
-    where B: packet::PacketBody + Serialize
+pub async fn send_packet<B>(handle: &TcpHandle, dest: ClientId, reply_to: Option<NonZeroU64>, packet: B)
+    where B: PacketBody + Serialize
 {
-    let raw_body = Arc::new(serialize_body(packet).unwrap());
+    let builder = WritePacketBuilder::new(reply_to, packet).unwrap();
+    handle.send(dest, Arc::new(SyncUnsafeCell(UnsafeCell::new(builder)))).await.unwrap();
+}
+
+pub async fn send_packet_to_many<B>(handle: &TcpHandle, clients: Vec<ClientId>, reply_to: Option<NonZeroU64>, packet: B)
+    where B: PacketBody + Serialize
+{
+    let builder = WritePacketBuilder::new(reply_to, packet).unwrap();
+    let raw = Arc::new(SyncUnsafeCell(UnsafeCell::new(builder)));
 
     let futures: Vec<PacketFuture> = clients.into_iter()
-        .map(|c| handle.send(c, B::KIND_ID, raw_body.clone()))
+        .map(|c| handle.send(c, raw.clone()))
         .collect();
     for result in join_all(futures).await {
         result.unwrap();
@@ -98,7 +139,7 @@ enum PacketSendStatus {
     SkipPacket,
 }
 
-fn attempt_write_packet(client_id: ClientId, packet_kind: u8, body: &Arc<Vec<u8>>, clients: &mut Clients) -> PacketSendStatus {
+fn attempt_write_packet(client_id: ClientId, builder: &mut WritePacketBuilder, clients: &mut Clients) -> PacketSendStatus {
     let (packet_id, connection) = if let Some(client) = clients.established.get_mut(&client_id) {
         let packet_id = client.next_packet_id;
         client.next_packet_id = NonZeroU64::new(packet_id.get() + 1).unwrap();
@@ -116,51 +157,36 @@ fn attempt_write_packet(client_id: ClientId, packet_kind: u8, body: &Arc<Vec<u8>
         return PacketSendStatus::SocketUnavailable;
     }
 
-    let packet_header = PacketHeader {
-        id: packet_id,
-        reply_to: None,
-        kind: packet_kind,
-    };
-
-
-    let header = serialize_head(packet_header).unwrap();
-    let buffers: Vec<&IoVec> = vec![
-        IoVec::from_bytes(&header),
-        IoVec::from_bytes(body),
-    ].into_iter()
-        .filter_map(|o| o)
-        .collect();
-
-    match connection.tcp_stream.write_bufs(&buffers) {
+    let raw = builder.as_raw(packet_id).unwrap();
+    match connection.stream.internal.write(&raw) {
         Ok(_) => {
-            println!("Sent TCP packet of kind {} to {}", packet_kind, client_id);
+            println!("Sent TCP packet of kind {} to {}", builder.kind, client_id);
             connection.tcp_writable = false;
             return PacketSendStatus::Done;
-        },
+        }
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
             connection.tcp_writable = false;
-            return PacketSendStatus::SocketUnavailable
-        },
+            return PacketSendStatus::SocketUnavailable;
+        }
         Err(e) => panic!(e),
     }
 }
 
 pub fn attempt_write_client_packet(client_id: ClientId, outgoing: &mut TcpOutgoingQueue, clients: &mut Clients) {
-    outgoing.next_packet(client_id, |packet_kind, body| {
-        attempt_write_packet(client_id, packet_kind, body, clients)
+    outgoing.next_packet(client_id, |builder| {
+        attempt_write_packet(client_id, builder, clients)
     });
 }
 
 pub fn attempt_write_any_packet(outgoing: &mut TcpOutgoingQueue, clients: &mut Clients) {
-    outgoing.any_next_packet(|destination_id, packet_kind, body| {
-        attempt_write_packet(destination_id, packet_kind, body, clients)
+    outgoing.any_next_packet(|destination_id, builder| {
+        attempt_write_packet(destination_id, builder, clients)
     });
 }
 
 struct OutgoingPacket {
     dest: ClientId,
-    kind: u8,
-    raw_body: Arc<Vec<u8>>,
+    builder: Arc<SyncUnsafeCell<WritePacketBuilder>>,
     finish: PacketFinish,
 }
 
@@ -184,7 +210,7 @@ impl TcpOutgoingQueue {
     // TODO we could iterate through the packets, trying to send until either
     // one sends _OR_ we've exhausted all potential clients/sockets
     fn any_next_packet<F>(&mut self, mut op: F) -> WriteAttempt
-        where F: FnMut(ClientId, u8, &Arc<Vec<u8>>) -> PacketSendStatus
+        where F: FnMut(ClientId, &mut WritePacketBuilder) -> PacketSendStatus
     {
         self.sort_incoming_packets();
 
@@ -200,16 +226,17 @@ impl TcpOutgoingQueue {
             let packet = client_queue.pop_front()
                 .expect("packet_order queue is out of sync with queue_per_connection");
 
-            match op(packet.dest, packet.kind, &packet.raw_body) {
+            let builder = unsafe { &mut *packet.builder.get() };
+            match op(packet.dest, builder) {
                 PacketSendStatus::SocketUnavailable => {
                     client_queue.push_front(packet);
                     self.packet_order.push_back(client_id); // Socket is busy, don't use it for a while
                     return WriteAttempt::WriteAttempted;
-                },
+                }
                 PacketSendStatus::Done => {
                     packet.finish.done(Ok(()));
                     return WriteAttempt::WriteAttempted;
-                },
+                }
                 PacketSendStatus::SkipPacket => {
                     continue;
                 }
@@ -221,7 +248,7 @@ impl TcpOutgoingQueue {
     // We need the loop to try a new packet if the one first attempted
     // targets a client that is no longer connected.
     fn next_packet<F>(&mut self, client_id: ClientId, mut op: F) -> WriteAttempt
-        where F: FnMut(u8, &Arc<Vec<u8>>) -> PacketSendStatus
+        where F: FnMut(&mut WritePacketBuilder) -> PacketSendStatus
     {
         self.sort_incoming_packets();
 
@@ -229,14 +256,15 @@ impl TcpOutgoingQueue {
             let client_queue = self.queue_per_connection.entry(client_id).or_insert(VecDeque::new());
             let packet = match client_queue.pop_front() {
                 Some(packet) => packet,
-                None => return self.any_next_packet(|_, kind, body| op(kind, body)),
+                None => return self.any_next_packet(|_, body| op(body)),
             };
 
-            match op(packet.kind, &packet.raw_body) {
+            let builder = unsafe { &mut *packet.builder.get() };
+            match op(builder) {
                 PacketSendStatus::SocketUnavailable => {
                     client_queue.push_front(packet);
                     return WriteAttempt::WriteAttempted;
-                },
+                }
                 PacketSendStatus::Done => {
                     let position = self.packet_order.iter()
                         .position(|id| id == &client_id)
@@ -244,14 +272,13 @@ impl TcpOutgoingQueue {
                     self.packet_order.remove(position);
                     packet.finish.done(Ok(()));
                     return WriteAttempt::WriteAttempted;
-                },
+                }
                 PacketSendStatus::SkipPacket => {
                     continue;
                 }
             }
         }
     }
-
 }
 
 impl Evented for TcpOutgoingQueue {
@@ -277,12 +304,11 @@ pub struct TcpHandle {
 }
 
 impl TcpHandle {
-    pub fn send(&self, dest: ClientId, kind: u8, raw_body: Arc<Vec<u8>>) -> PacketFuture {
+    pub fn send(&self, dest: ClientId, builder: Arc<SyncUnsafeCell<WritePacketBuilder>>) -> PacketFuture {
         let (future, finish) = PacketFuture::new();
         self.sender.send(OutgoingPacket {
             dest,
-            kind,
-            raw_body,
+            builder,
             finish,
         }).unwrap();
         self.set_queue_readiness.set_readiness(Ready::readable()).unwrap();
@@ -304,25 +330,6 @@ pub fn queue_and_handle() -> (TcpHandle, TcpOutgoingQueue) {
             packet_order: VecDeque::new(),
             queue_per_connection: HashMap::new(),
         }
-    )
+    );
 }
 
-// TODO use buffer from main()
-pub fn read_buffer_from_tcp_stream(stream: &mut TcpStream) -> Result<TcpRead, io::Error> {
-   let mut received_data = Vec::new();
-   loop {
-       let mut buf = [0; 256];
-       match stream.read(&mut buf) {
-           Ok(0) => return Ok(TcpRead::ConnectionClosed),
-           Ok(n) => received_data.extend_from_slice(&buf[..n]),
-           Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(TcpRead::Data(received_data)),
-           Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
-           Err(err) => return Err(err),
-       }
-   }
-}
-
-pub enum TcpRead {
-   ConnectionClosed,
-   Data(Vec<u8>),
-}

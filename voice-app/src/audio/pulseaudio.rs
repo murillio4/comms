@@ -92,7 +92,7 @@ fn on_record_callback(stream: &mut Stream, handle: &network::Handle) -> Result<(
                 PeekResult::Hole(_) => println!("hole detected"),
                 PeekResult::Data(data) => {
                     let packet = packet::AudioFromClient(data.to_vec());
-                    handle.send_single(packet).unwrap();
+                    handle.audio(packet).unwrap();
                 }
             }
         },

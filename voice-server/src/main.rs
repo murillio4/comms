@@ -8,10 +8,9 @@
 
 use mio::net::UdpSocket;
 use mio::net::TcpListener;
-use mio::net::TcpStream;
 use std::io;
 use mio::{Poll, Token, Ready, PollOpt, Events};
-use voice_lib::{DeserializeError, packet};
+use voice_lib::packet;
 use std::net::SocketAddr;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
@@ -22,14 +21,16 @@ use std::cell::UnsafeCell;
 use std::sync::Arc;
 use crate::task::SyncUnsafeCell;
 use voice_lib::packet::ClientId;
-use crate::tcp::{TcpRead, TcpHandle};
+use crate::tcp::TcpHandle;
+use voice_lib::network::{CommsTcpStream};
+use voice_lib::serialization::DeserializeError;
 
 mod task;
 mod tcp;
 mod udp;
 
 pub struct TcpConnection {
-    tcp_stream: TcpStream,
+    stream: CommsTcpStream,
     tcp_writable: bool,
 }
 
@@ -41,7 +42,7 @@ pub struct ConnectingClient {
 }
 
 pub struct Client {
-    client_id: ClientId,
+    client_id: ClientId, // TODO remove client_id
     next_packet_id: NonZeroU64,
     tcp_connection: TcpConnection,
     udp_addr: SocketAddr,
@@ -53,6 +54,11 @@ pub struct Clients {
     pub connecting: HashMap<ClientId, ConnectingClient>,
 }
 
+pub enum CurrentClient {
+    Established(Client),
+    Connecting(ConnectingClient),
+}
+
 impl Clients {
     fn new() -> Self {
         Clients {
@@ -61,10 +67,17 @@ impl Clients {
         }
     }
 
-    pub fn remove(&mut self, client_id: &ClientId) -> Option<TcpConnection> {
+    pub fn use_current_client(&mut self, client_id: &ClientId) -> Option<CurrentClient> {
         self.established.remove(client_id)
-            .map(|c| c.tcp_connection)
-            .or_else(|| self.connecting.remove(client_id).map(|c| c.tcp_connection))
+            .map(|c| CurrentClient::Established(c))
+            .or_else(|| self.connecting.remove(client_id).map(|c| CurrentClient::Connecting(c)))
+    }
+
+    pub fn put_current_client_back(&mut self, client_id: ClientId, client: CurrentClient) {
+        match client {
+            CurrentClient::Established(client) => { self.established.insert(client_id, client); },
+            CurrentClient::Connecting(client) => { self.connecting.insert(client_id, client); },
+        };
     }
 
     pub fn id_by_socket_addr(&self, addr: &SocketAddr) -> Option<ClientId> {
@@ -78,19 +91,17 @@ impl Clients {
             })
     }
 
-    pub fn tcp_connection_by_id<F, R>(&mut self, client_id: &ClientId, cb: F) -> R
-        where F: FnOnce(Option<&mut TcpConnection>) -> R
+    pub fn tcp_connection_by_id(&mut self, client_id: &ClientId) -> Option<&mut TcpConnection>
     {
         let established_connection = self.established.get_mut(client_id).map(|c| &mut c.tcp_connection);
         let connecting = self.connecting.get_mut(client_id).map(|c| &mut c.tcp_connection);
-
-        cb(established_connection.or(connecting))
+        established_connection.or(connecting)
     }
 }
 
 pub async fn on_connect(tcp_handle: TcpHandle, client_id: ClientId) {
     println!("Saying hello to new client {}", &client_id);
-    tcp::send_packet(&tcp_handle, client_id, packet::Hello {
+    tcp::send_packet(&tcp_handle, client_id, None, packet::Hello {
         client_id
     }).await;
 }
@@ -156,7 +167,6 @@ fn main() -> Result<(), CommsServerError> {
                 }
                 if readiness.is_writable() {
                     let mut clients = unsafe { &mut *clients.get() };
-                    println!("UDP socket is writable");
                     udp::attempt_write_packet(&udp_socket, &mut udp_outgoing_queue, &mut udp_socket_writable, &mut clients);
                 }
             } else if token == udp_queue_token {
@@ -178,7 +188,7 @@ fn main() -> Result<(), CommsServerError> {
                     client_id,
                     next_packet_id: NonZeroU64::new(1).unwrap(),
                     tcp_connection: TcpConnection {
-                        tcp_stream: stream,
+                        stream: CommsTcpStream::new(stream),
                         tcp_writable: false,
                     },
                     udp_addr: None,
@@ -189,32 +199,14 @@ fn main() -> Result<(), CommsServerError> {
                 let readiness = event.readiness();
                 if readiness.is_readable() {
                     let client_id = token.0 as ClientId;
-                    let tcp_read = {
-                        let clients = unsafe { &mut *clients.get() };
-
-                        clients.tcp_connection_by_id(&client_id, |connection| {
-                            connection
-                                .map(|connection| tcp::read_buffer_from_tcp_stream(&mut connection.tcp_stream))
-                                .expect("received 'readable' event for non-existant client")
-                        })
-                    };
-
-                    match tcp_read {
-                        Ok(TcpRead::Data(buffer)) => tcp::handle_packet(client_id, &buffer, clients.clone(), &spawner, udp_handle.clone(), tcp_handle.clone()).unwrap(),
-                        Ok(TcpRead::ConnectionClosed) => {
-                            let clients = unsafe { &mut *clients.get() };
-                            let client = clients.remove(&client_id).expect("tried to remove client that doesn't exist");
-                            println!("deregistering client: {}", &client_id);
-                            poll.deregister(&client.tcp_stream).unwrap();
-                        },
-                        Err(_) => continue,
-                    }
+                    tcp::handle_readable_stream(client_id, clients.clone(), &spawner, &udp_handle, &tcp_handle, &poll).unwrap();
                 }
                 if readiness.is_writable() {
                     let client_id = token.0 as ClientId;
 
                     let mut clients = unsafe { &mut *clients.get() };
-                    clients.tcp_connection_by_id(&client_id, |c| c.map(|c| c.tcp_writable = true));
+                    clients.tcp_connection_by_id(&client_id).map(|c| c.tcp_writable = true);
+
                     tcp::attempt_write_client_packet(client_id, &mut tcp_outgoing_queue, &mut clients);
                 }
             }

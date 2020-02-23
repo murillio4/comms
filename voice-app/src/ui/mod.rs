@@ -42,7 +42,7 @@ async fn connect_to_server(
     user_list_model: Rc<gtk::ListStore>,
     connecting: Rc<AtomicBool>,
 ) {
-    let connect_future = network::future::connect_to_server(handle.clone(), server, username).await;
+    let connect_future = network::future::connect(&handle, server, username).await;
     connect_progress_stack.set_visible_child_name("hidden_progress");
     connect_button.set_sensitive(true);
     connecting.store(false, Ordering::Relaxed);
@@ -67,6 +67,7 @@ async fn connect_to_server(
                 ConnectError::NetworkError => "Could not connect to the server".to_string(),
                 // AlreadyConnected shouldn't be possible, but it's useful for end-to-end testing network futures right now.
                 ConnectError::AlreadyConnected => "Can't connect because you're already connected to a server".to_string(),
+                ConnectError::RequestError(e) => format!("Request failed: {:?}", e),
             };
             connect_failure_status.set_text(&error_message);
         }
@@ -78,7 +79,7 @@ async fn disconnect_from_server(
     pane_stack: gtk::Stack,
     user_list_model: Rc<gtk::ListStore>,
 ) {
-    let _ = network::future::disconnect_from_server(handle).await;
+    let _ = network::future::disconnect(&handle).await;
     pane_stack.set_transition_type(gtk::StackTransitionType::SlideDown);
     pane_stack.set_visible_child_name("connect");
     user_list_model.clear();
