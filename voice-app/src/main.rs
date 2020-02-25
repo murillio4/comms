@@ -6,7 +6,7 @@ use std::{process, env};
 use std::sync::mpsc;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
-use crate::network::{Handle, SendToNetworkThreadError, Worker};
+use crate::network::{Handle, SendToNetworkThreadError, Worker, NetworkError};
 
 mod audio;
 mod network;
@@ -16,12 +16,14 @@ mod ui;
 
 fn main() -> Result<(), CommsError> {
     let (audio_sender, audio_receiver) = mpsc::channel();
-    let (network_handle, network_worker_init) = Handle::new_handle_and_worker(audio_sender);
+    let (network_handle, network_event_receiver, network_worker_init) = Handle::new_handle_and_worker(audio_sender);
 
     std::thread::spawn(move || {
         #[cfg(windows)]
         bump_priority();
-        if let Err(e) = Worker::new().map(|w| w.run(network_worker_init)) {
+        if let Err(e) = Worker::new()
+            .map_err(|e| NetworkError::Io(Some(e)))
+            .and_then(|w| w.run(network_worker_init)) {
             eprintln!("Encountered an error in network operations, stopping");
             eprintln!("Error details: {:?}", e);
             process::exit(1);
@@ -42,7 +44,7 @@ fn main() -> Result<(), CommsError> {
         });
     }
 
-    ui::run(network_handle);
+    ui::run(network_handle, network_event_receiver);
     Ok(())
 }
 

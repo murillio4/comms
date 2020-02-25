@@ -62,15 +62,6 @@ pub enum AnyClient {
     Connecting(ConnectingClient),
 }
 
-impl AnyClient {
-    pub fn connection(&self) -> &Connection {
-        match self {
-            AnyClient::Established(client) => &client.connection,
-            AnyClient::Connecting(client) => &client.connection,
-        }
-    }
-}
-
 pub enum AnyClientRef<'a> {
     Established(&'a mut Client),
     Connecting(&'a mut ConnectingClient),

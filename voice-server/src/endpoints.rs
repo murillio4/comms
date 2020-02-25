@@ -6,7 +6,6 @@ use crate::network::{NetworkHandle, SendPacket, Target};
 use std::net::SocketAddr;
 use voice_lib::network::{IncomingStreamPacket, UpdateFromStream};
 use voice_lib::serialization::{HeaderParsedPacket, DeserializeError};
-use mio::Poll;
 use std::io;
 
 pub struct Context {
@@ -72,6 +71,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
                     username: packet.body.name.clone(),
                 });
 
+                println!("client of id {} connected! Informing the others, who are: {:?}", &context.client_id, &other_clients);
                 vec!(
                     SendPacket::tcp(
                         Target::One(context.client_id),
@@ -95,7 +95,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
         }
     };
 
-    for packet in packets {
+    for packet in packets { // TODO make into await_all
         packet.send(&context.network_handle).await;
     }
     Ok(())
@@ -107,21 +107,19 @@ async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> Result<(), 
     Ok(())
 }
 
-async fn close_connection(context: Context, poll: Arc<SyncUnsafeCell<Poll>>, reason: DisconnectReason) -> Result<(), EndpointError> {
-    if reason == DisconnectReason::MalformedData {
+async fn close_connection(context: Context, reason: CloseConnectionReason) -> Result<(), EndpointError> {
+    if reason == CloseConnectionReason::MalformedData {
         let outgoing = SendPacket::tcp(Target::One(context.client_id), None, Disconnect {
-            reason
+            reason: DisconnectReason::MalformedData,
         })?;
         outgoing.send(&context.network_handle).await;
     }
 
     let remaining_client_ids = {
         let clients = unsafe { &mut *context.clients.get() };
-        let poll = unsafe { &mut *poll.get() };
-        let client = clients.remove_client(&context.client_id).expect("Tried to close connection with nonexistant client");
-        poll.deregister(&client.connection().stream.internal).unwrap();
-
-        let clients = unsafe { &mut *context.clients.get() };
+        if reason != CloseConnectionReason::SocketClosed {
+            clients.remove_client(&context.client_id).expect("Tried to close connection with nonexistant client");
+        }
         clients.established.keys()
             .map(|k| k.clone())
             .collect()
@@ -156,14 +154,20 @@ fn udp_packet_to_endpoint(spawner: &Spawner, packet: HeaderParsedPacket, context
     Ok(())
 }
 
-pub fn spawn_close_connection(client_id: ClientId, reason: DisconnectReason, network_handle: &NetworkHandle, clients: &Arc<SyncUnsafeCell<Clients>>, poll: &Arc<SyncUnsafeCell<Poll>>, spawner: &Spawner) {
+#[derive(Eq, PartialEq)]
+pub enum CloseConnectionReason {
+    SocketClosed,
+    MalformedData,
+}
+
+pub fn spawn_close_connection(client_id: ClientId, reason: CloseConnectionReason, network_handle: &NetworkHandle, clients: &Arc<SyncUnsafeCell<Clients>>, spawner: &Spawner) {
     let context = Context {
         client_id,
         network_handle: network_handle.clone(),
         clients: clients.clone(),
     };
 
-    spawner.spawn(close_connection(context, poll.clone(), reason));
+    spawner.spawn(close_connection(context, reason));
 }
 
 #[derive(Debug)]

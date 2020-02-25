@@ -7,7 +7,7 @@ use crate::serialization::{DeserializeError, OwnedHeaderParsedPacket};
 use crate::packet::{Packet, PacketBody};
 use serde::de::DeserializeOwned;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Protocol {
     Tcp,
     Udp,
@@ -33,10 +33,7 @@ impl CommsTcpStream {
             let mut buf = [0; 256];
             match self.internal.read(&mut buf) {
                 Ok(0) => return Ok(UpdateFromStream::ConnectionClosed),
-                Ok(amount) => {
-                    println!("read {} from internal stream", amount);
-                    self.slice_deque.extend_from_slice(&buf[0..amount])
-                },
+                Ok(amount) => self.slice_deque.extend_from_slice(&buf[0..amount]),
                 Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(UpdateFromStream::Success),
                 Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(err) => return Err(err),
@@ -52,7 +49,6 @@ impl CommsTcpStream {
                 return Ok(None);
             }
             let bytes = &self.slice_deque.as_slice()[0..PACKET_HEADER_SIZE];
-            println!("[{}] header slice: {:x?}", self.slice_deque.len(), bytes);
             let header = bincode::deserialize(bytes)
                 .map_err(|_| DeserializeError)?;
             unsafe { self.slice_deque.move_head(PACKET_HEADER_SIZE as isize) };
@@ -86,7 +82,6 @@ impl<'a> IncomingStreamPacket<'a> {
         let slice_deque = &mut self.stream.slice_deque;
         let body = {
             let slice = &slice_deque.as_slice()[0..self.header.body_len as usize];
-            println!("[{}] body slice: {:x?}", slice_deque.len(), slice);
             bincode::deserialize(slice).map_err(|_| DeserializeError)?
         };
         unsafe { slice_deque.move_head(self.header.body_len as isize) };
@@ -96,7 +91,6 @@ impl<'a> IncomingStreamPacket<'a> {
     pub fn into_owned(self) -> OwnedHeaderParsedPacket {
         let slice_deque = &mut self.stream.slice_deque;
         let body_slice = &slice_deque.as_slice()[0..self.header.body_len as usize];
-        println!("[{}] body slice: {:x?}", slice_deque.len(), body_slice);
         let raw_body = body_slice.to_vec();
         unsafe { slice_deque.move_head(self.header.body_len as isize) };
         OwnedHeaderParsedPacket::new(self.header, raw_body)

@@ -6,9 +6,9 @@ use futures::channel::oneshot;
 use crate::network;
 use serde::{Serialize};
 use serde::de::DeserializeOwned;
-use crate::network::{Command, ConnectError, DisconnectError};
+use crate::network::{Command, ConnectError};
 use std::fmt::{Debug, Formatter, Error};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use futures_timer::Delay;
 use futures::future;
 use futures::future::Either;
@@ -20,6 +20,7 @@ use std::num::NonZeroU64;
 use voice_lib::network::Protocol;
 
 async fn connect_without_timeout(handle: &network::Handle, destination: String, username: String) -> Result<Vec<(ClientId, String)>, ConnectError> {
+    let start = SystemTime::UNIX_EPOCH;
     let destination_with_port = format!("{}:18847", destination);
     let destination = match destination_with_port.to_socket_addrs().await {
         Ok(mut addresses) => {
@@ -38,23 +39,19 @@ async fn connect_without_timeout(handle: &network::Handle, destination: String, 
         destination,
         send_response: s
     }).await?;
-    dbg!(&hello);
 
     let _: Packet<AssociateUdpAccepted> = request_expect(&handle, Protocol::Udp, None,AssociateUdp {
         client_id: hello.client_id,
     }).await?;
-    dbg!("AssociateUdpAccepted");
 
     let connect_accepted: Packet<FinishConnectAccepted> = request_expect(
         &handle,
         Protocol::Tcp,
         None,
         FinishConnect {
-            name: username
-        }
-    ).await?;
-    dbg!(&connect_accepted);
-
+            name: username // TODO why is it that the more you connect to servers, the slower it connects? Seeing up to 600ms sometimes (up from ~1 at first!)
+        } // TODO probably sound commands being queued up, eh? we should probably
+    ).await?; // only get audio when we're connected
     Ok(connect_accepted.body.users)
 }
 
@@ -64,14 +61,19 @@ pub async fn connect(handle: &network::Handle, destination: String, username: St
     pin_mut!(connect_future);
     match future::select(timeout, connect_future).await {
         Either::Left(_) => {
-            let _ = disconnect(handle).await;
+            disconnect(handle).await;
             Err(ConnectError::NetworkError)
         },
-        Either::Right((result, _)) => result
+        Either::Right((result, _)) => {
+            if result.is_err() {
+                disconnect(handle).await;
+            }
+            result
+        }
     }
 }
 
-pub async fn disconnect(handle: &network::Handle) -> Result<(), DisconnectError> {
+pub async fn disconnect(handle: &network::Handle) {
     NetworkFuture::new(handle, |s| Command::Disconnect {
         send_response: s
     }).await
@@ -159,7 +161,7 @@ impl<T> Future for NetworkFuture<T> {
                 Poll::Pending
             },
             Err(e) => {
-                panic!(e);
+                panic!("NetworkFuture was cancelled (other side didn't send response?)");
             },
         }
     }
