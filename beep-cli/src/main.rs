@@ -1,14 +1,17 @@
-use std::net::UdpSocket;
+use std::net::{UdpSocket, TcpStream};
 use std::time::{SystemTime, Duration};
-use voice_lib::{packet, serialize};
 use clap::{App, Arg};
 use std::io;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
+use voice_lib::packet::{Packet, Hello, PacketBody, AssociateUdpAccepted, FinishConnect, AssociateUdp, FinishConnectAccepted, AudioFromClient};
+use std::num::NonZeroU64;
+use std::io::{Read, Write};
+use voice_lib::serialization::{HeaderParsedPacket, serialize, DeserializeError, SerializeError};
 
 fn main() -> Result<(), BeepClientErr> {
     #[cfg(windows)]
-    bump_priority();
+        bump_priority();
 
     let matches = App::new("Beep Client")
         .version("0.1")
@@ -25,6 +28,47 @@ fn main() -> Result<(), BeepClientErr> {
 
     let server_address_with_port = format!("{}:18847", server_address);
     println!("Connecting to {}...", server_address_with_port);
+
+    let mut tcp = TcpStream::connect(server_address_with_port.clone())?;
+    let udp = UdpSocket::bind("0.0.0.0:0")?;
+    udp.connect(server_address_with_port)?;
+
+    let mut buffer = [0u8; 65535];
+
+    tcp.read(&mut buffer).unwrap();
+    let parsed_packet = HeaderParsedPacket::from_raw(&buffer)?;
+    assert_eq!(parsed_packet.kind(), Hello::KIND_ID);
+    let hello: Packet<Hello> = parsed_packet.finish_parse()?;
+    dbg!(&hello);
+
+    udp.send(&serialize(
+        NonZeroU64::new(1).unwrap(),
+        None,
+        AssociateUdp {
+            client_id: hello.body.client_id,
+        },
+    )?)?;
+
+    udp.recv(&mut buffer).unwrap();
+    let parsed_packet = HeaderParsedPacket::from_raw(&buffer)?;
+    assert_eq!(parsed_packet.kind(), AssociateUdpAccepted::KIND_ID);
+    let accepted: Packet<AssociateUdpAccepted> = parsed_packet.finish_parse()?;
+    dbg!(&accepted);
+
+    tcp.write(&serialize(
+        NonZeroU64::new(2).unwrap(),
+        None,
+        FinishConnect {
+            name: "beep".to_string(),
+        },
+    )?)?;
+
+    tcp.read(&mut buffer).unwrap();
+    let parsed_packet = HeaderParsedPacket::from_raw(&buffer)?;
+    assert_eq!(parsed_packet.kind(), FinishConnectAccepted::KIND_ID);
+    let finish_connect_accepted: Packet<FinishConnectAccepted> = parsed_packet.finish_parse()?;
+    dbg!(&finish_connect_accepted);
+
     let sample_rate = 48000f32;
     let mut sample_clock = 0f32;
 
@@ -34,15 +78,15 @@ fn main() -> Result<(), BeepClientErr> {
         ((sample_clock * 440.0 * 2.0 * std::f32::consts::PI / sample_rate).sin() * std::i16::MAX as f32 * 0.2) as i16
     };
 
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
-    socket.connect(server_address_with_port)?;
     let start = SystemTime::now();
     let mut sample_count: u128 = 0;
+    let mut next_packet_id = 3;
+
     loop {
         std::thread::sleep(Duration::from_millis(5));
         let now = SystemTime::now();
         let diff = now.duration_since(start).unwrap();
-        let ms= diff.as_millis();
+        let ms = diff.as_millis();
         let total_samples_since_start = ms * 48;
         let sample_count_to_send = total_samples_since_start - sample_count;
         sample_count = total_samples_since_start;
@@ -52,8 +96,12 @@ fn main() -> Result<(), BeepClientErr> {
             let value = next_value();
             samples.extend(&value.to_le_bytes());
         }
-        let packet = packet::AudioFromClient(&samples);
-        socket.send(&serialize(packet)?)?;
+        udp.send(&serialize(
+            NonZeroU64::new(next_packet_id).unwrap(),
+            None,
+            AudioFromClient(samples),
+        )?)?;
+        next_packet_id += 1;
     }
 }
 
@@ -61,7 +109,8 @@ fn main() -> Result<(), BeepClientErr> {
 enum BeepClientErr {
     Usage,
     Io(io::Error),
-    Serialize
+    Serialize,
+    Deserialize,
 }
 
 impl From<io::Error> for BeepClientErr {
@@ -70,8 +119,14 @@ impl From<io::Error> for BeepClientErr {
     }
 }
 
-impl From<voice_lib::SerializeError> for BeepClientErr {
-    fn from(_: voice_lib::SerializeError) -> Self {
+impl From<DeserializeError> for BeepClientErr {
+    fn from(_: DeserializeError) -> Self {
+        BeepClientErr::Deserialize
+    }
+}
+
+impl From<SerializeError> for BeepClientErr {
+    fn from(_: SerializeError) -> Self {
         BeepClientErr::Serialize
     }
 }

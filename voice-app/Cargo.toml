@@ -6,14 +6,13 @@ edition = "2018"
 
 [dependencies]
 async-std = "1.4.0"
-bincode = "1.2.0"
 futures = "0.3.1"
 futures-timer = "2.0.2"
 gdk-pixbuf = "0.8.0"
 gio = "0.8.0"
 glib = "0.9.1"
 gtk = "0.8.0"
-mio = "0.6.19"
+mio = "0.6.21"
 ringbuf = "0.2.1"
 sample = "0.10.0"
 serde = { version = "1.0"}

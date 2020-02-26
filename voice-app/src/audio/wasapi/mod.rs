@@ -47,7 +47,7 @@ pub fn run(network_handle: Handle, receiver: Receiver<AudioCommand>) -> Result<(
             let sample = mic_signal.next()[0].to_sample::<i16>();
             buffer.extend(&sample.to_le_bytes());
         }
-        network_handle.send_single(AudioFromClient(&buffer)).unwrap();
+        network_handle.audio(AudioFromClient(buffer)).unwrap();
     };
 
     event_loop.run(move |id, result| {
@@ -116,10 +116,7 @@ impl Iterator for MicIterator {
     type Item = [f64; 1];
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some([self.consumer.pop().unwrap_or_else(|| {
-            // TODO println!("MicIterator fell behind");
-            0f64
-        })])
+        Some([self.consumer.pop().unwrap_or(0f64 )])
     }
 }
 

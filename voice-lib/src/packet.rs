@@ -1,61 +1,143 @@
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU64;
 
-pub const MAX_AUDIO_BUFFER_SIZE: usize = 2000;
+pub type ClientId = u16;
+pub type PacketKind = u8;
+pub type PacketId = NonZeroU64;
 
-pub trait Packet<'a> {
-    const HEADER_TYPE: u8;
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Packet<T: PacketBody> {
+    pub id: PacketId,
+    pub reply_to: Option<PacketId>,
+    pub body: T,
+}
+
+impl<T: PacketBody> Packet<T> {
+    pub fn new(id: PacketId, reply_to: Option<PacketId>, body: T) -> Self {
+        Packet {
+            id,
+            reply_to,
+            body,
+        }
+    }
+}
+
+pub trait PacketBody {
+    const KIND_ID: PacketKind;
+    fn kind_id() -> PacketKind { Self::KIND_ID }
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Connect<'a> {
-    pub username: &'a str,
+pub struct AssociateUdp {
+    pub client_id: u16,
 }
 
-impl<'a> Packet<'a> for Connect<'a> {
-    const HEADER_TYPE: u8 = 1u8;
+impl PacketBody for AssociateUdp {
+    const KIND_ID: PacketKind = 0u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AssociateUdpAccepted;
+
+impl PacketBody for AssociateUdpAccepted {
+    const KIND_ID: PacketKind = 1u8;
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FinishConnect {
+    pub name: String,
+}
+
+impl PacketBody for FinishConnect {
+    const KIND_ID: PacketKind = 2u8;
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct AudioFromClient<'a>(
+pub struct AudioFromClient(
     #[serde(with = "serde_bytes")]
-    pub &'a [u8]
+    pub Vec<u8>
 );
 
-impl<'a> Packet<'a> for AudioFromClient<'a> {
-    const HEADER_TYPE: u8 = 2u8;
-}
-
-
-#[derive(Serialize, Deserialize)]
-pub struct Disconnect();
-
-impl<'a> Packet<'a> for Disconnect {
-    const HEADER_TYPE: u8 = 3u8;
+impl PacketBody for AudioFromClient {
+    const KIND_ID: PacketKind = 3u8;
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct KeepAlive();
+pub struct KeepAlive;
 
-impl<'a> Packet<'a> for KeepAlive {
-    const HEADER_TYPE: u8 = 4u8;
+impl PacketBody for KeepAlive {
+    const KIND_ID: PacketKind = 4u8;
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct AudioToClient<'a> {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AudioToClient {
     #[serde(with = "serde_bytes")]
-    pub bytes: &'a [u8],
-    pub author: &'a str,
+    pub bytes: Vec<u8>,
+    pub author: ClientId,
 }
 
-impl<'a> Packet<'a> for AudioToClient<'a> {
-    const HEADER_TYPE: u8 = 5u8;
+impl PacketBody for AudioToClient {
+    const KIND_ID: PacketKind = 5u8;
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct ConnectAccepted {
-    pub users: Vec<String>,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FinishConnectAccepted {
+    pub users: Vec<(ClientId, String)>,
 }
 
-impl<'a> Packet<'a> for ConnectAccepted {
-    const HEADER_TYPE: u8 = 6u8;
+impl PacketBody for FinishConnectAccepted {
+    const KIND_ID: PacketKind = 6u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ErrorResponse {
+    AssociateUdpFirst,
+    UnexpectedPacket(PacketId)
+}
+
+impl PacketBody for ErrorResponse {
+    const KIND_ID: PacketKind = 7u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Hello {
+    pub client_id: u16,
+}
+
+impl PacketBody for Hello {
+    const KIND_ID: PacketKind = 8u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserJoined {
+    pub id: u16,
+    pub name: String,
+}
+
+impl PacketBody for UserJoined {
+    const KIND_ID: PacketKind = 9u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserLeft {
+    pub id: u16,
+}
+
+impl PacketBody for UserLeft {
+    const KIND_ID: PacketKind = 10u8;
+}
+
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub enum DisconnectReason {
+    Leaving,
+    MalformedData,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Disconnect {
+    pub reason: DisconnectReason,
+}
+
+impl PacketBody for Disconnect {
+    const KIND_ID: PacketKind = 11u8;
 }

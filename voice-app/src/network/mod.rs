@@ -3,59 +3,145 @@ use std::io;
 use serde::Serialize;
 use mio::{Evented, Events, Poll, PollOpt, Ready, Registration, Token, SetReadiness};
 use mio::net::UdpSocket;
-use voice_lib::{packet, SerializeError, serialize};
 use std::sync::mpsc::{Receiver, Sender, SendError, RecvError};
 use std::sync::mpsc;
 use ringbuf::{Producer, Consumer, RingBuffer};
-use voice_lib::packet::{Packet, AudioToClient};
-use bincode::deserialize;
+use voice_lib::packet::{PacketBody, AudioToClient, PacketKind, ClientId, Hello};
 use std::collections::{HashMap, VecDeque};
-use crate::network::future::SendResponse;
+use crate::network::future::{SendResponse, RequestError};
 use std::fmt::{Display, Formatter, Error};
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
+use mio::net::TcpStream;
+use voice_lib::serialization::{OwnedHeaderParsedPacket, HeaderParsedPacket, WritePacketBuilder, SerializeError};
+use voice_lib::packet;
+use voice_lib::network::{CommsTcpStream, UpdateFromStream, IncomingStreamPacket, Protocol};
+use std::io::Write;
+use crate::ui::NetworkEvent;
 
 pub mod future;
 
-trait RawPacket {
-    fn header_and_data(&self) -> (u8, &[u8]);
-}
-
-impl RawPacket for &[u8] {
-    fn header_and_data(&self) -> (u8, &[u8]) {
-        (self[0], &self[1..])
-    }
-}
-
 pub struct Connection {
-    socket: UdpSocket,
-    token: Token,
-    socket_writable: bool,
-    outgoing_packet_queue: VecDeque<Vec<u8>>,
-    expected_response_map: HashMap<u8, SendResponse<Vec<u8>>>,
+    udp: UdpSocket,
+    udp_token: Token,
+    udp_writable: bool,
+    udp_packet_queue: VecDeque<Vec<u8>>,
+    tcp: CommsTcpStream,
+    tcp_token: Token,
+    tcp_writable: bool,
+    next_packet_id: NonZeroU64,
+    tcp_packet_queue: VecDeque<Vec<u8>>,
+    reply_map: HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>,
+    connect_response: Option<SendResponse<Result<Hello, ConnectError>>>,
 }
 
 impl Connection {
-    fn new(socket: UdpSocket, connection_token: Token) -> Self {
+    fn new(udp: UdpSocket, udp_token: Token, tcp: CommsTcpStream, tcp_token: Token) -> Self {
         Connection {
-            socket,
-            token: connection_token,
-            socket_writable: false,
-            outgoing_packet_queue: VecDeque::new(),
-            expected_response_map: HashMap::new(),
+            udp,
+            udp_token,
+            udp_writable: false,
+            udp_packet_queue: VecDeque::new(),
+            tcp,
+            tcp_token,
+            tcp_writable: false,
+            tcp_packet_queue: VecDeque::new(),
+            next_packet_id: NonZeroU64::new(1).unwrap(),
+            reply_map: HashMap::new(),
+            connect_response: None,
         }
+    }
+
+    fn next_packet_id(&mut self) -> NonZeroU64 {
+        let packet_id = self.next_packet_id;
+        self.next_packet_id = NonZeroU64::new(packet_id.get() + 1).unwrap();
+        packet_id
     }
 }
 
 pub struct WorkerInit {
     audio_sender: Sender<AudioCommand>,
+    event_sender: futures::channel::mpsc::Sender<NetworkEvent>,
     command_receiver: Receiver<Command>,
     command_registration: Registration,
+}
+
+struct NextPollToken(usize);
+
+impl NextPollToken {
+    fn create(&mut self) -> Token {
+        let next_id = self.0;
+        self.0 += 1;
+        Token(next_id)
+    }
 }
 
 pub struct Worker {
     connection: Option<Connection>,
     poll: Poll,
-    next_poll_token: usize,
+    next_poll_token: NextPollToken,
+}
+
+enum HandlePacketError {
+    FailedToParse(PacketKind),
+    UnexpectedPacket(OwnedHeaderParsedPacket),
+}
+
+fn handle_udp_packet(parsed_packet: HeaderParsedPacket, reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>, audio_handle: &mut AudioHandle) -> Result<(), HandlePacketError> {
+    if let Some(reply_to) = parsed_packet.header.reply_to {
+        if let Some(sender) = reply_map.remove(&reply_to) {
+            sender.done(parsed_packet.into_owned());
+            return Ok(());
+        }
+    }
+
+    let kind = parsed_packet.kind();
+    match kind {
+        packet::AudioToClient::KIND_ID => {
+            let audio_to_client: AudioToClient = parsed_packet.finish_parse()
+                .map_err(|_| HandlePacketError::FailedToParse(kind))
+                ?.body;
+            audio_handle.send(audio_to_client.author, &audio_to_client.bytes);
+        }
+        _ => return Err(HandlePacketError::UnexpectedPacket(parsed_packet.into_owned()))
+    }
+    Ok(())
+}
+
+fn handle_tcp_packet(stream_packet: IncomingStreamPacket, reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>, await_hello: &mut Option<SendResponse<Result<Hello, ConnectError>>>) -> Result<(), HandlePacketError> {
+    if let Some(reply_to) = stream_packet.header.reply_to {
+        if let Some(sender) = reply_map.remove(&reply_to) {
+            sender.done(stream_packet.into_owned());
+            return Ok(());
+        }
+    }
+
+    let kind = stream_packet.header.kind;
+    if kind == Hello::KIND_ID && await_hello.is_some() {
+        if let Some(send_response) = await_hello.take() {
+            send_response.done(Ok(stream_packet.finish_parse()
+                .map_err(|_| HandlePacketError::FailedToParse(kind))?.body));
+            return Ok(());
+        }
+    }
+    Err(HandlePacketError::UnexpectedPacket(stream_packet.into_owned()))
+}
+
+fn connect(connection: &mut Option<Connection>, poll: &Poll, destination: SocketAddr, next_poll_token: &mut NextPollToken) -> Result<(), ConnectError> {
+    if connection.is_some() {
+        return Err(ConnectError::AlreadyConnected);
+    }
+
+    let tcp = TcpStream::connect(&destination)?;
+    let udp = UdpSocket::bind(&"0.0.0.0:0".parse().unwrap())?;
+    udp.connect(destination)?;
+
+    let udp_token = next_poll_token.create();
+    let tcp_token = next_poll_token.create();
+    poll.register(&udp, udp_token, Ready::all(), PollOpt::edge()).unwrap();
+    poll.register(&tcp, tcp_token, Ready::all(), PollOpt::edge()).unwrap();
+    *connection = Some(Connection::new(udp, udp_token, CommsTcpStream::new(tcp), tcp_token));
+    Ok(())
 }
 
 impl Worker {
@@ -63,15 +149,16 @@ impl Worker {
         Ok(Worker {
             connection: None,
             poll: Poll::new()?,
-            next_poll_token: 0,
+            next_poll_token: NextPollToken(0),
         })
     }
 
     pub fn run(mut self, worker_init: WorkerInit) -> Result<(), NetworkError> {
         let command_queue = CommandQueue::new(worker_init.command_receiver, worker_init.command_registration);
-        let mut send_to_audio_thread = SendToAudioThread::new(worker_init.audio_sender);
+        let mut audio_handle = AudioHandle::new(worker_init.audio_sender);
+        let mut event_sender = worker_init.event_sender;
 
-        let command_token = self.create_poll_token();
+        let command_token = self.next_poll_token.create();
         self.poll.register(&command_queue, command_token, Ready::readable(), PollOpt::edge())?;
 
         let mut buffer = [0; 65535];
@@ -82,167 +169,204 @@ impl Worker {
             for event in events.iter() {
                 let readiness = event.readiness();
                 let token = event.token();
-                if token == command_token && readiness.is_readable() { // TODO do I need the is_readable check?
-                    let command = match command_queue.next() {
-                        Some(command) => command,
-                        None => {
-                            // This should never happen since handle_command is only called when
-                            // set_ready is called.
-                            // TODO track if/when this happens, to confirm this assumption.
-                            return Ok(());
-                        }
-                    };
+                if token == command_token && readiness.is_readable() {
+                    while let Some(command) = command_queue.next() {
+                        match command {
+                            Command::Packet {
+                                protocol,
+                                outgoing,
+                                send_response,
+                            } => {
+                                if let Some(connection) = &mut self.connection {
+                                    let id = connection.next_packet_id();
+                                    if let Ok(raw) = outgoing.into_raw(id) {
+                                        if let Some(send_response) = send_response {
+                                            connection.reply_map.insert(id, send_response);
+                                        }
 
-                    match command {
-                        Command::OneDirection(raw_packet) => {
-                            if let Some(connection) = &mut self.connection {
-                                connection.outgoing_packet_queue.push_back(raw_packet);
-                                attempt_send_next_packet(&mut connection.outgoing_packet_queue, &connection.socket, &mut connection.socket_writable)?;
-                            }
-                        },
-                        Command::Request {
-                            outgoing,
-                            expected_response_packet,
-                            send_response,
-                        } => {
-                            if let Some(connection) = &mut self.connection {
-                                connection.outgoing_packet_queue.push_back(outgoing);
-                                connection.expected_response_map.insert(expected_response_packet, send_response);
-                                attempt_send_next_packet(&mut connection.outgoing_packet_queue, &connection.socket, &mut connection.socket_writable)?;
-                            }
-                        }
-                        Command::Connect {
-                            destination,
-                            send_response,
-                        } => {
-                            let result: Result<(), ConnectError> = (|| {
-                                if self.connection.is_some() {
-                                    return Err(ConnectError::AlreadyConnected)
+                                        match protocol {
+                                            Protocol::Tcp => {
+                                                connection.tcp_packet_queue.push_back(raw);
+                                                match attempt_send_next_tcp_packet(&mut connection.tcp_packet_queue, &mut connection.tcp.internal, &mut connection.tcp_writable) {
+                                                    Ok(_) => (),
+                                                    Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+                                                        if let Some(send_response) = connection.connect_response.take() {
+                                                            send_response.done(Err(ConnectError::NetworkError))
+                                                        }
+                                                    }
+                                                    Err(e) => return Err(e.into()),
+                                                }
+                                            }
+                                            Protocol::Udp => {
+                                                connection.udp_packet_queue.push_back(raw);
+                                                match attempt_send_next_udp_packet(&mut connection.udp_packet_queue, &connection.udp, &mut connection.udp_writable) {
+                                                    Ok(_) => (),
+                                                    Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+                                                        if let Some(send_response) = connection.connect_response.take() {
+                                                            send_response.done(Err(ConnectError::NetworkError))
+                                                        }
+                                                    }
+                                                    Err(e) => return Err(e.into()),
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-
-                                let socket = UdpSocket::bind(&"0.0.0.0:0".parse().unwrap())?;
-                                socket.connect(destination)?;
-
-                                let connection_token = self.create_poll_token();
-                                self.poll.register(&socket, connection_token, Ready::all(), PollOpt::edge()).unwrap();
-                                self.connection = Some(Connection::new(socket, connection_token));
-                                Ok(())
-                            })();
-                            send_response.done(result);
-                        },
-                        Command::Disconnect {
-                            send_response,
-                        } => {
-                            let result: Result<(), DisconnectError> = (|| {
-                                if let Some(connection) = self.connection.take() {
-                                    self.poll.deregister(&connection.socket)?;
+                            }
+                            Command::Connect {
+                                destination,
+                                send_response,
+                            } => {
+                                let mut connection = &mut self.connection;
+                                if let Err(e) = connect(&mut connection, &mut self.poll, destination, &mut self.next_poll_token) {
+                                    send_response.done(Err(e));
+                                } else {
+                                    if let Some(connection) = &mut connection {
+                                        connection.connect_response = Some(send_response);
+                                    }
                                 }
-                                Ok(())
-                            })();
-                            send_response.done(result);
+                            }
+                            Command::Disconnect {
+                                send_response,
+                            } => {
+                                self.connection.take();
+                                send_response.done(());
+                            }
                         }
                     }
                 } else if let Some(connection) = &mut self.connection {
-                    if token == connection.token {
+                    if token == connection.udp_token {
                         if readiness.is_readable() {
                             loop {
-                                match connection.socket.recv(&mut buffer) {
+                                match connection.udp.recv(&mut buffer) {
                                     Ok(size) => {
                                         if size == 0 {
                                             continue;
                                         }
 
                                         let raw_packet = &buffer[0..size];
-                                        let (header, data) = raw_packet.header_and_data();
-                                        if header == packet::AudioToClient::HEADER_TYPE {
-                                            let audio_to_client: AudioToClient = match deserialize(data) {
-                                                Ok(packet) => packet,
-                                                Err(_) => {
-                                                    println!("Failed to parse AudioToClient packet, ignoring");
-                                                    continue;
-                                                }
-                                            };
-                                            send_to_audio_thread.send(audio_to_client.author, audio_to_client.bytes)?;
-                                        } else if let Some(sender) = connection.expected_response_map.remove(&header) {
-                                            sender.done(data.to_vec());
-                                        } // TODO track unexpected packets
-                                    }
-                                    Err(e) => {
-                                        if e.kind() == io::ErrorKind::WouldBlock {
-                                            break;
-                                        } else {
-                                            return Err(e.into());
+                                        if let Ok(parsed_packet) = HeaderParsedPacket::from_raw(raw_packet) {
+                                            match handle_udp_packet(parsed_packet, &mut connection.reply_map, &mut audio_handle) {
+                                                Ok(_) => {}
+                                                Err(HandlePacketError::UnexpectedPacket(packet)) => {
+                                                    event_sender.try_send(NetworkEvent::Packet(packet)).unwrap();
+                                                },
+                                                Err(HandlePacketError::FailedToParse(kind)) => eprintln!("Failed to parse a UDP packet of kind {}, ignoring", kind),
+                                            }
                                         }
+                                    }
+                                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                                    Err(e) => return Err(e.into()),
+                                }
+                            }
+                        }
+                        if readiness.is_writable() {
+                            connection.udp_writable = true;
+                            attempt_send_next_udp_packet(&mut connection.udp_packet_queue, &connection.udp, &mut connection.udp_writable)?;
+                        }
+                    } else if token == connection.tcp_token {
+                        if readiness.is_readable() {
+                            match connection.tcp.update_from_stream() {
+                                Ok(UpdateFromStream::Success) => {}
+                                Ok(UpdateFromStream::ConnectionClosed) => event_sender.try_send(NetworkEvent::SocketClosed).unwrap(),
+                                Err(_) => event_sender.try_send(NetworkEvent::NetworkError).unwrap(),
+                            }
+
+                            loop {
+                                match connection.tcp.next_packet() {
+                                    Ok(Some(stream_packet)) => {
+                                        match handle_tcp_packet(stream_packet, &mut connection.reply_map, &mut connection.connect_response) {
+                                            Ok(_) => {}
+                                            Err(HandlePacketError::UnexpectedPacket(packet)) => {
+                                                event_sender.try_send(NetworkEvent::Packet(packet)).unwrap();
+                                            },
+                                            Err(HandlePacketError::FailedToParse(kind)) => eprintln!("Failed to parse a TCP packet of kind {}, ignoring", kind),
+                                        }
+                                    }
+                                    Ok(None) => break,
+                                    Err(_) => {
+                                        // TODO do disconnect!
+                                        break;
                                     }
                                 }
                             }
                         }
                         if readiness.is_writable() {
-                            connection.socket_writable = true;
-                            attempt_send_next_packet(&mut connection. outgoing_packet_queue, &connection. socket, &mut connection. socket_writable)?;
+                            connection.tcp_writable = true;
+                            attempt_send_next_tcp_packet(&mut connection.tcp_packet_queue, &mut connection.tcp.internal, &mut connection.tcp_writable)?;
                         }
                     }
                 }
             }
         }
     }
-
-    fn create_poll_token(&mut self) -> Token {
-        let token = self.next_poll_token;
-        self.next_poll_token += 1;
-        return Token(token);
-    }
 }
 
-fn attempt_send_next_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, socket: &UdpSocket, socket_writable: &mut bool) -> Result<(), NetworkError> {
+fn attempt_send_next_udp_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, socket: &UdpSocket, socket_writable: &mut bool) -> Result<(), io::Error> {
     if !*socket_writable {
-        return Ok(())
+        return Ok(());
     }
 
-    let packet = match outgoing_packet_queue.get(0) {
+    let packet = match outgoing_packet_queue.pop_front() {
         Some(packet) => packet,
         None => {
             return Ok(());
         }
     };
 
-    match socket.send(packet) {
-        Ok(_) => {},
-        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-            // TODO track when this would happen. If it does, what about socket_writable??
-            println!("EWouldBlock on OutgoingPacketQueue, dropping packet");
-            return Ok(());
-        },
-        Err(e) => return Err(e.into())
-    };
-
-    outgoing_packet_queue.pop_front();
     *socket_writable = false;
-    Ok(())
+    match socket.send(&packet) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+            outgoing_packet_queue.push_front(packet);
+            return Ok(());
+        }
+        Err(e) => return Err(e)
+    }
 }
 
-#[derive(Debug)]
+fn attempt_send_next_tcp_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, socket: &mut TcpStream, socket_writable: &mut bool) -> Result<(), io::Error> {
+    if !*socket_writable {
+        return Ok(());
+    }
+
+    let packet = match outgoing_packet_queue.pop_front() {
+        Some(packet) => packet,
+        None => {
+            return Ok(());
+        }
+    };
+
+    *socket_writable = false;
+    match socket.write(&packet) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+            outgoing_packet_queue.push_front(packet);
+            return Ok(());
+        }
+        Err(e) => return Err(e)
+    }
+}
+
 pub enum Command {
-    OneDirection(Vec<u8>),
-    Request {
-        outgoing: Vec<u8>,
-        expected_response_packet: u8,
-        send_response: SendResponse<Vec<u8>>,
+    Packet {
+        protocol: Protocol,
+        outgoing: WritePacketBuilder,
+        send_response: Option<SendResponse<OwnedHeaderParsedPacket>>,
     },
     Connect {
         destination: SocketAddr,
-        send_response: SendResponse<Result<(), ConnectError>>,
+        send_response: SendResponse<Result<Hello, ConnectError>>,
     },
     Disconnect {
-        send_response: SendResponse<Result<(), DisconnectError>>,
+        send_response: SendResponse<()>,
     },
 }
 
 impl Display for Command {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         match &self {
-            &Self::OneDirection(_) => f.write_str("OneDirection"),
-            &Self::Request { .. } => f.write_str("Request"),
+            &Self::Packet { protocol, outgoing, .. } => f.write_str(&format!("{:?} Packet of kind {}", protocol, outgoing.kind)),
             &Self::Connect { .. } => f.write_str("Connect"),
             &Self::Disconnect { .. } => f.write_str("Disconnect"),
         }
@@ -254,11 +378,18 @@ pub enum ConnectError {
     DestinationUnusable,
     NetworkError,
     AlreadyConnected,
+    RequestError(RequestError),
 }
 
 impl From<io::Error> for ConnectError {
     fn from(_: io::Error) -> Self {
         ConnectError::NetworkError
+    }
+}
+
+impl From<RequestError> for ConnectError {
+    fn from(e: RequestError) -> Self {
+        ConnectError::RequestError(e)
     }
 }
 
@@ -280,40 +411,39 @@ pub struct Handle {
 }
 
 impl Handle {
-    pub fn new_handle_and_worker(audio_sender: Sender<AudioCommand>) -> (Self, WorkerInit) {
-        let (sender, receiver) = mpsc::channel();
+    pub fn new_handle_and_worker(audio_sender: Sender<AudioCommand>) -> (Self, futures::channel::mpsc::Receiver<NetworkEvent>, WorkerInit) {
+        let (event_sender, network_event_receiver) = futures::channel::mpsc::channel(32);
+        let (command_sender, command_receiver) = mpsc::channel();
         let (registration, set_readiness) = Registration::new2();
         return (
             Handle {
-                sender,
+                sender: command_sender,
                 set_readiness,
             },
+            network_event_receiver,
             WorkerInit {
                 audio_sender,
-                command_receiver: receiver,
+                event_sender,
+                command_receiver,
                 command_registration: registration,
             }
-        )
+        );
     }
 
-    pub fn command(&self, command: Command) -> Result<(), SendToNetworkThreadError> {
-        self.sender.send(command)?;
-        self.set_readiness.set_readiness(Ready::readable())?;
+    pub fn command(&self, command: Command) {
+        self.sender.send(command).unwrap();
+        self.set_readiness.set_readiness(Ready::readable()).unwrap();
+    }
+
+    pub fn audio<B>(&self, packet: B) -> Result<(), SerializeError>
+        where B: PacketBody + Serialize
+    {
+        self.command(Command::Packet {
+            protocol: Protocol::Udp,
+            outgoing: WritePacketBuilder::new(None, &packet)?,
+            send_response: None,
+        });
         Ok(())
-    }
-
-    pub fn send_single<'a>(&self, packet: impl Packet<'a> + Serialize) -> Result<(), SendToNetworkThreadError> {
-        let raw_packet = serialize(packet)?;
-        self.command(Command::OneDirection(raw_packet))
-    }
-
-    pub fn request<'a>(&self, outgoing_packet: impl Packet<'a> + Serialize, expected_response_packet: u8, send_response: SendResponse<Vec<u8>>) -> Result<(), SendToNetworkThreadError> {
-        let raw_packet = serialize(outgoing_packet)?;
-        self.command(Command::Request {
-            outgoing: raw_packet,
-            expected_response_packet,
-            send_response
-        })
     }
 }
 
@@ -356,38 +486,37 @@ pub enum AudioCommand {
 //    RemoveClientStream(String),
 }
 
-pub struct SendToAudioThread {
+pub struct AudioHandle {
     command_tx: Sender<AudioCommand>,
-    client_streams: HashMap<String, Producer<i16>>,
+    client_streams: HashMap<ClientId, Producer<i16>>,
 }
 
-impl SendToAudioThread {
-    fn new(command_tx: Sender<AudioCommand>) -> SendToAudioThread {
-        SendToAudioThread {
+impl AudioHandle {
+    fn new(command_tx: Sender<AudioCommand>) -> AudioHandle {
+        AudioHandle {
             command_tx,
             client_streams: HashMap::new(),
         }
     }
 
-    fn send(&mut self, id: &str, bytes: &[u8]) -> Result<(), NetworkError> {
+    fn send(&mut self, id: ClientId, bytes: &[u8]) {
         let l16le_samples: Vec<i16> = bytes
             .chunks(2)
             .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
 
-        match self.client_streams.get_mut(id) {
+        match self.client_streams.get_mut(&id) {
             Some(producer) => {
                 producer.push_slice(&l16le_samples);
-            },
+            }
             None => {
                 let ring = RingBuffer::new(4800);
                 let (mut producer, consumer) = ring.split();
-                self.command_tx.send(AudioCommand::NewClientStream(id.to_string(), consumer))?;
+                self.command_tx.send(AudioCommand::NewClientStream(id.to_string(), consumer)).unwrap();
                 producer.push_slice(&l16le_samples);
-                self.client_streams.insert(id.to_string(), producer);
+                self.client_streams.insert(id, producer);
             }
         };
-        Ok(())
     }
 }
 

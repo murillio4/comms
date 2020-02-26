@@ -7,126 +7,170 @@
 //! precisely synchronised.
 
 use mio::net::UdpSocket;
+use mio::net::TcpListener;
 use std::io;
 use mio::{Poll, Token, Ready, PollOpt, Events};
-use voice_lib::{packet, deserialize, serialize};
-use voice_lib::packet::{Packet, AudioFromClient};
-use std::net::SocketAddr;
-use std::rc::Rc;
+use voice_lib::packet;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
+use std::io::Error;
+use std::cell::UnsafeCell;
+use std::sync::Arc;
+use crate::task::{SyncUnsafeCell, EndpointError};
+use voice_lib::packet::ClientId;
+use voice_lib::serialization::DeserializeError;
+use crate::network::{NetworkHandle, SendPacket, Target, CommunicationFailure};
+use crate::client::{Clients, ConnectingClient, Connection};
+use crate::endpoints::{handle_udp_packet, HandlePacketError, handle_tcp_stream, spawn_close_connection, StreamStatus, CloseConnectionReason};
 
-// TODO handle keep-alive
+mod client;
+mod endpoints;
+mod network;
+mod task;
 
-struct Client {
-    socket_addr: SocketAddr,
-    username: String,
+pub async fn on_connect(network_handle: NetworkHandle, client_id: ClientId) -> Result<(), EndpointError> {
+    let outgoing = SendPacket::tcp(Target::One(client_id), None, packet::Hello {
+        client_id
+    })?;
+    outgoing.send(&network_handle).await;
+    Ok(())
 }
 
-fn main() -> io::Result<()> {
-    #[cfg(windows)]
-    bump_priority();
-    let socket = UdpSocket::bind(&"0.0.0.0:18847".parse().unwrap())?;
+fn main() -> Result<(), CommsServerError> {
+    #[cfg(windows)] bump_priority();
+
+    let mut raw_next_client_id: ClientId = 0;
+    let mut next_client_id = move || {
+        let id = raw_next_client_id;
+        raw_next_client_id += 1;
+        id
+    };
+
+    let (task_executor, spawner) = task::new();
+    let task_executor_token = Token(next_client_id() as usize);
+
+    let udp_socket = UdpSocket::bind(&"0.0.0.0:18847".parse().unwrap())?;
+    let udp_token = Token(next_client_id() as usize);
+    let tcp_listener = TcpListener::bind(&"0.0.0.0:18847".parse().unwrap())?;
+    let tcp_listener_token = Token(next_client_id() as usize);
+
+    let (network_handle, mut outgoing_queue) = network::queue_and_handle();
+    let outgoing_token = Token(next_client_id() as usize);
 
     let poll = Poll::new()?;
-    poll.register(&socket, Token(0), Ready::all(), PollOpt::edge())?;
+    poll.register(&task_executor, task_executor_token, Ready::readable(), PollOpt::edge())?;
+    poll.register(&udp_socket, udp_token, Ready::all(), PollOpt::edge())?;
+    poll.register(&tcp_listener, tcp_listener_token, Ready::readable(), PollOpt::edge())?;
+    poll.register(&outgoing_queue, outgoing_token, Ready::readable(), PollOpt::edge())?;
 
     let mut events = Events::with_capacity(1024);
     let mut buffer = [0u8; 65535];
-
-    let mut clients = Vec::<Client>::new();
-    let mut outgoing_queue = Vec::<(Rc<Vec<u8>>, SocketAddr)>::new();
-    let mut socket_writable = false;
+    let mut udp_socket_writable = false;
+    let clients = Arc::new(SyncUnsafeCell(UnsafeCell::new(Clients::new())));
 
     loop {
         poll.poll(&mut events, None)?;
         for event in events.iter() {
-            let readiness = event.readiness();
-            if readiness.is_readable() {
-                let (size, remote_addr) = match socket.recv_from(&mut buffer) {
-                    Ok(tuple) => tuple,
-                    Err(e) if e.kind() == io::ErrorKind::ConnectionReset => continue,
-                    Err(e) => {
-                        return Err(e);
-                    }
-                };
-
-                if size == 0 {
-                    continue;
-                }
-
-                let buffer = &buffer[0..size];
-                let (packet_type, packet) = (buffer[0], &buffer[1..]);
-                match packet_type {
-                    packet::Connect::HEADER_TYPE => {
-
-                        let connect: packet::Connect = deserialize(&packet).unwrap();
-                        println!("[{:?}] {} connected", &remote_addr, &connect.username);
-                        clients.push(Client {
-                            socket_addr: remote_addr,
-                            username: connect.username.to_string(),
-                        });
-
-                        let usernames = clients.iter()
-                            .map(|c| c.username.to_string())
-                            .collect();
-
-                        let connect_accepted = packet::ConnectAccepted {
-                            users: usernames,
-                        };
-
-                        outgoing_queue.push((Rc::new(serialize(connect_accepted).unwrap()), remote_addr));
-                        attempt_write(&mut outgoing_queue, &socket, &mut socket_writable);
-                    }
-                    packet::AudioFromClient::HEADER_TYPE => {
-                        let audio_from_client: AudioFromClient = match deserialize(&packet) {
-                            Ok(packet) => packet,
-                            Err(_) => {
-                                println!("[{:?}] Failed to parse packet, ignoring", &remote_addr);
-                                continue;
+            let token = event.token();
+            if token == task_executor_token {
+                task_executor.run();
+            } else if token == udp_token {
+                let readiness = event.readiness();
+                if readiness.is_readable() {
+                    match udp_socket.recv_from(&mut buffer) {
+                        Ok((size, remote_addr)) => {
+                            if size != 0 {
+                                let buffer = &buffer[0..size];
+                                match handle_udp_packet(remote_addr.clone(), buffer, clients.clone(), &spawner, network_handle.clone()) {
+                                    Err(HandlePacketError::CommunicationFailure) => {
+                                        if let Some(client_id) = {
+                                            let clients = unsafe { &mut *clients.get() };
+                                            clients.id_by_socket_addr(&remote_addr)
+                                        } {
+                                            spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
+                                        }
+                                    }
+                                    _ => ()
+                                };
                             }
-                        };
-                        let audio_to_client = packet::AudioToClient {
-                            bytes: audio_from_client.0,
-                            author: &remote_addr.to_string(),
-                        };
-                        let packet = Rc::new(serialize(audio_to_client).unwrap());
-
-                        for client in clients.iter()
-                            .filter(|c| c.socket_addr != remote_addr)
-                            {
-                            outgoing_queue.push((packet.clone(), client.socket_addr.clone()))
-                        }
-                        attempt_write(&mut outgoing_queue, &socket, &mut socket_writable);
-                    }
-                    packet::Disconnect::HEADER_TYPE => {
-                        clients.retain(|c| c.socket_addr != remote_addr);
-                        println!("[{:?}] removed client", &remote_addr);
-                    }
-                    _ => {
-                        println!("Received unknown packet type {} from {:?}", packet_type, remote_addr);
+                        },
+                        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => (),
+                        Err(_) => return Err(CommsServerError::IoError),
+                    };
+                }
+                if readiness.is_writable() {
+                    udp_socket_writable = true;
+                    if let Err(CommunicationFailure(client_id)) = {
+                        let mut clients = unsafe { &mut *clients.get() };
+                        outgoing_queue.attempt_write_udp(&udp_socket, &mut udp_socket_writable, &mut clients)
+                    } {
+                        spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
                     }
                 }
-            }
-            if readiness.is_writable() {
-                socket_writable = true;
-                attempt_write(&mut outgoing_queue, &socket, &mut socket_writable)
+            } else if token == outgoing_token {
+                if let Err(failing_clients) = {
+                    let mut clients = unsafe { &mut *clients.get() };
+                    outgoing_queue.sort_from_handle(&mut clients);
+                    outgoing_queue.attempt_write_all(&udp_socket, &mut udp_socket_writable, &mut clients)
+                } {
+                    for failure in failing_clients {
+                        spawn_close_connection(failure.0, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
+                    }
+                }
+            } else if token == tcp_listener_token {
+                let (stream, _) = tcp_listener.accept()?;
+                let client_id = next_client_id() as ClientId;
+                let token = Token(client_id as usize);
+                poll.register(&stream, token, Ready::all(), PollOpt::edge())?;
+
+                let clients = unsafe { &mut *clients.get() };
+                clients.connecting.insert(client_id, ConnectingClient {
+                    connection: Connection::new(stream),
+                    udp_addr: None,
+                });
+
+                spawner.spawn(on_connect(network_handle.clone(), client_id));
+            } else { // it's a TCP stream event
+                let readiness = event.readiness();
+                if readiness.is_readable() {
+                    let client_id = token.0 as ClientId;
+                    match handle_tcp_stream(client_id, clients.clone(), &spawner, &network_handle) {
+                        Ok(StreamStatus::Closed) => {
+                            spawn_close_connection(client_id, CloseConnectionReason::SocketClosed, &network_handle, &clients, &spawner);
+                        }
+                        Err(HandlePacketError::CommunicationFailure) => {
+                            spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
+                        }
+                        _ => (),
+                    }
+                }
+                if readiness.is_writable() {
+                    let client_id = token.0 as ClientId;
+                    let clients = unsafe { &mut *clients.get() };
+                    clients.connection_by_id(&client_id).map(|c| {
+                        c.tcp_writable = true;
+                        outgoing_queue.attempt_write_tcp_for_client(c)
+                    });
+                }
             }
         }
     };
 }
 
-fn attempt_write(outgoing_queue: &mut Vec<(Rc<Vec<u8>>, SocketAddr)>, socket: &UdpSocket, socket_writable: &mut bool) {
-    if !outgoing_queue.is_empty() && *socket_writable {
-        let (packet, client) = outgoing_queue.remove(0);
-        match socket.send_to(&packet, &client) {
-            Ok(_) => (),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                outgoing_queue.insert(0, (packet, client));
-                return;
-            },
-            Err(e) => panic!(e),
-        };
-        *socket_writable = false;
+#[derive(Debug)]
+enum CommsServerError {
+    DeserializeError,
+    IoError,
+}
+
+impl From<io::Error> for CommsServerError {
+    fn from(_: Error) -> Self {
+        CommsServerError::IoError
+    }
+}
+
+impl From<DeserializeError> for CommsServerError {
+    fn from(_: DeserializeError) -> Self {
+        CommsServerError::DeserializeError
     }
 }
