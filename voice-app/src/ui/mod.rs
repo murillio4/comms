@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::cell::{RefCell, Cell};
 use crate::network;
 use crate::network::ConnectError;
-use voice_lib::packet::{DisconnectReason, UserJoined, PacketBody, Packet, UserLeft};
+use voice_lib::packet::{UserJoined, PacketBody, Packet, UserLeft};
 use voice_lib::serialization::{OwnedHeaderParsedPacket, DeserializeError};
 use futures::channel::mpsc::Receiver;
 use futures::stream::StreamExt;
@@ -13,11 +13,13 @@ use futures::stream::StreamExt;
 #[derive(Debug)]
 #[repr(i32)]
 enum Columns {
-    Username = 0,
+    Id = 0,
+    Username = 1,
 }
 
 fn initialize_user_list(treeview: &gtk::TreeView) -> gtk::ListStore {
-    let col_types: [glib::Type; 1] = [
+    let col_types: [glib::Type; 2] = [
+        glib::Type::U32,
         glib::Type::String,
     ];
 
@@ -74,15 +76,16 @@ async fn try_connect(
 
         match connect_result {
             Ok(users) => {
-                let col_indices: [u32; 1] = [
+                let col_indices: [u32; 2] = [
+                    Columns::Id as u32,
                     Columns::Username as u32,
                 ];
 
                 let mut ui = ui.borrow_mut();
                 let status_treeview = ui.builder.get_object("status_treeview").unwrap();
                 let user_list_model = initialize_user_list(&status_treeview);
-                for (_, user) in users.iter() {
-                    let values: [&dyn ToValue; 1] = [&user];
+                for (id, user) in users.iter() {
+                    let values: [&dyn ToValue; 2] = [&(*id as u32), &user];
                     user_list_model.insert_with_values(None, &col_indices, &values);
                 }
 
@@ -182,18 +185,34 @@ async fn handle_network_events(
                 }
             },
             NetworkEvent::Packet(packet) => {
-                println!("NetworkEvent::PAcket");
                 if let UiState::Main { user_list_model } = ui.borrow().state.clone() {
                     let result: Result<(), DeserializeError> = (move || {
                         match packet.kind() {
                             UserJoined::KIND_ID => {
-                                println!("user joined :D :D");
                                 let packet: Packet<UserJoined> = packet.finish_parse()?;
-                                user_list_model.set(&user_list_model.append(), &[0], &[&packet.body.name]);
+                                let col_indices: [u32; 2] = [
+                                    Columns::Id as u32,
+                                    Columns::Username as u32,
+                                ];
+                                user_list_model.set(&user_list_model.append(), &col_indices, &[&(packet.body.id as u32), &packet.body.name]);
                             },
                             UserLeft::KIND_ID => {
                                 let packet: Packet<UserLeft> = packet.finish_parse()?;
-                                println!("I gotta remove someone :( :( :(");
+                                let id = packet.body.id as u32;
+                                let iter = user_list_model.get_iter_first().unwrap();
+                                loop {
+                                    let value = user_list_model.get_value(&iter, Columns::Id as i32)
+                                        .get_some::<u32>()
+                                        .unwrap();
+                                    if value == id {
+                                        user_list_model.remove(&iter);
+                                        break;
+                                    }
+                                    if !user_list_model.iter_next(&iter) {
+                                        println!("Couldn't find user to remove");
+                                        break;
+                                    }
+                                }
                             }
                             _ => (),
                         }
@@ -207,7 +226,6 @@ async fn handle_network_events(
                     }
                 }
             }
-            _ => panic!(format!("Unexpected event: {:?}", event)),
         }
     }
 }

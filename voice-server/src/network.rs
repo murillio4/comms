@@ -1,7 +1,7 @@
 use voice_lib::serialization::WritePacketBuilder;
 use crate::task::{SyncUnsafeCell, EndpointError, PacketFuture, PacketFinish};
 use std::sync::Arc;
-use voice_lib::packet::{PacketId, PacketBody, ClientId, AudioToClient};
+use voice_lib::packet::{PacketId, PacketBody, ClientId};
 use std::fmt::Debug;
 use std::cell::UnsafeCell;
 use voice_lib::network::Protocol;
@@ -36,12 +36,6 @@ impl OutgoingQueue {
             match protocol {
                 Protocol::Udp => self.udp_queue.push_back(packet),
                 Protocol::Tcp => {
-                    let kind = {
-                        let builder = unsafe { &mut *packet.builder.get() };
-                        builder.kind
-                    };
-                    println!("Sorting incoming packet of kind {} for dest {}", kind, &packet.dest);
-
                     if let Some(connection) = clients.connection_by_id(&packet.dest) {
                         connection.outgoing_queue.push_back(packet);
                     }
@@ -73,37 +67,32 @@ impl OutgoingQueue {
         let kind = builder.kind;
         let raw = builder.as_raw(packet_id).expect(&format!("Serialization failed for packet id {} kind {}", packet_id, kind));
         match socket.send_to(&raw, &addr) {
-            Ok(_) => {
-                if kind != AudioToClient::KIND_ID {
-                    println!("Sent UDP packet of kind {} to {}", kind, &packet.dest);
-                }
-                packet.finish.done();
-            }
+            Ok(_) => packet.finish.done(),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.udp_queue.push_front(packet),
             Err(_) => return Err(CommunicationFailure(packet.dest)),
         }
         Ok(())
     }
 
-    pub fn attempt_write_tcp_for_client(&mut self, client_id: ClientId, connection: &mut Connection) -> Result<(), CommunicationFailure> {
-        println!("Attempt to write tcp for client {}", &client_id);
+    pub fn attempt_write_tcp_for_client(&mut self, connection: &mut Connection) -> Result<(), CommunicationFailure> {
         let packet = match connection.outgoing_queue.pop_front() {
             None => return Ok(()),
             Some(p) => p,
         };
 
-        connection.tcp_writable = false;
         let packet_id = connection.next_packet_id();
         let builder = unsafe { &mut *packet.builder.get() };
         let kind = builder.kind;
         let raw = builder.as_raw(packet_id.clone()).expect(&format!("Serialization failed for packet id {} kind {}", packet_id, kind));
         match connection.stream.internal.write(&raw) {
-            Ok(bytes) => {
+            Ok(_) => {
                 // TODO if not all bytes written to buffer, try to re-send later
-                println!("Sent {} bytes of TCP stream of kind {} to {}", bytes, kind, client_id);
                 packet.finish.done();
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => connection.outgoing_queue.push_front(packet),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                connection.tcp_writable = false;
+                connection.outgoing_queue.push_front(packet)
+            },
             Err(_) => return Err(CommunicationFailure(packet.dest)),
         }
         Ok(())
@@ -116,8 +105,8 @@ impl OutgoingQueue {
         }
 
         let writable_connections = clients.writable_connections();
-        for (client_id, connection) in writable_connections.into_iter() {
-            if let Err(e) = self.attempt_write_tcp_for_client(client_id, connection) {
+        for connection in writable_connections.into_iter() {
+            if let Err(e) = self.attempt_write_tcp_for_client(connection) {
                 failures.push(e);
             }
         }
@@ -219,20 +208,11 @@ impl SendPacket {
     pub async fn send(self, handle: &NetworkHandle) {
         let protocol = self.protocol;
         let builder = self.builder;
-        let kind = {
-            let builder = unsafe { &mut *builder.get() };
-            builder.kind
-        };
         match self.destination {
             Target::One(dest) => handle.send(protocol, dest.clone(), builder).await,
             Target::Many(clients) => {
                 let futures: Vec<PacketFuture> = clients.into_iter()
-                    .map(|c| {
-                        if protocol == Protocol::Tcp {
-                            println!("Sending {} to many, one of which is client {}", kind, c);
-                        }
-                        handle.send(protocol.clone(), c, builder.clone())
-                    })
+                    .map(|c| handle.send(protocol.clone(), c, builder.clone()))
                     .collect();
                 join_all(futures).await;
             }

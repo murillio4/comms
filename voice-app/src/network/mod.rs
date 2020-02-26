@@ -6,22 +6,18 @@ use mio::net::UdpSocket;
 use std::sync::mpsc::{Receiver, Sender, SendError, RecvError};
 use std::sync::mpsc;
 use ringbuf::{Producer, Consumer, RingBuffer};
-use voice_lib::packet::{PacketBody, AudioToClient, PacketKind, ClientId, Hello, DisconnectReason};
+use voice_lib::packet::{PacketBody, AudioToClient, PacketKind, ClientId, Hello};
 use std::collections::{HashMap, VecDeque};
 use crate::network::future::{SendResponse, RequestError};
 use std::fmt::{Display, Formatter, Error};
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use mio::net::TcpStream;
-use voice_lib::serialization::{OwnedHeaderParsedPacket, DeserializeError, HeaderParsedPacket, WritePacketBuilder, SerializeError};
+use voice_lib::serialization::{OwnedHeaderParsedPacket, HeaderParsedPacket, WritePacketBuilder, SerializeError};
 use voice_lib::packet;
 use voice_lib::network::{CommsTcpStream, UpdateFromStream, IncomingStreamPacket, Protocol};
 use std::io::Write;
 use crate::ui::NetworkEvent;
-use std::time::SystemTime;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::rc::Rc;
-use async_std::sync::Arc;
 
 pub mod future;
 
@@ -87,14 +83,8 @@ pub struct Worker {
 }
 
 enum HandlePacketError {
-    FailedToParse,
-    UnexpectedPacket(PacketKind, Option<NonZeroU64>),
-}
-
-impl From<DeserializeError> for HandlePacketError {
-    fn from(_: DeserializeError) -> Self {
-        HandlePacketError::FailedToParse
-    }
+    FailedToParse(PacketKind),
+    UnexpectedPacket(OwnedHeaderParsedPacket),
 }
 
 fn handle_udp_packet(parsed_packet: HeaderParsedPacket, reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>, audio_handle: &mut AudioHandle) -> Result<(), HandlePacketError> {
@@ -105,12 +95,15 @@ fn handle_udp_packet(parsed_packet: HeaderParsedPacket, reply_map: &mut HashMap<
         }
     }
 
-    match parsed_packet.kind() {
+    let kind = parsed_packet.kind();
+    match kind {
         packet::AudioToClient::KIND_ID => {
-            let audio_to_client: AudioToClient = parsed_packet.finish_parse()?.body;
+            let audio_to_client: AudioToClient = parsed_packet.finish_parse()
+                .map_err(|_| HandlePacketError::FailedToParse(kind))
+                ?.body;
             audio_handle.send(audio_to_client.author, &audio_to_client.bytes);
         }
-        _ => return Err(HandlePacketError::UnexpectedPacket(parsed_packet.kind(), parsed_packet.header.reply_to))
+        _ => return Err(HandlePacketError::UnexpectedPacket(parsed_packet.into_owned()))
     }
     Ok(())
 }
@@ -123,13 +116,15 @@ fn handle_tcp_packet(stream_packet: IncomingStreamPacket, reply_map: &mut HashMa
         }
     }
 
-    if stream_packet.header.kind == Hello::KIND_ID && await_hello.is_some() {
+    let kind = stream_packet.header.kind;
+    if kind == Hello::KIND_ID && await_hello.is_some() {
         if let Some(send_response) = await_hello.take() {
-            send_response.done(Ok(stream_packet.finish_parse()?.body));
+            send_response.done(Ok(stream_packet.finish_parse()
+                .map_err(|_| HandlePacketError::FailedToParse(kind))?.body));
             return Ok(());
         }
     }
-    Err(HandlePacketError::UnexpectedPacket(stream_packet.header.kind, stream_packet.header.reply_to))
+    Err(HandlePacketError::UnexpectedPacket(stream_packet.into_owned()))
 }
 
 fn connect(connection: &mut Option<Connection>, poll: &Poll, destination: SocketAddr, next_poll_token: &mut NextPollToken) -> Result<(), ConnectError> {
@@ -253,8 +248,10 @@ impl Worker {
                                         if let Ok(parsed_packet) = HeaderParsedPacket::from_raw(raw_packet) {
                                             match handle_udp_packet(parsed_packet, &mut connection.reply_map, &mut audio_handle) {
                                                 Ok(_) => {}
-                                                Err(HandlePacketError::UnexpectedPacket(kind, reply_to)) => eprintln!("Unexpected UDP packet of kind {} replying to {:?}", kind, reply_to),
-                                                Err(HandlePacketError::FailedToParse) => eprintln!("Failed to parse a UDP packet"),
+                                                Err(HandlePacketError::UnexpectedPacket(packet)) => {
+                                                    event_sender.try_send(NetworkEvent::Packet(packet)).unwrap();
+                                                },
+                                                Err(HandlePacketError::FailedToParse(kind)) => eprintln!("Failed to parse a UDP packet of kind {}, ignoring", kind),
                                             }
                                         }
                                     }
@@ -280,8 +277,10 @@ impl Worker {
                                     Ok(Some(stream_packet)) => {
                                         match handle_tcp_packet(stream_packet, &mut connection.reply_map, &mut connection.connect_response) {
                                             Ok(_) => {}
-                                            Err(HandlePacketError::UnexpectedPacket(kind, reply_to)) => eprintln!("Unexpected TCP packet of kind {} replying to {:?}", kind, reply_to),
-                                            Err(HandlePacketError::FailedToParse) => eprintln!("Failed to parse a TCP packet"),
+                                            Err(HandlePacketError::UnexpectedPacket(packet)) => {
+                                                event_sender.try_send(NetworkEvent::Packet(packet)).unwrap();
+                                            },
+                                            Err(HandlePacketError::FailedToParse(kind)) => eprintln!("Failed to parse a TCP packet of kind {}, ignoring", kind),
                                         }
                                     }
                                     Ok(None) => break,

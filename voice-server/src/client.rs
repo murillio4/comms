@@ -75,15 +75,15 @@ impl Clients {
         }
     }
 
-    pub fn writable_connections(&mut self) -> Vec<(ClientId, &mut Connection)> {
+    pub fn writable_connections(&mut self) -> Vec<&mut Connection> {
         let connecting = self.connecting.iter_mut()
-            .map(|(id, c)| (id, &mut c.connection));
+            .map(|(_, c)| &mut c.connection);
         self.established.iter_mut()
-            .map(|(id, c)| (id, &mut c.connection))
+            .map(|(_, c)| &mut c.connection)
             .chain(connecting)
-            .filter_map(|(id, c)| {
+            .filter_map(|c| {
                 match c.tcp_writable {
-                    true => Some((id.clone(), c)),
+                    true => Some(c),
                     false => None,
                 }
             })

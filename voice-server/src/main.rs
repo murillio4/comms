@@ -37,8 +37,7 @@ pub async fn on_connect(network_handle: NetworkHandle, client_id: ClientId) -> R
 }
 
 fn main() -> Result<(), CommsServerError> {
-    #[cfg(windows)]
-        bump_priority();
+    #[cfg(windows)] bump_priority();
 
     let mut raw_next_client_id: ClientId = 0;
     let mut next_client_id = move || {
@@ -147,12 +146,10 @@ fn main() -> Result<(), CommsServerError> {
                 }
                 if readiness.is_writable() {
                     let client_id = token.0 as ClientId;
-                    println!("[!] client {} is writable", &client_id);
-
                     let clients = unsafe { &mut *clients.get() };
                     clients.connection_by_id(&client_id).map(|c| {
                         c.tcp_writable = true;
-                        outgoing_queue.attempt_write_tcp_for_client(client_id, c)
+                        outgoing_queue.attempt_write_tcp_for_client(c)
                     });
                 }
             }

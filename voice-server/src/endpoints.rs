@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use voice_lib::network::{IncomingStreamPacket, UpdateFromStream};
 use voice_lib::serialization::{HeaderParsedPacket, DeserializeError};
 use std::io;
+use futures::future;
 
 pub struct Context {
     pub clients: Arc<SyncUnsafeCell<Clients>>,
@@ -55,11 +56,11 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
         match client.udp_addr.take() {
             None => {
                 clients.connecting.insert(context.client_id, client);
-                vec!(SendPacket::tcp(
+                vec![SendPacket::tcp(
                     Target::One(context.client_id),
                     Some(packet.id),
                     ErrorResponse::AssociateUdpFirst
-                )?)
+                )?]
             }
             Some(addr) => {
                 let other_clients = clients.established.keys()
@@ -71,8 +72,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
                     username: packet.body.name.clone(),
                 });
 
-                println!("client of id {} connected! Informing the others, who are: {:?}", &context.client_id, &other_clients);
-                vec!(
+                vec![
                     SendPacket::tcp(
                         Target::One(context.client_id),
                         Some(packet.id),
@@ -90,14 +90,12 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
                             id: context.client_id,
                         }
                     )?,
-                )
+                ]
             }
         }
     };
 
-    for packet in packets { // TODO make into await_all
-        packet.send(&context.network_handle).await;
-    }
+    future::join_all(packets.into_iter().map(|packet| packet.send(&context.network_handle))).await;
     Ok(())
 }
 
@@ -142,12 +140,7 @@ fn tcp_packet_to_endpoint(spawner: &Spawner, context: Context, packet: IncomingS
 }
 
 fn udp_packet_to_endpoint(spawner: &Spawner, packet: HeaderParsedPacket, context: Context) -> Result<(), HandlePacketError> {
-    let kind = packet.kind();
-    if kind != AudioFromClient::KIND_ID {
-        println!("Received UDP packet of type {} from {}", kind, context.client_id);
-    }
-
-    match kind {
+    match packet.kind() {
         AudioFromClient::KIND_ID => spawner.spawn(audio_from_client(context, packet.finish_parse()?)),
         _ => spawner.spawn(sent_wrong_packet(context, packet.header.id))
     };
@@ -198,7 +191,6 @@ pub fn handle_udp_packet(
     let kind = parsed_packet.kind();
     if kind == AssociateUdp::KIND_ID {
         // This is the only packet that doesn't need to be sent from a client
-        println!("Received UDP packet of type {}", kind);
         spawner.spawn(associate_udp(network_handle, clients, addr, parsed_packet.finish_parse()?));
         return Ok(());
     }
@@ -251,8 +243,6 @@ pub fn handle_tcp_stream(
     loop {
         match connection.stream.next_packet() {
             Ok(Some(stream_packet)) => {
-                println!("Received TCP packet of type {} from {}", &stream_packet.header.kind, &client_id);
-
                 let context = Context {
                     client_id,
                     clients: clients.clone(),

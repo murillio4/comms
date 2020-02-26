@@ -8,7 +8,7 @@ use serde::{Serialize};
 use serde::de::DeserializeOwned;
 use crate::network::{Command, ConnectError};
 use std::fmt::{Debug, Formatter, Error};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration};
 use futures_timer::Delay;
 use futures::future;
 use futures::future::Either;
@@ -20,7 +20,6 @@ use std::num::NonZeroU64;
 use voice_lib::network::Protocol;
 
 async fn connect_without_timeout(handle: &network::Handle, destination: String, username: String) -> Result<Vec<(ClientId, String)>, ConnectError> {
-    let start = SystemTime::UNIX_EPOCH;
     let destination_with_port = format!("{}:18847", destination);
     let destination = match destination_with_port.to_socket_addrs().await {
         Ok(mut addresses) => {
@@ -160,7 +159,7 @@ impl<T> Future for NetworkFuture<T> {
                 *waker = Some(cx.waker().clone());
                 Poll::Pending
             },
-            Err(e) => {
+            Err(_) => {
                 panic!("NetworkFuture was cancelled (other side didn't send response?)");
             },
         }
