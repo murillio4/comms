@@ -5,9 +5,8 @@ authors = ["Mitchell Hentges <mitch9654@mozilla.com>"]
 edition = "2018"
 
 [dependencies]
-futures = "0.3.4"
+futures = "0.3"
 mio = "0.6"
 
 [dependencies.voice-lib]
 path = "../voice-lib"
-version = "0.1.0"

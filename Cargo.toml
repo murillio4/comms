@@ -1,0 +1,8 @@
+[workspace]
+
+members = [
+    "beep-cli",
+    "voice-app",
+    "voice-lib",
+    "voice-server",
+]
