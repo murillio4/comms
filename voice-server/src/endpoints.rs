@@ -210,6 +210,7 @@ pub fn handle_udp_packet(
     })
 }
 
+#[derive(Debug)]
 pub enum StreamStatus {
     Normal,
     Closed,
