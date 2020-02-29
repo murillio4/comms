@@ -5,25 +5,24 @@ authors = ["Mitchell Hentges <mitch9654@mozilla.com>"]
 edition = "2018"
 
 [dependencies]
-async-std = "1.4.0"
-futures = "0.3.1"
-futures-timer = "2.0.2"
-gdk-pixbuf = "0.8.0"
-gio = "0.8.0"
-glib = "0.9.1"
-gtk = "0.8.0"
-mio = "0.6.21"
-ringbuf = "0.2.1"
-sample = "0.10.0"
+async-std = "1.4"
+futures = "0.3"
+futures-timer = "2.0"
+gdk-pixbuf = "0.8"
+gio = "0.8"
+glib = "0.9"
+gtk = "0.8"
+mio = "0.6"
+ringbuf = "0.2"
+sample = "0.10"
 serde = { version = "1.0"}
 
 [dependencies.voice-lib]
 path = "../voice-lib"
-version = "0.1.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-lazy_static = "1.4.0"
-winapi = { version = "0.3.8", features = ["audioclient", "avrt", "coml2api", "combaseapi", "devpkey", "errhandlingapi", "ksmedia", "mmdeviceapi", "objbase", "synchapi", "winbase", "winnt"] }
+lazy_static = "1.4"
+winapi = { version = "0.3", features = ["audioclient", "avrt", "coml2api", "combaseapi", "devpkey", "errhandlingapi", "ksmedia", "mmdeviceapi", "objbase", "synchapi", "winbase", "winnt"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libpulse-binding = { version = "2.13.0", default-features = false }
+libpulse-binding = { version = "2.13", default-features = false }
