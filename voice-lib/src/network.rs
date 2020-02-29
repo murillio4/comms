@@ -36,6 +36,7 @@ impl CommsTcpStream {
                 Ok(amount) => self.slice_deque.extend_from_slice(&buf[0..amount]),
                 Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(UpdateFromStream::Success),
                 Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(ref err) if err.kind() == io::ErrorKind::ConnectionReset => return Ok(UpdateFromStream::ConnectionClosed),
                 Err(err) => return Err(err),
             }
         }
