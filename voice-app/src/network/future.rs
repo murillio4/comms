@@ -48,9 +48,9 @@ async fn connect_without_timeout(handle: &network::Handle, destination: String, 
         Protocol::Tcp,
         None,
         FinishConnect {
-            name: username // TODO why is it that the more you connect to servers, the slower it connects? Seeing up to 600ms sometimes (up from ~1 at first!)
-        } // TODO probably sound commands being queued up, eh? we should probably
-    ).await?; // only get audio when we're connected
+            name: username
+        }
+    ).await?;
     Ok(connect_accepted.body.users)
 }
 
