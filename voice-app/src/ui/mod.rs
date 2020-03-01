@@ -152,6 +152,18 @@ pub enum NetworkEvent {
     Packet(OwnedHeaderParsedPacket),
 }
 
+pub struct Device {
+    pub label: String,
+    pub id: String
+}
+
+pub enum UICommand {
+    DevicesFound {
+        input_devices: Vec<Device>,
+        output_devices: Vec<Device>
+    }
+}
+
 async fn handle_network_events(
     mut receiver: Receiver<NetworkEvent>,
     network: network::Handle,
@@ -247,7 +259,18 @@ fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
     application.run(&std::env::args().collect::<Vec<_>>());
 }
 
-pub fn run(network: network::Handle, network_event_receiver: Receiver<NetworkEvent>) {
+pub fn run(network: network::Handle, network_event_receiver: Receiver<NetworkEvent>, ui_from_audio_receiver: std::sync::mpsc::Receiver<UICommand>) {
+
+    let ui_cmd_from_audio: UICommand = ui_from_audio_receiver.recv().unwrap();
+    let (input_devices, output_devices) = match ui_cmd_from_audio {
+        UICommand::DevicesFound {
+            input_devices,
+            output_devices
+        } => {
+            (input_devices, output_devices)
+        }
+    };
+
     gtk_start(move |app| {
         let stack = gtk::Stack::new();
         let builder = gtk::Builder::new_from_file("resources/app.ui");
@@ -341,6 +364,36 @@ pub fn run(network: network::Handle, network_event_receiver: Receiver<NetworkEve
                 ));
             });
         }
+
+        let inputs_submenu: gtk::Menu = builder.get_object("inputs_submenu").unwrap();
+        let outputs_submenu: gtk::Menu = builder.get_object("outputs_submenu").unwrap();
+
+        let mut device_count = 0;
+        for device in input_devices {
+            let input_menu_item: gtk::MenuItem = gtk::MenuItemBuilder::new()
+                .label(&device.label)
+                .build();
+            input_menu_item.connect_activate(|_| {
+                println!("Clicked input menu item button.");
+            });
+            inputs_submenu.attach(&input_menu_item, 0, 1, device_count, device_count + 1);
+            device_count += 1;
+        }
+
+        let mut device_count = 0;
+        for device in output_devices {
+            let output_menu_item: gtk::MenuItem = gtk::MenuItemBuilder::new()
+                .label(&device.label)
+                .build();
+            output_menu_item.connect_activate(|_| {
+                println!("Clicked output menu item button.");
+            });
+            outputs_submenu.attach(&output_menu_item, 0, 1, device_count, device_count + 1);
+            device_count += 1;
+
+        }
+
+
         let status_box: gtk::Box = builder.get_object("status_box").unwrap();
         stack.add_named(&status_box, "status");
 

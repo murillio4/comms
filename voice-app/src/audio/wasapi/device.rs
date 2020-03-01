@@ -15,6 +15,10 @@ use std::ops::Deref;
 use crate::audio::wasapi::event_loop::BuildStreamError;
 use winapi::um::audiosessiontypes::AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
 use crate::audio::wasapi::com::check_result;
+use winapi::um::mmdeviceapi::DEVICE_STATE_ACTIVE;
+use winapi::um::mmdeviceapi::IMMDeviceCollection;
+use winapi::um::winsock2::u_int;
+use winapi::um::mmdeviceapi::IMMDevice;
 
 pub struct InputDevice {
     device: IMMDeviceWrapper,
@@ -223,6 +227,11 @@ impl IMMDeviceWrapper {
         Ok(name_string)
     }
 
+    fn id(&self) -> Result<String, ()>{
+        // TODO: Return the actual ID --- more pointer work
+        return Ok("LATER NERD".to_string());
+    }
+
     fn default(data_flow: mmdeviceapi::EDataFlow) -> Option<IMMDeviceWrapper> {
         let mut device = MaybeUninit::uninit();
         let hres = unsafe {
@@ -242,12 +251,55 @@ impl IMMDeviceWrapper {
         };
         Some(IMMDeviceWrapper(unsafe { device.assume_init() }))
     }
+
+    fn endpoints(data_flow: mmdeviceapi::EDataFlow) -> Vec<IMMDeviceWrapper> {
+        let mut device_collection: MaybeUninit<*mut IMMDeviceCollection> = MaybeUninit::uninit();
+        let hres = unsafe {
+            (*com::ENUMERATOR.0).EnumAudioEndpoints(data_flow, DEVICE_STATE_ACTIVE, device_collection.as_mut_ptr())
+        };
+        match com::check_result(hres) {
+            Err(e) => {
+                panic!(e)
+            }
+            Ok(()) => ()
+        }
+
+        // TODO: This is kinda nasty -- thanks Billy Gates
+        unsafe {
+            let filled_collection: *mut IMMDeviceCollection = device_collection.assume_init();
+
+            let mut device_count: MaybeUninit<u_int> = MaybeUninit::uninit();
+            let hres = (*filled_collection).GetCount(device_count.as_mut_ptr());
+            com::check_result(hres).unwrap();
+
+            let device_count = device_count.assume_init();
+            println!("Found {} audio devices", device_count);
+
+            let mut result: Vec<IMMDeviceWrapper> = Vec::new();
+            for i in 0..device_count {
+                let mut device: MaybeUninit<*mut IMMDevice> = MaybeUninit::uninit();
+                let hres = (*filled_collection).Item(i, device.as_mut_ptr());
+                com::check_result(hres).unwrap();
+
+                let device_wrapper = IMMDeviceWrapper(device.assume_init());
+                println!("Found {}", device_wrapper.name().unwrap());
+
+                result.push(device_wrapper);
+            }
+
+            return result;
+        }
+    }
 }
 
 impl InputDevice {
     #[allow(dead_code)]
     pub fn name(&self) -> Result<String, DeviceNameError> {
         self.device.name()
+    }
+
+    pub fn id(&self) -> Result<String, ()> {
+        self.device.id()
     }
 
     pub fn default_format(&self) -> Result<Format, DefaultFormatError> {
@@ -270,12 +322,26 @@ impl InputDevice {
                     })
             })
     }
+
+    pub fn get_list() -> Vec<InputDevice> {
+        com::initialized();
+        IMMDeviceWrapper::endpoints(mmdeviceapi::eCapture).into_iter().map(|wrapper| {
+            InputDevice {
+                audio_client: IAudioClientWrapper::from_immdevice(wrapper.0).unwrap(),
+                device: wrapper
+            }
+        }).collect()
+    }
 }
 
 impl OutputDevice {
     #[allow(dead_code)]
     pub fn name(&self) -> Result<String, DeviceNameError> {
         self.device.name()
+    }
+
+    pub fn id(&self) -> Result<String, ()> {
+        self.device.id()
     }
 
     pub fn default_format(&self) -> Result<Format, DefaultFormatError> {
@@ -297,5 +363,15 @@ impl OutputDevice {
                         audio_client,
                     })
             })
+    }
+
+    pub fn get_list() -> Vec<OutputDevice> {
+        com::initialized();
+        IMMDeviceWrapper::endpoints(mmdeviceapi::eRender).into_iter().map(|wrapper| {
+            OutputDevice {
+                audio_client: IAudioClientWrapper::from_immdevice(wrapper.0).unwrap(),
+                device: wrapper
+            }
+        }).collect()
     }
 }

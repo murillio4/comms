@@ -5,7 +5,9 @@ use ringbuf::{RingBuffer, Consumer};
 use voice_lib::packet::AudioFromClient;
 use crate::audio::{AudioError, ReceiveFromNetworkThread};
 use crate::network::{Handle, AudioCommand};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
+use crate::ui::UICommand;
+use crate::ui;
 
 mod com;
 mod device;
@@ -13,7 +15,12 @@ mod event_loop;
 mod ms_multimedia;
 mod stream;
 
-pub fn run(network_handle: Handle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
+pub fn run(network_handle: Handle, receiver: Receiver<AudioCommand>, ui: Sender<UICommand>) -> Result<(), AudioError> {
+    ui.send(UICommand::DevicesFound{
+        input_devices: InputDevice::get_list().into_iter().map(|device| { ui::Device {label: device.name().unwrap(), id: device.id().unwrap()}}).collect(),
+        output_devices: OutputDevice::get_list().into_iter().map(|device| { ui::Device {label: device.name().unwrap(), id: device.id().unwrap()}}).collect()
+    }).unwrap();
+
     let input_device = InputDevice::default().unwrap();
     let output_device = OutputDevice::default().unwrap();
 
@@ -49,6 +56,8 @@ pub fn run(network_handle: Handle, receiver: Receiver<AudioCommand>) -> Result<(
         }
         network_handle.audio(AudioFromClient(buffer)).unwrap();
     };
+
+
 
     event_loop.run(move |id, result| {
         let data = match result {
