@@ -9,6 +9,8 @@ use voice_lib::packet::{UserJoined, PacketBody, Packet, UserLeft};
 use voice_lib::serialization::{OwnedHeaderParsedPacket, DeserializeError};
 use futures::channel::mpsc::Receiver;
 use futures::stream::StreamExt;
+use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 #[repr(i32)]
@@ -26,6 +28,12 @@ fn initialize_user_list(treeview: &gtk::TreeView) -> gtk::ListStore {
     let user_list_model = gtk::ListStore::new(&col_types);
     treeview.set_model(Some(&user_list_model.clone()));
     user_list_model
+}
+
+#[derive(Serialize, Deserialize)]
+struct LocalStorage {
+    username: String,
+    server: String,
 }
 
 async fn try_connect(
@@ -68,6 +76,17 @@ async fn try_connect(
             });
         }
 
+        if let Some((project_dirs, storage)) = ProjectDirs::from("", "Comms", "Comms")
+            .and_then(|project_dirs| {
+                let local_storage = LocalStorage {
+                    username: username.clone(),
+                    server: server.clone(),
+                };
+                serde_json::to_string(&local_storage).ok().map(|storage| (project_dirs, storage))
+            }) {
+            let _ = async_std::fs::create_dir(project_dirs.data_dir()).await;
+            let _ = async_std::fs::write(project_dirs.data_dir().join("local_storage"), storage).await;
+        }
         let connect_result = network::future::connect(&network, server, username).await;
 
         finished.replace(true);
@@ -248,6 +267,13 @@ fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
 }
 
 pub fn run(network: network::Handle, network_event_receiver: Receiver<NetworkEvent>) {
+    let initial_local_storage: Option<LocalStorage> = ProjectDirs::from("", "Comms", "Comms")
+        .and_then(|project_dirs| {
+            std::fs::read_to_string(project_dirs.data_dir().join("local_storage")).ok()
+        }).and_then(|storage_string| {
+            serde_json::from_str(&storage_string).ok()
+        });
+
     gtk_start(move |app| {
         let stack = gtk::Stack::new();
         let builder = gtk::Builder::new_from_file("resources/app.ui");
@@ -278,6 +304,13 @@ pub fn run(network: network::Handle, network_event_receiver: Receiver<NetworkEve
         stack.set_transition_duration(300);
 
         // --- Setup for connect-to-server state
+        if let Some(initial_storage) = initial_local_storage {
+            let username_entry: gtk::Entry = builder.get_object("username_entry").unwrap();
+            username_entry.set_text(&initial_storage.username);
+            let server_entry: gtk::Entry = builder.get_object("server_entry").unwrap();
+            server_entry.set_text(&initial_storage.server);
+        }
+
         let submit_connection_form = { // TODO use clone! macro?
             let glib_context = glib_context.clone();
             let network = network.clone();
