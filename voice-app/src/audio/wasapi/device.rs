@@ -207,7 +207,7 @@ impl IMMDeviceWrapper {
         }
 
         let mut property_value = unsafe { property_value.assume_init() };
-        if property_value.vt != wtypes::VT_LPWSTR as _ {
+        if property_value.vt != wtypes::VT_LPWSTR as u16 {
             let description = format!("property store produced invalid data: {:?}", property_value.vt);
             return Err(DeviceNameError { description });
         }

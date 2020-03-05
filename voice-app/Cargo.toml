@@ -6,6 +6,7 @@ edition = "2018"
 
 [dependencies]
 async-std = "1.4"
+directories = "2.0"
 futures = "0.3"
 futures-timer = "2.0"
 gdk-pixbuf = "0.8"
@@ -15,14 +16,15 @@ gtk = "0.8"
 mio = "0.6"
 ringbuf = "0.2"
 sample = "0.10"
-serde = { version = "1.0"}
+serde = "1.0"
+serde_json = "1.0"
 
 [dependencies.voice-lib]
 path = "../voice-lib"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 lazy_static = "1.4"
-winapi = { version = "0.3", features = ["audioclient", "avrt", "coml2api", "combaseapi", "devpkey", "errhandlingapi", "ksmedia", "mmdeviceapi", "objbase", "synchapi", "winbase", "winnt"] }
+winapi = { version = "0.3", features = ["audioclient", "avrt", "coml2api", "combaseapi", "devpkey", "errhandlingapi", "ksmedia", "mmdeviceapi", "objbase", "synchapi", "winbase", "winnt", "wtypes"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libpulse-binding = { version = "2.13", default-features = false }
