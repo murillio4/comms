@@ -1,11 +1,19 @@
 stages:
   - build
 
-build:
+build_linux:
   stage: build
   script:
     - cargo build --all
+  tags:
+    - linux
 
+build_windows:
+  stage: build
+  script:
+    - cargo build --all
+  tags:
+    - windows
 cache:
   paths:
     - target
