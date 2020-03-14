@@ -1,10 +1,52 @@
 stages:
   - build
+  - build_release
 
-build:
+build_linux:
   stage: build
+  except:
+    - master
   script:
     - cargo build --all
+  tags:
+    - linux
+
+build_windows:
+  stage: build
+  except:
+    - master
+  script:
+    - cargo build --all
+  tags:
+    - windows
+
+build_release_linux:
+  stage: build_release
+  only:
+    - master
+  script:
+    - cargo build --all --release
+  artifacts:
+    paths:
+      - target/release/beep-cli
+      - target/release/voice-app
+      - target/release/voice-server
+  tags:
+    - linux
+
+build_release_windows:
+  stage: build_release
+  only:
+    - master
+  script:
+    - cargo build --all --release
+  artifacts:
+    paths:
+      - target/release/beep-cli.exe
+      - target/release/voice-app.exe
+      - target/release/voice-server.exe
+  tags:
+    - windows
 
 cache:
   paths:
