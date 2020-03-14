@@ -18,9 +18,9 @@ use libpulse_binding::time::MicroSeconds;
 
 use voice_lib::packet;
 
-use crate::audio::{AudioError, ReceiveFromNetworkThread};
+use crate::audio::AudioError;
 use crate::audio::ipc::{AudioCommand, ReceiveFromNetworkThread};
-use crate::network;
+use crate::network::ipc::NetworkHandle;
 
 const SPEC: Spec = Spec {
     channels: 1,
@@ -29,7 +29,7 @@ const SPEC: Spec = Spec {
 };
 const PULSE_LATENCY: MicroSeconds = MicroSeconds(30000);
 
-pub fn run(pulseaudio_server: Option<String>, network_handle: network::NetworkHandle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
+pub fn run(pulseaudio_server: Option<String>, network_handle: NetworkHandle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
     let mut mainloop = Mainloop::new().ok_or(AudioError::PulseInitializationFailed)?;
     let mut context = Context::new(&mainloop, "voip-client").ok_or(AudioError::PulseInitializationFailed)?;
     let receive_from_network_thread = ReceiveFromNetworkThread::new(receiver);
@@ -41,7 +41,7 @@ pub fn run(pulseaudio_server: Option<String>, network_handle: network::NetworkHa
     Ok(())
 }
 
-fn record(pulse_context: &mut Context, network_handle: network::NetworkHandle) -> Result<(), AudioError> {
+fn record(pulse_context: &mut Context, network_handle: NetworkHandle) -> Result<(), AudioError> {
     let stream_rc = Rc::new(RefCell::new(
         Stream::new(pulse_context, "record", &SPEC, None).ok_or(AudioError::StreamCreation)?
     ));
@@ -87,7 +87,7 @@ fn record(pulse_context: &mut Context, network_handle: network::NetworkHandle) -
     Ok(())
 }
 
-fn on_record_callback(stream: &mut Stream, handle: &network::NetworkHandle) -> Result<(), AudioError> {
+fn on_record_callback(stream: &mut Stream, handle: &NetworkHandle) -> Result<(), AudioError> {
     match stream.peek() {
         Ok(data) => {
             match data {

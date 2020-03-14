@@ -10,7 +10,11 @@ use crate::ui::ipc::UICommand;
 pub mod ipc;
 
 #[cfg(unix)]
-pub fn run(pulseaudio_server: Option<String>, network_handle: NetworkHandle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
+pub fn run(pulseaudio_server: Option<String>, network_handle: NetworkHandle, receiver: Receiver<AudioCommand>, ui: Sender<UICommand>) -> Result<(), AudioError> {
+    ui.send(UICommand::DevicesFound {
+        input_devices: vec![],
+        output_devices: vec![],
+    }).unwrap();
     pulseaudio::run(pulseaudio_server, network_handle, receiver)
 }
 
