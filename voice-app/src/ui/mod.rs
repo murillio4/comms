@@ -1,16 +1,21 @@
-use gio::prelude::*;
-use gtk::prelude::*;
-
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::cell::{RefCell, Cell};
-use crate::network;
-use crate::network::ConnectError;
-use voice_lib::packet::{UserJoined, PacketBody, Packet, UserLeft};
-use voice_lib::serialization::{OwnedHeaderParsedPacket, DeserializeError};
+
+use directories::ProjectDirs;
 use futures::channel::mpsc::Receiver;
 use futures::stream::StreamExt;
-use directories::ProjectDirs;
+use gio::prelude::*;
+use gtk::prelude::*;
 use serde::{Deserialize, Serialize};
+
+use voice_lib::packet::{Packet, PacketBody, UserJoined, UserLeft};
+use voice_lib::serialization::DeserializeError;
+
+use crate::network;
+use crate::network::ipc::{ConnectError, NetworkEvent, NetworkHandle};
+use crate::ui::ipc::UICommand;
+
+pub mod ipc;
 
 #[derive(Debug)]
 #[repr(i32)]
@@ -37,7 +42,7 @@ struct LocalStorage {
 }
 
 async fn try_connect(
-    network: network::Handle,
+    network: NetworkHandle,
     ui: Rc<RefCell<UiModel>>
 ) {
     let old_state = ui.borrow().state.clone();
@@ -132,7 +137,7 @@ async fn try_connect(
 
 async fn disconnect_from_server(
     ui: Rc<RefCell<UiModel>>,
-    handle: network::Handle,
+    handle: NetworkHandle,
 ) {
     let state = ui.borrow().state.clone();
     if let UiState::Main {
@@ -165,28 +170,9 @@ struct UiModel {
     builder: gtk::Builder,
 }
 
-#[derive(Debug)]
-pub enum NetworkEvent {
-    SocketClosed,
-    NetworkError,
-    Packet(OwnedHeaderParsedPacket),
-}
-
-pub struct Device {
-    pub label: String,
-    pub id: String
-}
-
-pub enum UICommand {
-    DevicesFound {
-        input_devices: Vec<Device>,
-        output_devices: Vec<Device>
-    }
-}
-
 async fn handle_network_events(
     mut receiver: Receiver<NetworkEvent>,
-    network: network::Handle,
+    network: NetworkHandle,
     ui: Rc<RefCell<UiModel>>,
 ) {
     while let Some(event) = receiver.next().await {
@@ -279,7 +265,7 @@ fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
     application.run(&std::env::args().collect::<Vec<_>>());
 }
 
-pub fn run(network: network::Handle, network_event_receiver: Receiver<NetworkEvent>, ui_from_audio_receiver: std::sync::mpsc::Receiver<UICommand>) {
+pub fn run(network: NetworkHandle, network_event_receiver: Receiver<NetworkEvent>, ui_from_audio_receiver: std::sync::mpsc::Receiver<UICommand>) {
 
     let ui_cmd_from_audio: UICommand = ui_from_audio_receiver.recv().unwrap();
     let (input_devices, output_devices) = match ui_cmd_from_audio {

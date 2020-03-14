@@ -1,22 +1,25 @@
-use libpulse_binding::sample::{Spec, Format};
-use libpulse_binding::time::MicroSeconds;
-use libpulse_binding::context::Context;
+use std::{fmt, process};
 use std::cell::RefCell;
-use std::rc::Rc;
-use libpulse_binding::stream::{Stream, PeekResult, SeekMode};
-use libpulse_binding::def::{BufferAttr, Retval};
-use libpulse_binding::stream::flags::ADJUST_LATENCY;
-use std::sync::mpsc::Receiver;
-use libpulse_binding::error::PAErr;
-use std::{process, fmt};
-use crate::network::AudioCommand;
-use libpulse_binding::mainloop::standard::{Mainloop, IterateResult};
-use libpulse_binding::context::flags::NOAUTOSPAWN;
-use libpulse_binding::context;
-use std::fmt::Formatter;
 use std::error::Error;
+use std::fmt::Formatter;
+use std::rc::Rc;
+use std::sync::mpsc::Receiver;
+
+use libpulse_binding::context;
+use libpulse_binding::context::Context;
+use libpulse_binding::context::flags::NOAUTOSPAWN;
+use libpulse_binding::def::{BufferAttr, Retval};
+use libpulse_binding::error::PAErr;
+use libpulse_binding::mainloop::standard::{IterateResult, Mainloop};
+use libpulse_binding::sample::{Format, Spec};
+use libpulse_binding::stream::{PeekResult, SeekMode, Stream};
+use libpulse_binding::stream::flags::ADJUST_LATENCY;
+use libpulse_binding::time::MicroSeconds;
+
 use voice_lib::packet;
+
 use crate::audio::{AudioError, ReceiveFromNetworkThread};
+use crate::audio::ipc::{AudioCommand, ReceiveFromNetworkThread};
 use crate::network;
 
 const SPEC: Spec = Spec {
@@ -26,7 +29,7 @@ const SPEC: Spec = Spec {
 };
 const PULSE_LATENCY: MicroSeconds = MicroSeconds(30000);
 
-pub fn run(pulseaudio_server: Option<String>, network_handle: network::Handle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
+pub fn run(pulseaudio_server: Option<String>, network_handle: network::NetworkHandle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
     let mut mainloop = Mainloop::new().ok_or(AudioError::PulseInitializationFailed)?;
     let mut context = Context::new(&mainloop, "voip-client").ok_or(AudioError::PulseInitializationFailed)?;
     let receive_from_network_thread = ReceiveFromNetworkThread::new(receiver);
@@ -38,7 +41,7 @@ pub fn run(pulseaudio_server: Option<String>, network_handle: network::Handle, r
     Ok(())
 }
 
-fn record(pulse_context: &mut Context, network_handle: network::Handle) -> Result<(), AudioError> {
+fn record(pulse_context: &mut Context, network_handle: network::NetworkHandle) -> Result<(), AudioError> {
     let stream_rc = Rc::new(RefCell::new(
         Stream::new(pulse_context, "record", &SPEC, None).ok_or(AudioError::StreamCreation)?
     ));
@@ -84,7 +87,7 @@ fn record(pulse_context: &mut Context, network_handle: network::Handle) -> Resul
     Ok(())
 }
 
-fn on_record_callback(stream: &mut Stream, handle: &network::Handle) -> Result<(), AudioError> {
+fn on_record_callback(stream: &mut Stream, handle: &network::NetworkHandle) -> Result<(), AudioError> {
     match stream.peek() {
         Ok(data) => {
             match data {

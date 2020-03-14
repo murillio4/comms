@@ -1,13 +1,16 @@
-use sample::{interpolate, signal, Signal, Sample};
-use crate::audio::wasapi::device::{InputDevice, OutputDevice};
-use crate::audio::wasapi::stream::{UnknownTypeInputBuffer, StreamData, UnknownTypeOutputBuffer};
-use ringbuf::{RingBuffer, Consumer};
-use voice_lib::packet::AudioFromClient;
-use crate::audio::{AudioError, ReceiveFromNetworkThread};
-use crate::network::{Handle, AudioCommand};
 use std::sync::mpsc::{Receiver, Sender};
-use crate::ui::UICommand;
-use crate::ui;
+
+use ringbuf::{Consumer, RingBuffer};
+use sample::{interpolate, Sample, signal, Signal};
+
+use voice_lib::packet::AudioFromClient;
+
+use crate::audio::AudioError;
+use crate::audio::ipc::{AudioCommand, ReceiveFromNetworkThread};
+use crate::audio::wasapi::device::{InputDevice, OutputDevice};
+use crate::audio::wasapi::stream::{StreamData, UnknownTypeInputBuffer, UnknownTypeOutputBuffer};
+use crate::network::ipc::NetworkHandle;
+use crate::ui::ipc::{UIDevice, UICommand};
 
 mod com;
 mod device;
@@ -15,10 +18,10 @@ mod event_loop;
 mod ms_multimedia;
 mod stream;
 
-pub fn run(network_handle: Handle, receiver: Receiver<AudioCommand>, ui: Sender<UICommand>) -> Result<(), AudioError> {
+pub fn run(network_handle: NetworkHandle, receiver: Receiver<AudioCommand>, ui: Sender<UICommand>) -> Result<(), AudioError> {
     ui.send(UICommand::DevicesFound{
-        input_devices: InputDevice::get_list().into_iter().map(|device| { ui::Device {label: device.name().unwrap(), id: device.id().unwrap()}}).collect(),
-        output_devices: OutputDevice::get_list().into_iter().map(|device| { ui::Device {label: device.name().unwrap(), id: device.id().unwrap()}}).collect()
+        input_devices: InputDevice::get_list().into_iter().map(|device| { UIDevice {label: device.name().unwrap(), id: device.id().unwrap()}}).collect(),
+        output_devices: OutputDevice::get_list().into_iter().map(|device| { UIDevice {label: device.name().unwrap(), id: device.id().unwrap()}}).collect()
     }).unwrap();
 
     let input_device = InputDevice::default().unwrap();

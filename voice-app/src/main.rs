@@ -2,11 +2,14 @@
 #[macro_use]
 extern crate lazy_static;
 
-use std::{process, env};
+use std::{env, process};
 use std::sync::mpsc;
+
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
-use crate::network::{Handle, SendToNetworkThreadError, Worker, NetworkError};
+
+use crate::network::{NetworkError, SendToNetworkThreadError, Worker};
+use crate::network::ipc::NetworkHandle;
 
 mod audio;
 mod network;
@@ -18,7 +21,7 @@ fn main() -> Result<(), CommsError> {
     // Audio <> Network comm channel
     let (audio_net_sender, audio_net_receiver) = mpsc::channel();
     // UI <> Network comm channel
-    let (network_handle, network_event_receiver, network_worker_init) = Handle::new_handle_and_worker(audio_net_sender);
+    let (network_handle, network_event_receiver, network_worker_init) = NetworkHandle::new_handle_and_worker(audio_net_sender);
     // Audio <> UI comm channel
     let (audio_to_ui_sender, ui_from_audio_receiver) = mpsc::channel();
 

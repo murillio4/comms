@@ -1,25 +1,25 @@
-use std::io;
-
-use serde::Serialize;
-use mio::{Evented, Events, Poll, PollOpt, Ready, Registration, Token, SetReadiness};
-use mio::net::UdpSocket;
-use std::sync::mpsc::{Receiver, Sender, SendError, RecvError};
-use std::sync::mpsc;
-use ringbuf::{Producer, Consumer, RingBuffer};
-use voice_lib::packet::{PacketBody, AudioToClient, PacketKind, ClientId, Hello};
 use std::collections::{HashMap, VecDeque};
-use crate::network::future::{SendResponse, RequestError};
-use std::fmt::{Display, Formatter, Error};
+use std::io;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
+use std::sync::mpsc::{Receiver, RecvError, Sender, SendError};
+
+use mio::{Events, Poll, PollOpt, Ready, Registration, Token};
 use mio::net::TcpStream;
-use voice_lib::serialization::{OwnedHeaderParsedPacket, HeaderParsedPacket, WritePacketBuilder, SerializeError};
+use mio::net::UdpSocket;
+
+use voice_lib::network::{CommsTcpStream, IncomingStreamPacket, Protocol, UpdateFromStream};
+use voice_lib::packet::{AudioToClient, Hello, PacketBody, PacketKind};
 use voice_lib::packet;
-use voice_lib::network::{CommsTcpStream, UpdateFromStream, IncomingStreamPacket, Protocol};
-use std::io::Write;
-use crate::ui::NetworkEvent;
+use voice_lib::serialization::{HeaderParsedPacket, OwnedHeaderParsedPacket, SerializeError};
+
+use crate::audio::ipc::{AudioCommand, AudioHandle};
+use crate::network::future::SendResponse;
+use crate::network::ipc::{CommandQueue, ConnectError, NetworkCommand, NetworkEvent};
 
 pub mod future;
+pub mod ipc;
 
 pub struct Connection {
     udp: UdpSocket,
@@ -62,7 +62,7 @@ impl Connection {
 pub struct WorkerInit {
     audio_sender: Sender<AudioCommand>,
     event_sender: futures::channel::mpsc::Sender<NetworkEvent>,
-    command_receiver: Receiver<Command>,
+    command_receiver: Receiver<NetworkCommand>,
     command_registration: Registration,
 }
 
@@ -172,7 +172,7 @@ impl Worker {
                 if token == command_token && readiness.is_readable() {
                     while let Some(command) = command_queue.next() {
                         match command {
-                            Command::Packet {
+                            NetworkCommand::Packet {
                                 protocol,
                                 outgoing,
                                 send_response,
@@ -213,7 +213,7 @@ impl Worker {
                                     }
                                 }
                             }
-                            Command::Connect {
+                            NetworkCommand::Connect {
                                 destination,
                                 send_response,
                             } => {
@@ -226,7 +226,7 @@ impl Worker {
                                     }
                                 }
                             }
-                            Command::Disconnect {
+                            NetworkCommand::Disconnect {
                                 send_response,
                             } => {
                                 self.connection.take();
@@ -348,178 +348,6 @@ fn attempt_send_next_tcp_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, s
     }
 }
 
-pub enum Command {
-    Packet {
-        protocol: Protocol,
-        outgoing: WritePacketBuilder,
-        send_response: Option<SendResponse<OwnedHeaderParsedPacket>>,
-    },
-    Connect {
-        destination: SocketAddr,
-        send_response: SendResponse<Result<Hello, ConnectError>>,
-    },
-    Disconnect {
-        send_response: SendResponse<()>,
-    },
-}
-
-impl Display for Command {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        match &self {
-            &Self::Packet { protocol, outgoing, .. } => f.write_str(&format!("{:?} Packet of kind {}", protocol, outgoing.kind)),
-            &Self::Connect { .. } => f.write_str("Connect"),
-            &Self::Disconnect { .. } => f.write_str("Disconnect"),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum ConnectError {
-    DestinationUnusable,
-    NetworkError,
-    AlreadyConnected,
-    RequestError(RequestError),
-}
-
-impl From<io::Error> for ConnectError {
-    fn from(_: io::Error) -> Self {
-        ConnectError::NetworkError
-    }
-}
-
-impl From<RequestError> for ConnectError {
-    fn from(e: RequestError) -> Self {
-        ConnectError::RequestError(e)
-    }
-}
-
-#[derive(Debug)]
-pub enum DisconnectError {
-    SocketError,
-}
-
-impl From<io::Error> for DisconnectError {
-    fn from(_: io::Error) -> Self {
-        DisconnectError::SocketError
-    }
-}
-
-#[derive(Clone)]
-pub struct Handle {
-    sender: Sender<Command>,
-    set_readiness: SetReadiness,
-}
-
-impl Handle {
-    pub fn new_handle_and_worker(audio_sender: Sender<AudioCommand>) -> (Self, futures::channel::mpsc::Receiver<NetworkEvent>, WorkerInit) {
-        let (event_sender, network_event_receiver) = futures::channel::mpsc::channel(32);
-        let (command_sender, command_receiver) = mpsc::channel();
-        let (registration, set_readiness) = Registration::new2();
-        return (
-            Handle {
-                sender: command_sender,
-                set_readiness,
-            },
-            network_event_receiver,
-            WorkerInit {
-                audio_sender,
-                event_sender,
-                command_receiver,
-                command_registration: registration,
-            }
-        );
-    }
-
-    pub fn command(&self, command: Command) {
-        self.sender.send(command).unwrap();
-        self.set_readiness.set_readiness(Ready::readable()).unwrap();
-    }
-
-    pub fn audio<B>(&self, packet: B) -> Result<(), SerializeError>
-        where B: PacketBody + Serialize
-    {
-        self.command(Command::Packet {
-            protocol: Protocol::Udp,
-            outgoing: WritePacketBuilder::new(None, &packet)?,
-            send_response: None,
-        });
-        Ok(())
-    }
-}
-
-pub struct CommandQueue {
-    command_queue: Receiver<Command>,
-    registration: Registration,
-}
-
-impl CommandQueue {
-    fn new(command_queue: Receiver<Command>, registration: Registration) -> CommandQueue {
-        CommandQueue {
-            command_queue,
-            registration,
-        }
-    }
-
-    fn next(&self) -> Option<Command> {
-        self.command_queue.try_recv().ok()
-    }
-}
-
-impl Evented for CommandQueue {
-    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
-    {
-        self.registration.register(poll, token, interest, opts)
-    }
-
-    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
-    {
-        self.registration.reregister(poll, token, interest, opts)
-    }
-
-    fn deregister(&self, poll: &Poll) -> io::Result<()> {
-        poll.deregister(self)
-    }
-}
-
-pub enum AudioCommand {
-    NewClientStream(String, Consumer<i16>),
-//    RemoveClientStream(String),
-}
-
-pub struct AudioHandle {
-    command_tx: Sender<AudioCommand>,
-    client_streams: HashMap<ClientId, Producer<i16>>,
-}
-
-impl AudioHandle {
-    fn new(command_tx: Sender<AudioCommand>) -> AudioHandle {
-        AudioHandle {
-            command_tx,
-            client_streams: HashMap::new(),
-        }
-    }
-
-    fn send(&mut self, id: ClientId, bytes: &[u8]) {
-        let l16le_samples: Vec<i16> = bytes
-            .chunks(2)
-            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
-            .collect();
-
-        match self.client_streams.get_mut(&id) {
-            Some(producer) => {
-                producer.push_slice(&l16le_samples);
-            }
-            None => {
-                let ring = RingBuffer::new(4800);
-                let (mut producer, consumer) = ring.split();
-                self.command_tx.send(AudioCommand::NewClientStream(id.to_string(), consumer)).unwrap();
-                producer.push_slice(&l16le_samples);
-                self.client_streams.insert(id, producer);
-            }
-        };
-    }
-}
-
 #[derive(Debug)]
 pub enum NetworkError {
     Io(Option<io::Error>),
@@ -548,7 +376,7 @@ impl From<RecvError> for NetworkError {
 #[derive(Debug)]
 pub enum SendToNetworkThreadError {
     SerializeFailed(SerializeError),
-    SendFailed(SendError<Command>),
+    SendFailed(SendError<NetworkCommand>),
     SetReadinessFailed(io::Error),
 }
 
@@ -558,8 +386,8 @@ impl From<SerializeError> for SendToNetworkThreadError {
     }
 }
 
-impl From<SendError<Command>> for SendToNetworkThreadError {
-    fn from(e: SendError<Command>) -> Self {
+impl From<SendError<NetworkCommand>> for SendToNetworkThreadError {
+    fn from(e: SendError<NetworkCommand>) -> Self {
         SendToNetworkThreadError::SendFailed(e)
     }
 }
