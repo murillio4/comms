@@ -1,4 +1,4 @@
-
+#[derive(Clone)]
 pub struct UIDevice {
     pub label: String,
     pub id: String
