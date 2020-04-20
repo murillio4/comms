@@ -1,0 +1,153 @@
+use std::{fmt, io};
+use std::fmt::{Display, Formatter};
+use std::net::SocketAddr;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc;
+
+use mio::{Evented, Poll, PollOpt, Ready, Registration, SetReadiness, Token};
+use serde::Serialize;
+
+use voice_lib::network::Protocol;
+use voice_lib::packet::{Hello, PacketBody};
+use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
+
+use crate::audio::ipc::AudioCommand;
+use crate::network::WorkerInit;
+use crate::network::future::{RequestError, SendResponse};
+use winapi::um::winnt;
+
+#[derive(Debug)]
+pub enum NetworkEvent {
+    SocketClosed,
+    NetworkError,
+    Packet(OwnedHeaderParsedPacket),
+}
+
+#[derive(Debug)]
+pub enum ConnectError {
+    DestinationUnusable,
+    NetworkError,
+    AlreadyConnected,
+    RequestError(RequestError),
+}
+
+impl From<io::Error> for ConnectError {
+    fn from(_: io::Error) -> Self {
+        ConnectError::NetworkError
+    }
+}
+
+impl From<RequestError> for ConnectError {
+    fn from(e: RequestError) -> Self {
+        ConnectError::RequestError(e)
+    }
+}
+
+pub enum NetworkCommand {
+    Packet {
+        protocol: Protocol,
+        outgoing: WritePacketBuilder,
+        send_response: Option<SendResponse<OwnedHeaderParsedPacket>>,
+    },
+    Connect {
+        destination: SocketAddr,
+        send_response: SendResponse<Result<Hello, ConnectError>>,
+    },
+    Disconnect {
+        send_response: SendResponse<()>,
+    },
+}
+
+impl Display for NetworkCommand {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+        match &self {
+            &Self::Packet { protocol, outgoing, .. } => f.write_str(&format!("{:?} Packet of kind {}", protocol, outgoing.kind)),
+            &Self::Connect { .. } => f.write_str("Connect"),
+            &Self::Disconnect { .. } => f.write_str("Disconnect"),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct NetworkHandle {
+    sender: Sender<NetworkCommand>,
+    set_readiness: SetReadiness,
+}
+
+impl NetworkHandle {
+    pub fn new_handle_and_worker(
+        audio_sender: Sender<AudioCommand>,
+        #[cfg(windows)]
+        winnt_handle: winnt::HANDLE
+    ) -> (Self, futures::channel::mpsc::Receiver<NetworkEvent>, WorkerInit) {
+        let (event_sender, network_event_receiver) = futures::channel::mpsc::channel(32);
+        let (command_sender, command_receiver) = mpsc::channel();
+        let (registration, set_readiness) = Registration::new2();
+        return (
+            NetworkHandle {
+                sender: command_sender,
+                set_readiness,
+            },
+            network_event_receiver,
+            WorkerInit {
+                audio_sender,
+                event_sender,
+                command_receiver,
+                command_registration: registration,
+                #[cfg(windows)]
+                winnt_handle
+            }
+        );
+    }
+
+    pub fn command(&self, command: NetworkCommand) {
+        self.sender.send(command).unwrap();
+        self.set_readiness.set_readiness(Ready::readable()).unwrap();
+    }
+
+    pub fn audio<B>(&self, packet: B) -> Result<(), SerializeError>
+        where B: PacketBody + Serialize
+    {
+        self.command(NetworkCommand::Packet {
+            protocol: Protocol::Udp,
+            outgoing: WritePacketBuilder::new(None, &packet)?,
+            send_response: None,
+        });
+        Ok(())
+    }
+}
+
+
+pub struct CommandQueue {
+    command_queue: Receiver<NetworkCommand>,
+    registration: Registration,
+}
+
+impl CommandQueue {
+    pub(crate) fn new(command_queue: Receiver<NetworkCommand>, registration: Registration) -> CommandQueue {
+        CommandQueue {
+            command_queue,
+            registration,
+        }
+    }
+
+    pub(crate) fn next(&self) -> Option<NetworkCommand> {
+        self.command_queue.try_recv().ok()
+    }
+}
+
+impl Evented for CommandQueue {
+    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
+    {
+        self.registration.register(poll, token, interest, opts)
+    }
+
+    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
+    {
+        self.registration.reregister(poll, token, interest, opts)
+    }
+
+    fn deregister(&self, poll: &Poll) -> io::Result<()> {
+        poll.deregister(self)
+    }
+}

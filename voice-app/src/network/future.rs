@@ -1,25 +1,27 @@
-use std::sync::{Arc, Mutex};
-use std::task::{Waker, Context, Poll};
+use std::fmt::{Debug, Error, Formatter};
 use std::future::Future;
+use std::num::NonZeroU64;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+use std::time::Duration;
+
+use async_std::net::ToSocketAddrs;
 use futures::channel::oneshot;
-use crate::network;
-use serde::{Serialize};
-use serde::de::DeserializeOwned;
-use crate::network::{Command, ConnectError};
-use std::fmt::{Debug, Formatter, Error};
-use std::time::{Duration};
-use futures_timer::Delay;
 use futures::future;
 use futures::future::Either;
 use futures::pin_mut;
-use async_std::net::ToSocketAddrs;
-use voice_lib::packet::{PacketBody, FinishConnectAccepted, Packet, AssociateUdp, FinishConnect, AssociateUdpAccepted, ClientId};
-use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
-use std::num::NonZeroU64;
-use voice_lib::network::Protocol;
+use futures_timer::Delay;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
-async fn connect_without_timeout(handle: &network::Handle, destination: String, username: String) -> Result<Vec<(ClientId, String)>, ConnectError> {
+use voice_lib::network::Protocol;
+use voice_lib::packet::{AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted, Packet, PacketBody};
+use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
+
+use crate::network::ipc::{ConnectError, NetworkCommand, NetworkHandle};
+
+async fn connect_without_timeout(handle: &NetworkHandle, destination: String, username: String) -> Result<Vec<(ClientId, String)>, ConnectError> {
     let destination_with_port = format!("{}:18847", destination);
     let destination = match destination_with_port.to_socket_addrs().await {
         Ok(mut addresses) => {
@@ -34,7 +36,7 @@ async fn connect_without_timeout(handle: &network::Handle, destination: String, 
         }
     };
 
-    let hello = NetworkFuture::new(handle, |s| Command::Connect {
+    let hello = NetworkFuture::new(handle, |s| NetworkCommand::Connect {
         destination,
         send_response: s
     }).await?;
@@ -54,7 +56,7 @@ async fn connect_without_timeout(handle: &network::Handle, destination: String, 
     Ok(connect_accepted.body.users)
 }
 
-pub async fn connect(handle: &network::Handle, destination: String, username: String) -> Result<Vec<(ClientId, String)>, ConnectError> {
+pub async fn connect(handle: &NetworkHandle, destination: String, username: String) -> Result<Vec<(ClientId, String)>, ConnectError> {
     let timeout = Delay::new(Duration::from_secs(1));
     let connect_future = connect_without_timeout(&handle, destination, username);
     pin_mut!(connect_future);
@@ -72,24 +74,24 @@ pub async fn connect(handle: &network::Handle, destination: String, username: St
     }
 }
 
-pub async fn disconnect(handle: &network::Handle) {
-    NetworkFuture::new(handle, |s| Command::Disconnect {
+pub async fn disconnect(handle: &NetworkHandle) {
+    NetworkFuture::new(handle, |s| NetworkCommand::Disconnect {
         send_response: s
     }).await
 }
 
-pub async fn request_any<Req>(handle: &network::Handle, packet_type: Protocol, reply_to: Option<NonZeroU64>, request: Req) -> Result<OwnedHeaderParsedPacket, SerializeError>
+pub async fn request_any<Req>(handle: &NetworkHandle, packet_type: Protocol, reply_to: Option<NonZeroU64>, request: Req) -> Result<OwnedHeaderParsedPacket, SerializeError>
     where Req: PacketBody + Serialize,
 {
     let outgoing = WritePacketBuilder::new(reply_to, &request)?;
-    Ok(NetworkFuture::new(handle, |s| Command::Packet {
+    Ok(NetworkFuture::new(handle, |s| NetworkCommand::Packet {
         protocol: packet_type,
         outgoing,
         send_response: Some(s),
     }).await)
 }
 
-pub async fn request_expect<Req, Res>(handle: &network::Handle, packet_type: Protocol, reply_to: Option<NonZeroU64>,request: Req) -> Result<Packet<Res>, RequestError>
+pub async fn request_expect<Req, Res>(handle: &NetworkHandle, packet_type: Protocol, reply_to: Option<NonZeroU64>, request: Req) -> Result<Packet<Res>, RequestError>
     where Req: PacketBody + Serialize,
           Res: PacketBody + DeserializeOwned,
 {
@@ -101,10 +103,11 @@ pub async fn request_expect<Req, Res>(handle: &network::Handle, packet_type: Pro
     parsed_packet.finish_parse().map_err(|_| RequestError::DeserializeError)
 }
 
-pub fn send<Req>(handle: &network::Handle, packet_type: Protocol, reply_to: Option<NonZeroU64>, request: Req) -> Result<(), SerializeError>
+#[allow(dead_code)]
+pub fn send<Req>(handle: &NetworkHandle, packet_type: Protocol, reply_to: Option<NonZeroU64>, request: Req) -> Result<(), SerializeError>
     where Req: PacketBody + Serialize,
 {
-    handle.command(Command::Packet {
+    handle.command(NetworkCommand::Packet {
         protocol: packet_type,
         outgoing: WritePacketBuilder::new(reply_to, &request)?,
         send_response: None,
@@ -167,7 +170,7 @@ impl<T> Future for NetworkFuture<T> {
 }
 
 impl<T> NetworkFuture<T> {
-    pub fn new(handle: &network::Handle, create_command: impl FnOnce(SendResponse<T>) -> Command) -> Self {
+    pub fn new(handle: &NetworkHandle, create_command: impl FnOnce(SendResponse<T>) -> NetworkCommand) -> Self {
         let (sender, receiver) = oneshot::channel();
         let waker = Arc::new(Mutex::new(None));
 

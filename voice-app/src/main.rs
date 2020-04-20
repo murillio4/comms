@@ -2,11 +2,15 @@
 #[macro_use]
 extern crate lazy_static;
 
-use std::{process, env};
+use std::{env, process, ptr};
 use std::sync::mpsc;
+
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
-use crate::network::{Handle, SendToNetworkThreadError, Worker, NetworkError};
+
+use crate::network::{NetworkError, SendToNetworkThreadError, Worker};
+use crate::network::ipc::NetworkHandle;
+use winapi::um::synchapi;
 
 mod audio;
 mod network;
@@ -15,8 +19,21 @@ mod ui;
 // const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 
 fn main() -> Result<(), CommsError> {
-    let (audio_sender, audio_receiver) = mpsc::channel();
-    let (network_handle, network_event_receiver, network_worker_init) = Handle::new_handle_and_worker(audio_sender);
+    // Audio <> Network comm channel
+    let (audio_net_sender, audio_net_receiver) = mpsc::channel();
+    // UI <> Network comm channel
+    #[cfg(unix)]
+    let (network_handle, network_event_receiver, network_worker_init) = NetworkHandle::new_handle_and_worker(audio_net_sender);
+
+    #[cfg(windows)]
+    let (network_handle, network_event_receiver, network_worker_init) = {
+        let winnt_handle = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
+        NetworkHandle::new_handle_and_worker(audio_net_sender, winnt_handle)
+    };
+
+    // Audio <> UI comm channel
+    let (audio_to_ui_sender, ui_from_audio_receiver) = mpsc::channel();
+
 
     std::thread::spawn(move || {
         #[cfg(windows)]
@@ -36,7 +53,7 @@ fn main() -> Result<(), CommsError> {
         std::thread::spawn(move || {
             #[cfg(windows)]
             bump_priority();
-            if let Err(e) = audio::run(pulseaudio_server, network_handle, audio_receiver) {
+            if let Err(e) = audio::run(pulseaudio_server, network_handle, audio_net_receiver, audio_to_ui_sender) {
                 eprintln!("Encountered an error in audio operations, stopping");
                 eprintln!("Error details: {:?}", e);
                 process::exit(1);
@@ -44,7 +61,7 @@ fn main() -> Result<(), CommsError> {
         });
     }
 
-    ui::run(network_handle, network_event_receiver);
+    ui::run(network_handle, network_event_receiver, ui_from_audio_receiver);
     Ok(())
 }
 

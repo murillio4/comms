@@ -1,23 +1,28 @@
-use libpulse_binding::sample::{Spec, Format};
-use libpulse_binding::time::MicroSeconds;
-use libpulse_binding::context::Context;
+use std::{fmt, process};
 use std::cell::RefCell;
-use std::rc::Rc;
-use libpulse_binding::stream::{Stream, PeekResult, SeekMode};
-use libpulse_binding::def::{BufferAttr, Retval};
-use libpulse_binding::stream::flags::ADJUST_LATENCY;
-use std::sync::mpsc::Receiver;
-use libpulse_binding::error::PAErr;
-use std::{process, fmt};
-use crate::network::AudioCommand;
-use libpulse_binding::mainloop::standard::{Mainloop, IterateResult};
-use libpulse_binding::context::flags::NOAUTOSPAWN;
-use libpulse_binding::context;
-use std::fmt::Formatter;
 use std::error::Error;
+use std::fmt::Formatter;
+use std::rc::Rc;
+use std::sync::mpsc::{Receiver, Sender};
+
+use libpulse_binding::context;
+use libpulse_binding::context::Context;
+use libpulse_binding::context::flags::NOAUTOSPAWN;
+use libpulse_binding::def::{BufferAttr, Retval};
+use libpulse_binding::error::PAErr;
+use libpulse_binding::mainloop::standard::{IterateResult, Mainloop};
+use libpulse_binding::sample::{Format, Spec};
+use libpulse_binding::stream::{PeekResult, SeekMode, Stream};
+use libpulse_binding::stream::flags::ADJUST_LATENCY;
+use libpulse_binding::time::MicroSeconds;
+
 use voice_lib::packet;
-use crate::audio::{AudioError, ReceiveFromNetworkThread};
-use crate::network;
+
+use crate::audio::AudioError;
+use crate::audio::ipc::{AudioCommand, ReceiveFromNetworkThread};
+use crate::network::ipc::NetworkHandle;
+use crate::ui::ipc::{UICommand, UIDevice};
+use libpulse_binding::callbacks::ListResult;
 
 const SPEC: Spec = Spec {
     channels: 1,
@@ -26,19 +31,107 @@ const SPEC: Spec = Spec {
 };
 const PULSE_LATENCY: MicroSeconds = MicroSeconds(30000);
 
-pub fn run(pulseaudio_server: Option<String>, network_handle: network::Handle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
+pub fn run(pulseaudio_server: Option<String>, network_handle: NetworkHandle, receiver: Receiver<AudioCommand>, ui: Sender<UICommand>) -> Result<(), AudioError> {
     let mut mainloop = Mainloop::new().ok_or(AudioError::PulseInitializationFailed)?;
     let mut context = Context::new(&mainloop, "voip-client").ok_or(AudioError::PulseInitializationFailed)?;
     let receive_from_network_thread = ReceiveFromNetworkThread::new(receiver);
     context.connect(pulseaudio_server.as_deref(), NOAUTOSPAWN, None)?;
     context.wait(&mut mainloop)?;
+    query_devices(&mut context, ui);
     record(&mut context, network_handle)?;
     playback(&mut context, receive_from_network_thread)?;
     mainloop.run()?;
     Ok(())
 }
 
-fn record(pulse_context: &mut Context, network_handle: network::Handle) -> Result<(), AudioError> {
+struct DeviceQueryStatus {
+    finished: bool,
+    devices: Vec<UIDevice>,
+}
+
+impl DeviceQueryStatus {
+    pub fn new() -> Self {
+        return Self {
+            finished: false,
+            devices: vec![],
+        };
+    }
+}
+
+fn query_devices(context: &mut Context, ui: Sender<UICommand>) {
+    let introspector = context.introspect();
+    let input_devices = Rc::new(RefCell::new(DeviceQueryStatus::new()));
+    let output_devices = Rc::new(RefCell::new(DeviceQueryStatus::new()));
+
+    {
+        let ui = ui.clone();
+        let input_devices = input_devices.clone();
+        let output_devices = output_devices.clone();
+        introspector.get_source_info_list(move |source_result| {
+            match source_result {
+                ListResult::Item(source) => {
+                    if let Some(name) = &source.name {
+                        if let Some(description) = &source.description {
+                            let mut input_devices = input_devices.borrow_mut();
+                            input_devices.devices.push(UIDevice {
+                                id: name.clone().into_owned(),
+                                label: description.clone().into_owned(),
+                            });
+                        }
+                    }
+                }
+                ListResult::End => {
+                    let mut input_devices = input_devices.borrow_mut();
+                    let output_devices = output_devices.borrow();
+
+                    input_devices.finished = true;
+                    if !input_devices.finished || !output_devices.finished {
+                        return;
+                    }
+
+                    ui.send(UICommand::DevicesFound {
+                        input_devices: input_devices.devices.clone(),
+                        output_devices: output_devices.devices.clone(),
+                    }).unwrap();
+                }
+                ListResult::Error => panic!("Failed to get audio inputs"),
+            };
+        });
+    }
+
+    introspector.get_sink_info_list(move |sink_result| {
+        match sink_result {
+            ListResult::Item(sink) => {
+                if let Some(name) = &sink.name {
+                    if let Some(description) = &sink.description {
+                        let mut output_devices = output_devices.borrow_mut();
+                        output_devices.devices.push(UIDevice {
+                            id: name.clone().into_owned(),
+                            label: description.clone().into_owned(),
+                        });
+                    }
+                }
+            }
+            ListResult::End => {
+                let input_devices = input_devices.borrow();
+                let mut output_devices = output_devices.borrow_mut();
+
+                output_devices.finished = true;
+                if !input_devices.finished || !output_devices.finished {
+                    return;
+                }
+
+                ui.send(UICommand::DevicesFound {
+                    input_devices: input_devices.devices.clone(),
+                    output_devices: output_devices.devices.clone(),
+                }).unwrap();
+            }
+            ListResult::Error => panic!("Failed to get audio outputs"),
+        };
+    });
+}
+
+fn record(pulse_context: &mut Context, network_handle: NetworkHandle) -> Result<(), AudioError> {
     let stream_rc = Rc::new(RefCell::new(
         Stream::new(pulse_context, "record", &SPEC, None).ok_or(AudioError::StreamCreation)?
     ));
@@ -84,7 +177,7 @@ fn record(pulse_context: &mut Context, network_handle: network::Handle) -> Resul
     Ok(())
 }
 
-fn on_record_callback(stream: &mut Stream, handle: &network::Handle) -> Result<(), AudioError> {
+fn on_record_callback(stream: &mut Stream, handle: &NetworkHandle) -> Result<(), AudioError> {
     match stream.peek() {
         Ok(data) => {
             match data {
@@ -95,7 +188,7 @@ fn on_record_callback(stream: &mut Stream, handle: &network::Handle) -> Result<(
                     handle.audio(packet).unwrap();
                 }
             }
-        },
+        }
         Err(_) => {
             panic!("stream.peek() error");
         }
@@ -157,8 +250,8 @@ fn on_playback_callback(stream: &mut Stream, bytes: usize, receive_from_network_
     for i in 0..buffer.len() / 2 {
         let sample = receive_from_network_thread.next_sample();
         let le_bytes = sample.to_le_bytes();
-        buffer[i*2] = le_bytes[0];
-        buffer[i*2 + 1] = le_bytes[1];
+        buffer[i * 2] = le_bytes[0];
+        buffer[i * 2 + 1] = le_bytes[1];
     }
 
     stream.write_copy(&buffer, 0, SeekMode::Relative)?;

@@ -1,11 +1,16 @@
-use sample::{interpolate, signal, Signal, Sample};
-use crate::audio::wasapi::device::{InputDevice, OutputDevice};
-use crate::audio::wasapi::stream::{UnknownTypeInputBuffer, StreamData, UnknownTypeOutputBuffer};
-use ringbuf::{RingBuffer, Consumer};
+use std::sync::mpsc::{Receiver, Sender};
+
+use ringbuf::{Consumer, RingBuffer};
+use sample::{interpolate, Sample, signal, Signal};
+
 use voice_lib::packet::AudioFromClient;
-use crate::audio::{AudioError, ReceiveFromNetworkThread};
-use crate::network::{Handle, AudioCommand};
-use std::sync::mpsc::Receiver;
+
+use crate::audio::AudioError;
+use crate::audio::ipc::{AudioCommand, ReceiveFromNetworkThread};
+use crate::audio::wasapi::device::{InputDevice, OutputDevice};
+use crate::audio::wasapi::stream::{StreamData, UnknownTypeInputBuffer, UnknownTypeOutputBuffer};
+use crate::network::ipc::NetworkHandle;
+use crate::ui::ipc::{UIDevice, UICommand};
 
 mod com;
 mod device;
@@ -13,7 +18,12 @@ mod event_loop;
 mod ms_multimedia;
 mod stream;
 
-pub fn run(network_handle: Handle, receiver: Receiver<AudioCommand>) -> Result<(), AudioError> {
+pub fn run(network_handle: NetworkHandle, receiver: Receiver<AudioCommand>, ui: Sender<UICommand>) -> Result<(), AudioError> {
+    ui.send(UICommand::DevicesFound{
+        input_devices: InputDevice::get_list().into_iter().map(|device| { UIDevice {label: device.name().unwrap(), id: device.id().unwrap()}}).collect(),
+        output_devices: OutputDevice::get_list().into_iter().map(|device| { UIDevice {label: device.name().unwrap(), id: device.id().unwrap()}}).collect()
+    }).unwrap();
+
     let input_device = InputDevice::default().unwrap();
     let output_device = OutputDevice::default().unwrap();
 
@@ -49,6 +59,8 @@ pub fn run(network_handle: Handle, receiver: Receiver<AudioCommand>) -> Result<(
         }
         network_handle.audio(AudioFromClient(buffer)).unwrap();
     };
+
+
 
     event_loop.run(move |id, result| {
         let data = match result {

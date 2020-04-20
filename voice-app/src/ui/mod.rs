@@ -1,16 +1,20 @@
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use directories::ProjectDirs;
+use futures::stream::StreamExt;
 use gio::prelude::*;
 use gtk::prelude::*;
-
-use std::rc::Rc;
-use std::cell::{RefCell, Cell};
-use crate::network;
-use crate::network::ConnectError;
-use voice_lib::packet::{UserJoined, PacketBody, Packet, UserLeft};
-use voice_lib::serialization::{OwnedHeaderParsedPacket, DeserializeError};
-use futures::channel::mpsc::Receiver;
-use futures::stream::StreamExt;
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+
+use voice_lib::packet::{Packet, PacketBody, UserJoined, UserLeft};
+use voice_lib::serialization::DeserializeError;
+
+use crate::network;
+use crate::network::ipc::{ConnectError, NetworkEvent, NetworkHandle};
+use crate::ui::ipc::UICommand;
+
+pub mod ipc;
 
 #[derive(Debug)]
 #[repr(i32)]
@@ -37,7 +41,7 @@ struct LocalStorage {
 }
 
 async fn try_connect(
-    network: network::Handle,
+    network: NetworkHandle,
     ui: Rc<RefCell<UiModel>>
 ) {
     let old_state = ui.borrow().state.clone();
@@ -87,6 +91,7 @@ async fn try_connect(
             let _ = async_std::fs::create_dir(project_dirs.data_dir()).await;
             let _ = async_std::fs::write(project_dirs.data_dir().join("local_storage"), storage).await;
         }
+
         let connect_result = network::future::connect(&network, server, username).await;
 
         finished.replace(true);
@@ -131,7 +136,7 @@ async fn try_connect(
 
 async fn disconnect_from_server(
     ui: Rc<RefCell<UiModel>>,
-    handle: network::Handle,
+    handle: NetworkHandle,
 ) {
     let state = ui.borrow().state.clone();
     if let UiState::Main {
@@ -164,16 +169,9 @@ struct UiModel {
     builder: gtk::Builder,
 }
 
-#[derive(Debug)]
-pub enum NetworkEvent {
-    SocketClosed,
-    NetworkError,
-    Packet(OwnedHeaderParsedPacket),
-}
-
 async fn handle_network_events(
-    mut receiver: Receiver<NetworkEvent>,
-    network: network::Handle,
+    mut receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
+    network: NetworkHandle,
     ui: Rc<RefCell<UiModel>>,
 ) {
     while let Some(event) = receiver.next().await {
@@ -266,7 +264,18 @@ fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
     application.run(&std::env::args().collect::<Vec<_>>());
 }
 
-pub fn run(network: network::Handle, network_event_receiver: Receiver<NetworkEvent>) {
+pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>, ui_receiver: std::sync::mpsc::Receiver<UICommand>) {
+
+    let ui_cmd_from_audio: UICommand = ui_receiver.recv().unwrap();
+    let (input_devices, output_devices) = match ui_cmd_from_audio {
+        UICommand::DevicesFound {
+            input_devices,
+            output_devices
+        } => {
+            (input_devices, output_devices)
+        }
+    };
+
     let initial_local_storage: Option<LocalStorage> = ProjectDirs::from("", "Comms", "Comms")
         .and_then(|project_dirs| {
             std::fs::read_to_string(project_dirs.data_dir().join("local_storage")).ok()
@@ -374,6 +383,37 @@ pub fn run(network: network::Handle, network_event_receiver: Receiver<NetworkEve
                 ));
             });
         }
+
+        let inputs_submenu: gtk::Menu = builder.get_object("inputs_submenu").unwrap();
+        let outputs_submenu: gtk::Menu = builder.get_object("outputs_submenu").unwrap();
+
+        let mut device_count = 0;
+        for device in input_devices {
+            let input_menu_item: gtk::MenuItem = gtk::MenuItemBuilder::new()
+                .label(&device.label)
+                .build();
+            input_menu_item.connect_activate(|_| {
+                //send command switch device
+
+            });
+            inputs_submenu.attach(&input_menu_item, 0, 1, device_count, device_count + 1);
+            device_count += 1;
+        }
+
+        let mut device_count = 0;
+        for device in output_devices {
+            let output_menu_item: gtk::MenuItem = gtk::MenuItemBuilder::new()
+                .label(&device.label)
+                .build();
+            output_menu_item.connect_activate(|_| {
+                println!("Clicked output menu item button.");
+            });
+            outputs_submenu.attach(&output_menu_item, 0, 1, device_count, device_count + 1);
+            device_count += 1;
+
+        }
+
+
         let status_box: gtk::Box = builder.get_object("status_box").unwrap();
         stack.add_named(&status_box, "status");
 
