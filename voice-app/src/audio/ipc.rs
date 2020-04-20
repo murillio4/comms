@@ -5,18 +5,33 @@ use ringbuf::{Consumer, Producer, RingBuffer};
 use sample::Sample;
 
 use voice_lib::packet::ClientId;
+use winapi::um::winnt;
 
 pub enum AudioCommand {
     NewClientStream(String, Consumer<i16>),
+    SwitchInputDevice(String),
+    SwitchOutputDevice(String)
 //    RemoveClientStream(String),
 }
 
 pub struct AudioHandle {
     command_tx: Sender<AudioCommand>,
     client_streams: HashMap<ClientId, Producer<i16>>,
+
+    #[cfg(windows)]
+    winnt_handle: winnt::HANDLE
 }
 
 impl AudioHandle {
+    #[cfg(windows)]
+    pub fn new(command_tx: Sender<AudioCommand>, winnt_handle: winnt::HANDLE) -> AudioHandle {
+        AudioHandle {
+            command_tx,
+            client_streams: HashMap::new(),
+            winnt_handle
+        }
+    }
+    #[cfg(unix)]
     pub fn new(command_tx: Sender<AudioCommand>) -> AudioHandle {
         AudioHandle {
             command_tx,
@@ -42,6 +57,14 @@ impl AudioHandle {
                 self.client_streams.insert(id, producer);
             }
         };
+    }
+
+    pub fn change_input_device(&self, device_id: String) {
+        self.command_tx.send(AudioCommand::SwitchInputDevice(device_id));
+    }
+
+    pub fn change_output_device(&self, device_id: String) {
+        self.command_tx.send(AudioCommand::SwitchOutputDevice(device_id));
     }
 }
 

@@ -12,8 +12,10 @@ use winapi::um::audioclient::{AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_S_BUFFER_EMP
 use crate::audio::wasapi::com::check_result;
 use crate::audio::wasapi::device::{InputDevice, OutputDevice};
 use crate::audio::wasapi::stream::{AudioClientFlow, Format, InputBuffer, OutputBuffer, SampleFormat, StreamData, StreamDataResult, StreamError, StreamId, UnknownTypeInputBuffer, UnknownTypeOutputBuffer};
+use std::sync::mpsc::Receiver;
+use crate::audio::ipc::AudioCommand;
 
-struct Stream {
+struct WasapiStream {
     id: StreamId,
     audio_client: *mut audioclient::IAudioClient,
     client_flow: AudioClientFlow,
@@ -24,26 +26,30 @@ struct Stream {
     sample_format: SampleFormat,
 }
 
-enum Command {
-    NewStream(Stream),
+enum WasapiCommand {
+    NewStream(WasapiStream),
     PlayStream(StreamId),
 }
 
 pub struct EventLoop {
     next_stream_id: AtomicUsize,
-    streams: Vec<Stream>,
-    commands: Vec<Command>,
-    pending_commands_handle: winnt::HANDLE,
+    streams: Vec<WasapiStream>,
+    wasapi_commands: Vec<WasapiCommand>,
+    pending_wasapi_commands_handle: winnt::HANDLE,
+    ipc_commands: Receiver<AudioCommand>,
+    pending_ipc_commands_handle: winnt::HANDLE,
 }
 
 impl EventLoop {
-    pub fn new() -> EventLoop {
-        let pending_scheduled_event = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
+    pub fn new(ipc_commands: Receiver<AudioCommand>, pending_ipc_commands_handle: winnt::HANDLE) -> EventLoop {
+        let pending_wasapi_scheduled_event = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
         EventLoop {
-            pending_commands_handle: pending_scheduled_event,
+            pending_wasapi_commands_handle: pending_wasapi_scheduled_event,
             next_stream_id: AtomicUsize::new(0),
-            commands: Vec::new(),
+            wasapi_commands: Vec::new(),
             streams: Vec::new(),
+            ipc_commands,
+            pending_ipc_commands_handle,
         }
     }
 
@@ -61,11 +67,11 @@ impl EventLoop {
                 }
             }
 
-            process_commands(&mut self.streams, &mut self.commands, &mut callback);
+            process_commands(&mut self.streams, &mut self.wasapi_commands, &mut callback);
 
             let handles: Vec<winnt::HANDLE> = self.streams.iter()
                 .map(|s| s.handle)
-                .chain(iter::once(self.pending_commands_handle))
+                .chain(iter::once(self.pending_wasapi_commands_handle))
                 .collect();
             let handle_index = match wait_for_handle_signal(&handles) {
                 Ok(index) => index,
@@ -198,10 +204,10 @@ impl EventLoop {
         }
     }
 
-    fn push_command(&mut self, command: Command) {
-        self.commands.push(command);
+    fn push_command(&mut self, command: WasapiCommand) {
+        self.wasapi_commands.push(command);
         unsafe {
-            let result = synchapi::SetEvent(self.pending_commands_handle);
+            let result = synchapi::SetEvent(self.pending_wasapi_commands_handle);
             assert_ne!(result, 0);
         }
     }
@@ -220,7 +226,7 @@ impl EventLoop {
             capture_client,
         };
 
-        self.new_stream(|stream_id| Stream {
+        self.new_stream(|stream_id| WasapiStream {
             id: stream_id,
             audio_client: *device.audio_client,
             client_flow,
@@ -251,7 +257,7 @@ impl EventLoop {
             render_client
         };
 
-        self.new_stream(|stream_id| Stream {
+        self.new_stream(|stream_id| WasapiStream {
             id: stream_id,
             audio_client: *device.audio_client,
             client_flow,
@@ -266,15 +272,15 @@ impl EventLoop {
     fn new_stream<F>(
         &mut self,
         f: F,
-    ) -> Result<StreamId, BuildStreamError> where F: FnOnce(StreamId) -> Stream {
+    ) -> Result<StreamId, BuildStreamError> where F: FnOnce(StreamId) -> WasapiStream {
         let new_stream_id = StreamId(self.next_stream_id.fetch_add(1, Ordering::Relaxed));
         if new_stream_id.0 == std::usize::MAX {
             return Err(BuildStreamError::StreamIdOverflow);
         }
 
         let inner = f(new_stream_id.clone());
-        self.push_command(Command::NewStream(inner));
-        self.push_command(Command::PlayStream(new_stream_id.clone()));
+        self.push_command(WasapiCommand::NewStream(inner));
+        self.push_command(WasapiCommand::PlayStream(new_stream_id.clone()));
 
         Ok(new_stream_id)
     }
@@ -289,16 +295,16 @@ pub enum BuildStreamError {
 }
 
 fn process_commands(
-    streams: &mut Vec<Stream>,
-    commands: &mut Vec<Command>,
+    streams: &mut Vec<WasapiStream>,
+    commands: &mut Vec<WasapiCommand>,
     callback: &mut dyn FnMut(StreamId, StreamDataResult),
 ) {
     for command in commands.drain(..) {
         match command {
-            Command::NewStream(stream_inner) => {
+            WasapiCommand::NewStream(stream_inner) => {
                 streams.push(stream_inner);
             }
-            Command::PlayStream(stream_id) => {
+            WasapiCommand::PlayStream(stream_id) => {
                 match streams.iter().position(|s| s.id == stream_id) {
                     None => continue,
                     Some(p) => {
@@ -347,7 +353,7 @@ fn wait_for_handle_signal(handles: &[winnt::HANDLE]) -> Result<usize, String> {
     Ok(handle_idx)
 }
 
-fn get_available_frames(stream: &Stream) -> Result<u32, StreamError> {
+fn get_available_frames(stream: &WasapiStream) -> Result<u32, StreamError> {
     unsafe {
         let mut padding = MaybeUninit::<u32>::uninit();
         let hresult = (*stream.audio_client).GetCurrentPadding(padding.as_mut_ptr());

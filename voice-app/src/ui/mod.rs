@@ -2,7 +2,6 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use directories::ProjectDirs;
-use futures::channel::mpsc::Receiver;
 use futures::stream::StreamExt;
 use gio::prelude::*;
 use gtk::prelude::*;
@@ -171,7 +170,7 @@ struct UiModel {
 }
 
 async fn handle_network_events(
-    mut receiver: Receiver<NetworkEvent>,
+    mut receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
     network: NetworkHandle,
     ui: Rc<RefCell<UiModel>>,
 ) {
@@ -265,9 +264,9 @@ fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
     application.run(&std::env::args().collect::<Vec<_>>());
 }
 
-pub fn run(network: NetworkHandle, network_event_receiver: Receiver<NetworkEvent>, ui_from_audio_receiver: std::sync::mpsc::Receiver<UICommand>) {
+pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>, ui_receiver: std::sync::mpsc::Receiver<UICommand>) {
 
-    let ui_cmd_from_audio: UICommand = ui_from_audio_receiver.recv().unwrap();
+    let ui_cmd_from_audio: UICommand = ui_receiver.recv().unwrap();
     let (input_devices, output_devices) = match ui_cmd_from_audio {
         UICommand::DevicesFound {
             input_devices,
@@ -394,7 +393,8 @@ pub fn run(network: NetworkHandle, network_event_receiver: Receiver<NetworkEvent
                 .label(&device.label)
                 .build();
             input_menu_item.connect_activate(|_| {
-                println!("Clicked input menu item button.");
+                //send command switch device
+
             });
             inputs_submenu.attach(&input_menu_item, 0, 1, device_count, device_count + 1);
             device_count += 1;
