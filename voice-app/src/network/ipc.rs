@@ -14,6 +14,7 @@ use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePac
 use crate::audio::ipc::AudioCommand;
 use crate::network::WorkerInit;
 use crate::network::future::{RequestError, SendResponse};
+#[cfg(windows)]
 use winapi::um::winnt;
 
 #[derive(Debug)]
@@ -78,7 +79,7 @@ impl NetworkHandle {
     pub fn new_handle_and_worker(
         audio_sender: Sender<AudioCommand>,
         #[cfg(windows)]
-        winnt_handle: winnt::HANDLE
+        _winnt_handle: winnt::HANDLE
     ) -> (Self, futures::channel::mpsc::Receiver<NetworkEvent>, WorkerInit) {
         let (event_sender, network_event_receiver) = futures::channel::mpsc::channel(32);
         let (command_sender, command_receiver) = mpsc::channel();
@@ -94,8 +95,9 @@ impl NetworkHandle {
                 event_sender,
                 command_receiver,
                 command_registration: registration,
-                #[cfg(windows)]
-                winnt_handle
+                // TODO #22
+                // #[cfg(windows)]
+                // winnt_handle
             }
         );
     }

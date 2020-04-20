@@ -36,20 +36,24 @@ pub struct EventLoop {
     streams: Vec<WasapiStream>,
     wasapi_commands: Vec<WasapiCommand>,
     pending_wasapi_commands_handle: winnt::HANDLE,
-    ipc_commands: Receiver<AudioCommand>,
-    pending_ipc_commands_handle: winnt::HANDLE,
+    // TODO #22
+    // ipc_commands: Receiver<AudioCommand>,
+    // pending_ipc_commands_handle: winnt::HANDLE,
 }
 
 impl EventLoop {
-    pub fn new(ipc_commands: Receiver<AudioCommand>, pending_ipc_commands_handle: winnt::HANDLE) -> EventLoop {
+    // TODO #22
+    // pub fn new(ipc_commands: Receiver<AudioCommand>, pending_ipc_commands_handle: winnt::HANDLE) -> EventLoop {
+    pub fn new() -> Self {
         let pending_wasapi_scheduled_event = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
         EventLoop {
             pending_wasapi_commands_handle: pending_wasapi_scheduled_event,
             next_stream_id: AtomicUsize::new(0),
             wasapi_commands: Vec::new(),
             streams: Vec::new(),
-            ipc_commands,
-            pending_ipc_commands_handle,
+            // TODO #22
+            // ipc_commands,
+            // pending_ipc_commands_handle,
         }
     }
 

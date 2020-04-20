@@ -17,6 +17,7 @@ use voice_lib::serialization::{HeaderParsedPacket, OwnedHeaderParsedPacket, Seri
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network::future::SendResponse;
 use crate::network::ipc::{CommandQueue, ConnectError, NetworkCommand, NetworkEvent};
+#[cfg(windows)]
 use winapi::um::winnt;
 
 pub mod future;
@@ -65,8 +66,9 @@ pub struct WorkerInit {
     event_sender: futures::channel::mpsc::Sender<NetworkEvent>,
     command_receiver: Receiver<NetworkCommand>,
     command_registration: Registration,
-    #[cfg(windows)]
-    winnt_handle: winnt::HANDLE,
+    // TODO #22
+    // #[cfg(windows)]
+    // winnt_handle: winnt::HANDLE,
 }
 
 struct NextPollToken(usize);
@@ -159,7 +161,9 @@ impl Worker {
     pub fn run(mut self, worker_init: WorkerInit) -> Result<(), NetworkError> {
         let command_queue = CommandQueue::new(worker_init.command_receiver, worker_init.command_registration);
         #[cfg(windows)]
-        let mut audio_handle = AudioHandle::new(worker_init.audio_sender, worker_init.winnt_handle);
+        // TODO #22
+        // let mut audio_handle = AudioHandle::new(worker_init.audio_sender, worker_init.winnt_handle);
+        let mut audio_handle = AudioHandle::new(worker_init.audio_sender);
         #[cfg(unix)]
         let mut audio_handle = AudioHandle::new(worker_init.audio_sender);
         let mut event_sender = worker_init.event_sender;
