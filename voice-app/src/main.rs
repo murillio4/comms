@@ -10,6 +10,8 @@ use voice_lib::winlib::bump_priority;
 
 use crate::network::{NetworkError, SendToNetworkThreadError, Worker};
 use crate::network::ipc::NetworkHandle;
+
+#[cfg(windows)]
 use winapi::um::synchapi;
 
 mod audio;

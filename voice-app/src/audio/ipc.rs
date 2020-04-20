@@ -5,6 +5,7 @@ use ringbuf::{Consumer, Producer, RingBuffer};
 use sample::Sample;
 
 use voice_lib::packet::ClientId;
+#[cfg(windows)]
 use winapi::um::winnt;
 
 pub enum AudioCommand {
@@ -18,19 +19,24 @@ pub struct AudioHandle {
     command_tx: Sender<AudioCommand>,
     client_streams: HashMap<ClientId, Producer<i16>>,
 
-    #[cfg(windows)]
-    winnt_handle: winnt::HANDLE
+    // TODO #22
+    // #[cfg(windows)]
+    // winnt_handle: winnt::HANDLE
 }
 
 impl AudioHandle {
     #[cfg(windows)]
-    pub fn new(command_tx: Sender<AudioCommand>, winnt_handle: winnt::HANDLE) -> AudioHandle {
+    // TODO #22
+    //pub fn new(command_tx: Sender<AudioCommand>, winnt_handle: winnt::HANDLE) -> AudioHandle {
+    pub fn new(command_tx: Sender<AudioCommand>) -> Self {
         AudioHandle {
             command_tx,
             client_streams: HashMap::new(),
-            winnt_handle
+            // TODO #22
+            // winnt_handle
         }
     }
+
     #[cfg(unix)]
     pub fn new(command_tx: Sender<AudioCommand>) -> AudioHandle {
         AudioHandle {
@@ -60,11 +66,11 @@ impl AudioHandle {
     }
 
     pub fn change_input_device(&self, device_id: String) {
-        self.command_tx.send(AudioCommand::SwitchInputDevice(device_id));
+        self.command_tx.send(AudioCommand::SwitchInputDevice(device_id)).unwrap();
     }
 
     pub fn change_output_device(&self, device_id: String) {
-        self.command_tx.send(AudioCommand::SwitchOutputDevice(device_id));
+        self.command_tx.send(AudioCommand::SwitchOutputDevice(device_id)).unwrap();
     }
 }
 
@@ -87,6 +93,7 @@ impl ReceiveFromNetworkThread {
                 AudioCommand::NewClientStream(id, consumer) => {
                     self.client_streams.insert(id, consumer);
                 }
+                _ => unimplemented!("TODO #22"),
             }
         }
     }
