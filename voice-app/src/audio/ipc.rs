@@ -1,110 +1,98 @@
-use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, Sender};
-
-use ringbuf::{Consumer, Producer, RingBuffer};
-use sample::Sample;
+use std::sync::mpsc::{Receiver, Sender, SendError};
 
 use voice_lib::packet::ClientId;
-#[cfg(windows)]
-use winapi::um::winnt;
+use crate::ui::ipc::UICommand;
+use std::fmt::{Display, Formatter};
+use std::fmt;
+
+use crate::audio::buffer::RcMultiplexer;
+use voice_device::audio_connection::{AudioConnection, EventLoopNotify};
+use voice_device::buffer::{InterruptReceiver, MaybeSharedPlaybackSource};
+use crate::audio::{AudioPlatformImpl, AudioPlatform};
 
 pub enum AudioCommand {
-    NewClientStream(String, Consumer<i16>),
+    NewClient(ClientId),
+    AudioFromClient(ClientId, [f32; 480]),
     SwitchInputDevice(String),
-    SwitchOutputDevice(String)
-//    RemoveClientStream(String),
+    SwitchOutputDevice(String),
+    ListDevices,
+    // TODO remove client
 }
 
-pub struct AudioHandle {
-    command_tx: Sender<AudioCommand>,
-    client_streams: HashMap<ClientId, Producer<i16>>,
+impl Display for AudioCommand {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+        match *self {
+            AudioCommand::NewClient(_) => f.write_str("NewClient"),
+            AudioCommand::AudioFromClient(..) => f.write_str("AudioFromClient"),
+            AudioCommand::SwitchInputDevice(_) => f.write_str("SwitchInputDevice"),
+            AudioCommand::SwitchOutputDevice(_) => f.write_str("SwitchOutputDevice"),
+            AudioCommand::ListDevices => f.write_str("ListDevices"),
+        }
+    }
+}
 
-    // TODO #22
-    // #[cfg(windows)]
-    // winnt_handle: winnt::HANDLE
+#[derive(Clone)]
+pub struct AudioHandle {
+    pub command_tx: Sender<AudioCommand>,
+    pub notify: <AudioPlatformImpl as AudioPlatform>::Notify,
 }
 
 impl AudioHandle {
-    #[cfg(windows)]
-    // TODO #22
-    //pub fn new(command_tx: Sender<AudioCommand>, winnt_handle: winnt::HANDLE) -> AudioHandle {
-    pub fn new(command_tx: Sender<AudioCommand>) -> Self {
-        AudioHandle {
-            command_tx,
-            client_streams: HashMap::new(),
-            // TODO #22
-            // winnt_handle
+    pub fn send_audio(&mut self, id: ClientId, bytes: &[u8]) {
+        let mut samples = [0f32; 480];
+        for i in 0..samples.len() {
+            samples[i] = f32::from_le_bytes([
+                bytes[i*4],
+                bytes[i*4 + 1],
+                bytes[i*4 + 2],
+                bytes[i*4 + 3],
+            ]);
         }
+        self.send(AudioCommand::AudioFromClient(id, samples)).unwrap();
     }
 
-    #[cfg(unix)]
-    pub fn new(command_tx: Sender<AudioCommand>) -> AudioHandle {
-        AudioHandle {
-            command_tx,
-            client_streams: HashMap::new(),
-        }
-    }
-
-    pub fn send(&mut self, id: ClientId, bytes: &[u8]) {
-        let l16le_samples: Vec<i16> = bytes
-            .chunks(2)
-            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
-            .collect();
-
-        match self.client_streams.get_mut(&id) {
-            Some(producer) => {
-                producer.push_slice(&l16le_samples);
-            }
-            None => {
-                let ring = RingBuffer::new(4800);
-                let (mut producer, consumer) = ring.split();
-                self.command_tx.send(AudioCommand::NewClientStream(id.to_string(), consumer)).unwrap();
-                producer.push_slice(&l16le_samples);
-                self.client_streams.insert(id, producer);
-            }
-        };
-    }
-
-    pub fn change_input_device(&self, device_id: String) {
-        self.command_tx.send(AudioCommand::SwitchInputDevice(device_id)).unwrap();
-    }
-
-    pub fn change_output_device(&self, device_id: String) {
-        self.command_tx.send(AudioCommand::SwitchOutputDevice(device_id)).unwrap();
+    pub fn send(&self, command: AudioCommand) -> Result<(), SendError<AudioCommand>> {
+        let result = self.command_tx.send(command);
+        self.notify.set_ready();
+        result
     }
 }
 
-pub struct ReceiveFromNetworkThread {
-    command_rx: Receiver<AudioCommand>,
-    client_streams: HashMap<String, Consumer<i16>>,
+pub struct AudioReceiver<R> {
+    pub(crate) multiplexer: RcMultiplexer,
+    pub(crate) registration: R,
+    pub(crate) command_rx: Receiver<AudioCommand>,
+    pub(crate) ui_handle: Sender<UICommand>,
 }
 
-impl ReceiveFromNetworkThread {
-    pub fn new(receiver: Receiver<AudioCommand>) -> ReceiveFromNetworkThread {
-        ReceiveFromNetworkThread {
-            command_rx: receiver,
-            client_streams: HashMap::new(),
-        }
+impl<R> InterruptReceiver<R> for AudioReceiver<R> {
+    fn registration(&self) -> &R {
+        &self.registration
     }
 
-    pub(crate) fn handle_commands(&mut self) {
-        while let Ok(command) = self.command_rx.try_recv() {
+    fn invoke<AC: AudioConnection>(&mut self, connection: &AC)
+    {
+        for command in self.command_rx.try_iter() {
+            let command: AudioCommand = command;
             match command {
-                AudioCommand::NewClientStream(id, consumer) => {
-                    self.client_streams.insert(id, consumer);
+                AudioCommand::NewClient(id) => {
+                    self.multiplexer.with(|multiplexer| multiplexer.new_client(id))
+                },
+                AudioCommand::AudioFromClient(client_id, chunk) => {
+                    self.multiplexer.with(|multiplexer| multiplexer.append_chunk_from_client(client_id, chunk))
+                },
+                AudioCommand::SwitchInputDevice(device_id) => AC::change_input_device(device_id),
+                AudioCommand::SwitchOutputDevice(device_id) => AC::change_output_device(device_id),
+                AudioCommand::ListDevices => {
+                    let ui_handle = self.ui_handle.clone();
+                    connection.list_devices(move |devices| {
+                        ui_handle.send(UICommand::DevicesFound {
+                            input_devices: devices.input_devices,
+                            output_devices: devices.output_devices
+                        }).unwrap();
+                    });
                 }
-                _ => unimplemented!("TODO #22"),
             }
         }
-    }
-
-    pub(crate) fn next_sample(&mut self) -> i16 {
-        let init: i16 = sample::Sample::equilibrium();
-        let init = init.to_signed_sample();
-        self.client_streams.values_mut()
-            .fold(init, |acc, consumer| {
-                let next_sample = consumer.pop().unwrap_or(0);
-                acc.checked_add(next_sample).unwrap_or(std::i16::MAX)
-            })
     }
 }

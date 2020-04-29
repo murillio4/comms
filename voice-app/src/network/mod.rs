@@ -3,22 +3,20 @@ use std::io;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
-use std::sync::mpsc::{Receiver, RecvError, Sender, SendError};
+use std::sync::mpsc::{Receiver, RecvError, SendError};
 
 use mio::{Events, Poll, Token, Interest};
 use mio::net::TcpStream;
 use mio::net::UdpSocket;
 
 use voice_lib::network::{CommsTcpStream, IncomingStreamPacket, Protocol, UpdateFromStream};
-use voice_lib::packet::{AudioToClient, Hello, PacketBody, PacketKind};
+use voice_lib::packet::{AudioToClient, Hello, PacketBody, PacketKind, AudioFromClient,  Packet};
 use voice_lib::packet;
-use voice_lib::serialization::{HeaderParsedPacket, OwnedHeaderParsedPacket, SerializeError};
+use voice_lib::serialization::{HeaderParsedPacket, OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network::future::SendResponse;
 use crate::network::ipc::{CommandQueue, ConnectError, NetworkCommand, NetworkEvent};
-#[cfg(windows)]
-use winapi::um::winnt;
 
 pub mod future;
 pub mod ipc;
@@ -62,15 +60,12 @@ impl Connection {
 }
 
 pub struct WorkerInit {
-    audio_sender: Sender<AudioCommand>,
+    audio_handle: AudioHandle,
     event_sender: futures::channel::mpsc::Sender<NetworkEvent>,
     command_receiver: Receiver<NetworkCommand>,
     poll: Poll,
     command_token: Token,
     next_poll_token: NextPollToken,
-    // TODO #22
-    // #[cfg(windows)]
-    // winnt_handle: winnt::HANDLE,
 }
 
 struct NextPollToken(usize);
@@ -107,11 +102,10 @@ fn handle_udp_packet(parsed_packet: HeaderParsedPacket, reply_map: &mut HashMap<
     let kind = parsed_packet.kind();
     match kind {
         packet::AudioToClient::KIND_ID => {
-            let audio_to_client: AudioToClient = parsed_packet.finish_parse()
-                .map_err(|_| HandlePacketError::FailedToParse(kind))
-                ?.body;
-            audio_handle.send(audio_to_client.author, &audio_to_client.bytes);
-        }
+            let audio_to_client: Packet<AudioToClient> = parsed_packet.finish_parse()
+                .map_err(|_| HandlePacketError::FailedToParse(kind))?;
+            audio_handle.send_audio(audio_to_client.body.author, &audio_to_client.body.bytes);
+        },
         _ => return Err(HandlePacketError::UnexpectedPacket(parsed_packet.into_owned()))
     }
     Ok(())
@@ -162,12 +156,7 @@ impl Worker {
 
     pub fn run(mut self, worker_init: WorkerInit) -> Result<(), NetworkError> {
         let command_queue = CommandQueue::new(worker_init.command_receiver);
-        #[cfg(windows)]
-        // TODO #22
-        // let mut audio_handle = AudioHandle::new(worker_init.audio_sender, worker_init.winnt_handle);
-        let mut audio_handle = AudioHandle::new(worker_init.audio_sender);
-        #[cfg(unix)]
-        let mut audio_handle = AudioHandle::new(worker_init.audio_sender);
+        let mut audio_handle = worker_init.audio_handle;
         let mut event_sender = worker_init.event_sender;
 
         let mut next_poll_token = worker_init.next_poll_token;
@@ -224,7 +213,24 @@ impl Worker {
                                         }
                                     }
                                 }
-                            }
+                            },
+                            NetworkCommand::SendAudio(chunk) => {
+                                if let Some(connection) = &mut self.connection {
+                                    let bytes = chunk.iter()
+                                        .flat_map(|sample| sample.to_le_bytes().to_vec())
+                                        .collect();
+                                    let outgoing = WritePacketBuilder::new(None, &AudioFromClient(bytes)).unwrap();
+                                    let id = connection.next_packet_id();
+                                    if let Ok(raw) = outgoing.into_raw(id) {
+                                        connection.udp_packet_queue.push_back(raw);
+                                        match attempt_send_next_udp_packet(&mut connection.udp_packet_queue, &connection.udp, &mut connection.udp_writable) {
+                                            Ok(_) => (),
+                                            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => (),
+                                            Err(e) => return Err(e.into()),
+                                        }
+                                    }
+                                }
+                            },
                             NetworkCommand::Connect {
                                 destination,
                                 send_response,

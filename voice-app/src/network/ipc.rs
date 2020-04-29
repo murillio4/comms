@@ -5,17 +5,14 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc};
 
 use mio::{Poll, Waker};
-use serde::Serialize;
 
 use voice_lib::network::Protocol;
-use voice_lib::packet::{Hello, PacketBody};
 use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
 
-use crate::audio::ipc::AudioCommand;
+use crate::audio::ipc::AudioHandle;
 use crate::network::{WorkerInit, NextPollToken};
 use crate::network::future::{RequestError, SendResponse};
-#[cfg(windows)]
-use winapi::um::winnt;
+use voice_lib::packet::Hello;
 
 #[derive(Debug)]
 pub enum NetworkEvent {
@@ -50,6 +47,7 @@ pub enum NetworkCommand {
         outgoing: WritePacketBuilder,
         send_response: Option<SendResponse<OwnedHeaderParsedPacket>>,
     },
+    SendAudio([f32; 480]),
     Connect {
         destination: SocketAddr,
         send_response: SendResponse<Result<Hello, ConnectError>>,
@@ -65,6 +63,7 @@ impl Display for NetworkCommand {
             &Self::Packet { protocol, outgoing, .. } => f.write_str(&format!("{:?} Packet of kind {}", protocol, outgoing.kind)),
             &Self::Connect { .. } => f.write_str("Connect"),
             &Self::Disconnect { .. } => f.write_str("Disconnect"),
+            &Self::SendAudio { .. } => f.write_str("SendAudio"),
         }
     }
 }
@@ -77,9 +76,7 @@ pub struct NetworkHandle {
 
 impl NetworkHandle {
     pub fn new_handle_and_worker(
-        audio_sender: Sender<AudioCommand>,
-        #[cfg(windows)]
-        _winnt_handle: winnt::HANDLE
+        audio_handle: AudioHandle,
     ) -> (Self, futures::channel::mpsc::Receiver<NetworkEvent>, WorkerInit) {
         let (event_sender, network_event_receiver) = futures::channel::mpsc::channel(32);
         let (command_sender, command_receiver) = mpsc::channel();
@@ -97,15 +94,12 @@ impl NetworkHandle {
             },
             network_event_receiver,
             WorkerInit {
-                audio_sender,
+                audio_handle,
                 event_sender,
                 command_receiver,
                 command_token,
                 next_poll_token,
                 poll,
-                // TODO #22
-                // #[cfg(windows)]
-                // winnt_handle
             }
         );
     }
@@ -115,14 +109,9 @@ impl NetworkHandle {
         self.waker.wake().unwrap();
     }
 
-    pub fn audio<B>(&self, packet: B) -> Result<(), SerializeError>
-        where B: PacketBody + Serialize
+    pub fn audio(&self, frame: [f32; 480]) -> Result<(), SerializeError>
     {
-        self.command(NetworkCommand::Packet {
-            protocol: Protocol::Udp,
-            outgoing: WritePacketBuilder::new(None, &packet)?,
-            send_response: None,
-        });
+        self.command(NetworkCommand::SendAudio(frame));
         Ok(())
     }
 }

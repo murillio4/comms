@@ -29,7 +29,7 @@ pub trait PacketBody {
 
 #[derive(Serialize, Deserialize)]
 pub struct AssociateUdp {
-    pub client_id: u16,
+    pub client_id: ClientId,
 }
 
 impl PacketBody for AssociateUdp {
@@ -101,7 +101,7 @@ impl PacketBody for ErrorResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Hello {
-    pub client_id: u16,
+    pub client_id: ClientId,
 }
 
 impl PacketBody for Hello {
@@ -110,7 +110,7 @@ impl PacketBody for Hello {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserJoined {
-    pub id: u16,
+    pub client_id: ClientId,
     pub name: String,
 }
 
@@ -120,7 +120,7 @@ impl PacketBody for UserJoined {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserLeft {
-    pub id: u16,
+    pub client_id: ClientId,
 }
 
 impl PacketBody for UserLeft {

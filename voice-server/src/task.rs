@@ -13,6 +13,7 @@ use voice_lib::packet::PacketKind;
 use std::fmt::Debug;
 
 pub struct PacketFuture {
+    kind: PacketKind,
     receiver: Arc<SyncUnsafeCell<oneshot::Receiver<()>>>,
     waker: Arc<SyncUnsafeCell<Option<Waker>>>,
 }
@@ -29,18 +30,22 @@ impl Future for PacketFuture {
                 unsafe { *waker = Some(cx.waker().clone()) };
                 Poll::Pending
             },
-            Err(e) => panic!(e),
+            Err(e) => {
+                dbg!(self.kind);
+                panic!(e)
+            },
         }
     }
 }
 
 impl PacketFuture {
-    pub fn new() -> (Self, PacketFinish) {
+    pub fn new(kind: PacketKind) -> (Self, PacketFinish) {
         let (sender, receiver) = oneshot::channel();
         let waker = Arc::new(SyncUnsafeCell(UnsafeCell::new(None)));
 
         (
             PacketFuture {
+                kind,
                 receiver: Arc::new(SyncUnsafeCell(UnsafeCell::new(receiver))),
                 waker: waker.clone(),
             },

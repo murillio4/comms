@@ -1,21 +1,10 @@
-#[cfg(target_os = "windows")]
-#[macro_use]
-extern crate lazy_static;
-
-#[cfg(target_os = "windows")]
-use std::ptr;
-
-use std::{env, process};
+use std::process;
 use std::sync::mpsc;
-
-#[cfg(windows)]
-use voice_lib::winlib::bump_priority;
 
 use crate::network::{NetworkError, SendToNetworkThreadError, Worker};
 use crate::network::ipc::NetworkHandle;
-
-#[cfg(windows)]
-use winapi::um::synchapi;
+use crate::audio::ipc::AudioHandle;
+use crate::audio::{AudioPlatformImpl, AudioPlatform};
 
 mod audio;
 mod network;
@@ -24,25 +13,24 @@ mod ui;
 // const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 
 fn main() -> Result<(), CommsError> {
-    // Audio <> Network comm channel
-    let (audio_net_sender, audio_net_receiver) = mpsc::channel();
-    // UI <> Network comm channel
-    #[cfg(unix)]
-    let (network_handle, network_event_receiver, network_worker_init) = NetworkHandle::new_handle_and_worker(audio_net_sender);
-
-    #[cfg(windows)]
-    let (network_handle, network_event_receiver, network_worker_init) = {
-        let winnt_handle = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
-        NetworkHandle::new_handle_and_worker(audio_net_sender, winnt_handle)
-    };
-
     // Audio <> UI comm channel
-    let (audio_to_ui_sender, ui_from_audio_receiver) = mpsc::channel();
+    let (ui_handle, ui_receiver) = mpsc::channel();
+    // Audio <> Network comm channel
+    let (audio_registration, audio_notify) = AudioPlatformImpl::create_channel();
+    let (audio_sender, audio_receiver) = mpsc::channel();
+    let audio_handle = AudioHandle {
+        notify: audio_notify,
+        command_tx: audio_sender,
+    };
+    // UI <> Network comm channel
+    let (network_handle, network_event_receiver, network_worker_init) = {
+        NetworkHandle::new_handle_and_worker(audio_handle.clone())
+    };
 
 
     std::thread::spawn(move || {
         #[cfg(windows)]
-        bump_priority();
+        voice_lib::winlib::bump_priority();
         if let Err(e) = Worker::new()
             .map_err(|e| NetworkError::Io(Some(e)))
             .and_then(|w| w.run(network_worker_init)) {
@@ -53,12 +41,12 @@ fn main() -> Result<(), CommsError> {
     });
 
     {
-        let pulseaudio_server = env::var_os("PULSEAUDIO_SERVER").map(|s| s.to_string_lossy().to_string());
+        let parameters = AudioPlatformImpl::create_parameters();
         let network_handle = network_handle.clone();
         std::thread::spawn(move || {
             #[cfg(windows)]
-            bump_priority();
-            if let Err(e) = audio::run(pulseaudio_server, network_handle, audio_net_receiver, audio_to_ui_sender) {
+            voice_lib::winlib::bump_priority();
+            if let Err(e) = audio::run(parameters, network_handle, ui_handle, audio_registration, audio_receiver) {
                 eprintln!("Encountered an error in audio operations, stopping");
                 eprintln!("Error details: {:?}", e);
                 process::exit(1);
@@ -66,7 +54,7 @@ fn main() -> Result<(), CommsError> {
         });
     }
 
-    ui::run(network_handle, network_event_receiver, ui_from_audio_receiver);
+    ui::run(network_handle, network_event_receiver, ui_receiver, audio_handle);
     Ok(())
 }
 

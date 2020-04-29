@@ -87,7 +87,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
                         None,
                         UserJoined {
                             name: packet.body.name,
-                            id: context.client_id,
+                            client_id: context.client_id,
                         }
                     )?,
                 ]
@@ -124,7 +124,7 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> Re
     };
 
     let outgoing = SendPacket::tcp(Target::Many(remaining_client_ids), None, UserLeft {
-        id: context.client_id
+        client_id: context.client_id
     })?;
     outgoing.send(&context.network_handle).await;
     Ok(())

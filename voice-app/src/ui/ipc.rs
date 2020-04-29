@@ -1,12 +1,9 @@
-#[derive(Clone)]
-pub struct UIDevice {
-    pub label: String,
-    pub id: String
-}
+use voice_device::audio_connection::DeviceInfo;
 
 pub enum UICommand {
+    AudioIPCReady,
     DevicesFound {
-        input_devices: Vec<UIDevice>,
-        output_devices: Vec<UIDevice>
+        input_devices: Vec<DeviceInfo>,
+        output_devices: Vec<DeviceInfo>,
     }
 }

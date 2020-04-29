@@ -2,7 +2,9 @@
 
 members = [
     "beep-cli",
+    "loopback-cli",
     "voice-app",
+    "voice-device",
     "voice-lib",
     "voice-server",
 ]

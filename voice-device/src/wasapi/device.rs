@@ -2,23 +2,23 @@ use winapi::ctypes;
 use winapi::um::{mmdeviceapi, audioclient, coml2api, combaseapi, winnt, audiosessiontypes, synchapi};
 use std::{ptr, slice};
 use std::mem::MaybeUninit;
-use crate::audio::wasapi::com;
+use crate::wasapi::com;
 use std::io::Error as IoError;
 use winapi::shared::{devpkey, wtypes, mmreg, winerror, guiddef};
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
-use crate::audio::wasapi::stream::Format;
+use crate::wasapi::stream::Format;
 use winapi::um::audioclient::AUDCLNT_E_DEVICE_INVALIDATED;
-use crate::audio::wasapi::device::DefaultFormatError::BackendSpecific;
-use crate::audio::wasapi::ms_multimedia::{WaveFormatExPtr, format_from_waveformatex_ptr, format_to_waveformatextensible, is_format_supported};
+use crate::wasapi::device::DefaultFormatError::BackendSpecific;
+use crate::wasapi::ms_multimedia::{WaveFormatExPtr, format_from_waveformatex_ptr, format_to_waveformatextensible, is_format_supported};
 use std::ops::Deref;
-use crate::audio::wasapi::event_loop::BuildStreamError;
 use winapi::um::audiosessiontypes::AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-use crate::audio::wasapi::com::check_result;
+use crate::wasapi::com::check_result;
 use winapi::um::mmdeviceapi::DEVICE_STATE_ACTIVE;
 use winapi::um::mmdeviceapi::IMMDeviceCollection;
 use winapi::um::winsock2::u_int;
 use winapi::um::mmdeviceapi::IMMDevice;
+use crate::wasapi::event_loop::WasapiEventLoopRegistration;
 
 pub struct InputDevice {
     device: IMMDeviceWrapper,
@@ -33,7 +33,7 @@ pub struct OutputDevice {
 pub struct IAudioClientWrapper(*mut audioclient::IAudioClient);
 
 impl IAudioClientWrapper {
-    pub fn get_waveformatex(&self, format: &Format) -> Result<mmreg::WAVEFORMATEX, BuildStreamError> {
+    pub fn initialize(&self, format: &Format) -> Result<mmreg::WAVEFORMATEX, BuildStreamError> {
         let audio_client = self.0;
         let format_attempt = format_to_waveformatextensible(format)
             .ok_or(BuildStreamError::FormatNotSupported)?;
@@ -93,7 +93,7 @@ impl IAudioClientWrapper {
         Ok(unsafe { max_frames_in_buffer.assume_init() })
     }
 
-    pub fn create_event_handle(&self) -> Result<*mut ctypes::c_void, BuildStreamError> {
+    pub fn create_notify(&self) -> Result<WasapiEventLoopRegistration, BuildStreamError> {
         let audio_client = self.0;
         let event = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
         if event == ptr::null_mut() {
@@ -107,7 +107,9 @@ impl IAudioClientWrapper {
             return Err(BuildStreamError::BackendSpecific(description));
         }
 
-        Ok(event)
+        Ok(WasapiEventLoopRegistration {
+            win_handle: event
+        })
     }
 
     fn create_client<T>(&self, interface_id: &guiddef::GUID) -> Result<T, BuildStreamError> {
@@ -293,7 +295,6 @@ impl IMMDeviceWrapper {
 }
 
 impl InputDevice {
-    #[allow(dead_code)]
     pub fn name(&self) -> Result<String, DeviceNameError> {
         self.device.name()
     }
@@ -335,7 +336,6 @@ impl InputDevice {
 }
 
 impl OutputDevice {
-    #[allow(dead_code)]
     pub fn name(&self) -> Result<String, DeviceNameError> {
         self.device.name()
     }
@@ -374,4 +374,11 @@ impl OutputDevice {
             }
         }).collect()
     }
+}
+
+#[derive(Debug)]
+pub enum BuildStreamError {
+    DeviceNotAvailable,
+    FormatNotSupported,
+    BackendSpecific(String),
 }

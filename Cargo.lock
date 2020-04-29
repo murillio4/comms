@@ -626,6 +626,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "loopback-cli"
+version = "0.1.0"
+dependencies = [
+ "sample 0.11.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "voice-device 0.1.0",
+]
+
+[[package]]
 name = "mach"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1063,13 +1071,26 @@ dependencies = [
  "glib 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "gtk 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc 0.2.72 (registry+https://github.com/rust-lang/crates.io-index)",
  "libpulse-binding 2.16.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "mio 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "ringbuf 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "sample 0.11.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde 1.0.114 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 1.0.56 (registry+https://github.com/rust-lang/crates.io-index)",
+ "voice-device 0.1.0",
  "voice-lib 0.1.0",
+ "winapi 0.3.9 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "voice-device"
+version = "0.1.0"
+dependencies = [
+ "lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc 0.2.72 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libpulse-binding 2.16.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sample 0.11.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "winapi 0.3.9 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
