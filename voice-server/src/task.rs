@@ -1,7 +1,5 @@
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::Arc;
-use mio::{Registration, Evented, Token, Ready, PollOpt, SetReadiness};
-use std::io;
 use futures::future::BoxFuture;
 use std::future::Future;
 use futures::FutureExt;
@@ -71,7 +69,6 @@ impl PacketFinish {
 
 pub struct TaskExecutor {
     ready_queue: Receiver<Arc<Task>>,
-    registration: Registration,
 }
 
 impl TaskExecutor {
@@ -97,22 +94,6 @@ impl TaskExecutor {
                 }
             }
         }
-    }
-}
-
-impl Evented for TaskExecutor {
-    fn register(&self, poll: &mio::Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
-    {
-        self.registration.register(poll, token, interest, opts)
-    }
-
-    fn reregister(&self, poll: &mio::Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
-    {
-        self.registration.reregister(poll, token, interest, opts)
-    }
-
-    fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
-        poll.deregister(self)
     }
 }
 
@@ -142,13 +123,13 @@ impl Spawner {
 #[derive(Clone)]
 struct Scheduler {
     task_sender: SyncSender<Arc<Task>>,
-    set_readiness: SetReadiness
+    waker: Arc<mio::Waker>,
 }
 
 impl Scheduler {
     fn schedule(&self, task: Arc<Task>) {
         self.task_sender.send(task).unwrap();
-        self.set_readiness.set_readiness(Ready::readable()).unwrap();
+        self.waker.wake().unwrap();
     }
 }
 
@@ -175,8 +156,10 @@ impl ArcWake for Task {
     }
 }
 
-pub fn new() -> (TaskExecutor, Spawner) {
+pub fn new(waker: mio::Waker) -> (TaskExecutor, Spawner) {
     let (task_sender, ready_queue) = sync_channel(10_000);
-    let (registration, set_readiness) = Registration::new2();
-    (TaskExecutor { ready_queue, registration }, Spawner { task_scheduler: Scheduler { task_sender, set_readiness } })
+    (TaskExecutor { ready_queue }, Spawner { task_scheduler: Scheduler {
+        task_sender,
+        waker: Arc::new(waker)
+    }})
 }

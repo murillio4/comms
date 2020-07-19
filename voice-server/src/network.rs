@@ -7,7 +7,7 @@ use std::cell::UnsafeCell;
 use voice_lib::network::Protocol;
 use std::collections::VecDeque;
 use std::sync::mpsc::{sync_channel, SyncSender, Receiver};
-use mio::{Registration, Ready, SetReadiness, Token, PollOpt, Evented};
+use mio::Waker;
 use std::io;
 use mio::net::UdpSocket;
 use voice_lib::Serialize;
@@ -23,7 +23,6 @@ pub struct OutgoingPacket {
 
 pub struct OutgoingQueue {
     receiver: Receiver<(Protocol, OutgoingPacket)>,
-    registration: Registration,
     udp_queue: VecDeque<OutgoingPacket>,
 }
 
@@ -66,7 +65,7 @@ impl OutgoingQueue {
         let builder = unsafe { &mut *packet.builder.get() };
         let kind = builder.kind;
         let raw = builder.as_raw(packet_id).expect(&format!("Serialization failed for packet id {} kind {}", packet_id, kind));
-        match socket.send_to(&raw, &addr) {
+        match socket.send_to(&raw, addr) {
             Ok(_) => packet.finish.done(),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.udp_queue.push_front(packet),
             Err(_) => return Err(CommunicationFailure(packet.dest)),
@@ -118,26 +117,10 @@ impl OutgoingQueue {
     }
 }
 
-impl Evented for OutgoingQueue {
-    fn register(&self, poll: &mio::Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
-    {
-        self.registration.register(poll, token, interest, opts)
-    }
-
-    fn reregister(&self, poll: &mio::Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
-    {
-        self.registration.reregister(poll, token, interest, opts)
-    }
-
-    fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
-        poll.deregister(self)
-    }
-}
-
 #[derive(Clone)]
 pub struct NetworkHandle {
     sender: SyncSender<(Protocol, OutgoingPacket)>,
-    set_queue_readiness: SetReadiness,
+    waker: Arc<Waker>,
 }
 
 impl NetworkHandle {
@@ -148,22 +131,20 @@ impl NetworkHandle {
             builder,
             finish,
         })).unwrap();
-        self.set_queue_readiness.set_readiness(Ready::readable()).unwrap();
+        self.waker.wake().unwrap();
         future
     }
 }
 
-pub fn queue_and_handle() -> (NetworkHandle, OutgoingQueue) {
+pub fn queue_and_handle(waker: Waker) -> (NetworkHandle, OutgoingQueue) {
     let (sender, receiver) = sync_channel(10_000);
-    let (registration, set_queue_readiness) = Registration::new2();
     return (
         NetworkHandle {
             sender,
-            set_queue_readiness,
+            waker: Arc::new(waker),
         },
         OutgoingQueue {
             receiver,
-            registration,
             udp_queue: VecDeque::new(),
         }
     );

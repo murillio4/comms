@@ -2,9 +2,9 @@ use std::{fmt, io};
 use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
-use mio::{Evented, Poll, PollOpt, Ready, Registration, SetReadiness, Token};
+use mio::{Poll, Waker};
 use serde::Serialize;
 
 use voice_lib::network::Protocol;
@@ -12,7 +12,7 @@ use voice_lib::packet::{Hello, PacketBody};
 use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
 
 use crate::audio::ipc::AudioCommand;
-use crate::network::WorkerInit;
+use crate::network::{WorkerInit, NextPollToken};
 use crate::network::future::{RequestError, SendResponse};
 #[cfg(windows)]
 use winapi::um::winnt;
@@ -72,7 +72,7 @@ impl Display for NetworkCommand {
 #[derive(Clone)]
 pub struct NetworkHandle {
     sender: Sender<NetworkCommand>,
-    set_readiness: SetReadiness,
+    waker: Arc<Waker>,
 }
 
 impl NetworkHandle {
@@ -83,18 +83,26 @@ impl NetworkHandle {
     ) -> (Self, futures::channel::mpsc::Receiver<NetworkEvent>, WorkerInit) {
         let (event_sender, network_event_receiver) = futures::channel::mpsc::channel(32);
         let (command_sender, command_receiver) = mpsc::channel();
-        let (registration, set_readiness) = Registration::new2();
+
+        let mut next_poll_token = NextPollToken::new();
+        let poll = Poll::new().unwrap();
+
+        let command_token = next_poll_token.create();
+        let waker = Waker::new(poll.registry(), command_token).unwrap();
+
         return (
             NetworkHandle {
                 sender: command_sender,
-                set_readiness,
+                waker: Arc::new(waker),
             },
             network_event_receiver,
             WorkerInit {
                 audio_sender,
                 event_sender,
                 command_receiver,
-                command_registration: registration,
+                command_token,
+                next_poll_token,
+                poll,
                 // TODO #22
                 // #[cfg(windows)]
                 // winnt_handle
@@ -104,7 +112,7 @@ impl NetworkHandle {
 
     pub fn command(&self, command: NetworkCommand) {
         self.sender.send(command).unwrap();
-        self.set_readiness.set_readiness(Ready::readable()).unwrap();
+        self.waker.wake().unwrap();
     }
 
     pub fn audio<B>(&self, packet: B) -> Result<(), SerializeError>
@@ -122,34 +130,16 @@ impl NetworkHandle {
 
 pub struct CommandQueue {
     command_queue: Receiver<NetworkCommand>,
-    registration: Registration,
 }
 
 impl CommandQueue {
-    pub(crate) fn new(command_queue: Receiver<NetworkCommand>, registration: Registration) -> CommandQueue {
+    pub(crate) fn new(command_queue: Receiver<NetworkCommand>) -> CommandQueue {
         CommandQueue {
             command_queue,
-            registration,
         }
     }
 
     pub(crate) fn next(&self) -> Option<NetworkCommand> {
         self.command_queue.try_recv().ok()
-    }
-}
-
-impl Evented for CommandQueue {
-    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
-    {
-        self.registration.register(poll, token, interest, opts)
-    }
-
-    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()>
-    {
-        self.registration.reregister(poll, token, interest, opts)
-    }
-
-    fn deregister(&self, poll: &Poll) -> io::Result<()> {
-        poll.deregister(self)
     }
 }
