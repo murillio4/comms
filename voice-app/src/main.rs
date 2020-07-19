@@ -2,7 +2,10 @@
 #[macro_use]
 extern crate lazy_static;
 
-use std::{env, process, ptr};
+#[cfg(target_os = "windows")]
+use std::ptr;
+
+use std::{env, process};
 use std::sync::mpsc;
 
 #[cfg(windows)]

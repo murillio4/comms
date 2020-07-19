@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::sync::mpsc::{Receiver, RecvError, Sender, SendError};
 
-use mio::{Events, Poll, PollOpt, Ready, Registration, Token};
+use mio::{Events, Poll, Token, Interest};
 use mio::net::TcpStream;
 use mio::net::UdpSocket;
 
@@ -65,7 +65,9 @@ pub struct WorkerInit {
     audio_sender: Sender<AudioCommand>,
     event_sender: futures::channel::mpsc::Sender<NetworkEvent>,
     command_receiver: Receiver<NetworkCommand>,
-    command_registration: Registration,
+    poll: Poll,
+    command_token: Token,
+    next_poll_token: NextPollToken,
     // TODO #22
     // #[cfg(windows)]
     // winnt_handle: winnt::HANDLE,
@@ -74,6 +76,10 @@ pub struct WorkerInit {
 struct NextPollToken(usize);
 
 impl NextPollToken {
+    fn new() -> NextPollToken {
+        NextPollToken(0)
+    }
+
     fn create(&mut self) -> Token {
         let next_id = self.0;
         self.0 += 1;
@@ -83,8 +89,6 @@ impl NextPollToken {
 
 pub struct Worker {
     connection: Option<Connection>,
-    poll: Poll,
-    next_poll_token: NextPollToken,
 }
 
 enum HandlePacketError {
@@ -137,14 +141,14 @@ fn connect(connection: &mut Option<Connection>, poll: &Poll, destination: Socket
         return Err(ConnectError::AlreadyConnected);
     }
 
-    let tcp = TcpStream::connect(&destination)?;
-    let udp = UdpSocket::bind(&"0.0.0.0:0".parse().unwrap())?;
+    let mut tcp = TcpStream::connect(destination)?;
+    let mut udp = UdpSocket::bind("0.0.0.0:0".parse().unwrap())?;
     udp.connect(destination)?;
 
     let udp_token = next_poll_token.create();
     let tcp_token = next_poll_token.create();
-    poll.register(&udp, udp_token, Ready::all(), PollOpt::edge()).unwrap();
-    poll.register(&tcp, tcp_token, Ready::all(), PollOpt::edge()).unwrap();
+    poll.registry().register(&mut udp, udp_token, Interest::READABLE | Interest::WRITABLE).unwrap();
+    poll.registry().register(&mut tcp, tcp_token, Interest::READABLE | Interest::WRITABLE).unwrap();
     *connection = Some(Connection::new(udp, udp_token, CommsTcpStream::new(tcp), tcp_token));
     Ok(())
 }
@@ -153,13 +157,11 @@ impl Worker {
     pub fn new() -> io::Result<Self> {
         Ok(Worker {
             connection: None,
-            poll: Poll::new()?,
-            next_poll_token: NextPollToken(0),
         })
     }
 
     pub fn run(mut self, worker_init: WorkerInit) -> Result<(), NetworkError> {
-        let command_queue = CommandQueue::new(worker_init.command_receiver, worker_init.command_registration);
+        let command_queue = CommandQueue::new(worker_init.command_receiver);
         #[cfg(windows)]
         // TODO #22
         // let mut audio_handle = AudioHandle::new(worker_init.audio_sender, worker_init.winnt_handle);
@@ -168,18 +170,18 @@ impl Worker {
         let mut audio_handle = AudioHandle::new(worker_init.audio_sender);
         let mut event_sender = worker_init.event_sender;
 
-        let command_token = self.next_poll_token.create();
-        self.poll.register(&command_queue, command_token, Ready::readable(), PollOpt::edge())?;
+        let mut next_poll_token = worker_init.next_poll_token;
+        let mut poll = worker_init.poll;
+        let command_token = worker_init.command_token;
 
         let mut buffer = [0; 65535];
         let mut events = Events::with_capacity(1024);
 
         loop {
-            self.poll.poll(&mut events, None)?;
+            poll.poll(&mut events, None)?;
             for event in events.iter() {
-                let readiness = event.readiness();
                 let token = event.token();
-                if token == command_token && readiness.is_readable() {
+                if token == command_token && event.is_readable() {
                     while let Some(command) = command_queue.next() {
                         match command {
                             NetworkCommand::Packet {
@@ -228,7 +230,7 @@ impl Worker {
                                 send_response,
                             } => {
                                 let mut connection = &mut self.connection;
-                                if let Err(e) = connect(&mut connection, &mut self.poll, destination, &mut self.next_poll_token) {
+                                if let Err(e) = connect(&mut connection, &mut poll, destination, &mut next_poll_token) {
                                     send_response.done(Err(e));
                                 } else {
                                     if let Some(connection) = &mut connection {
@@ -246,7 +248,7 @@ impl Worker {
                     }
                 } else if let Some(connection) = &mut self.connection {
                     if token == connection.udp_token {
-                        if readiness.is_readable() {
+                        if event.is_readable() {
                             loop {
                                 match connection.udp.recv(&mut buffer) {
                                     Ok(size) => {
@@ -270,12 +272,12 @@ impl Worker {
                                 }
                             }
                         }
-                        if readiness.is_writable() {
+                        if event.is_writable() {
                             connection.udp_writable = true;
                             attempt_send_next_udp_packet(&mut connection.udp_packet_queue, &connection.udp, &mut connection.udp_writable)?;
                         }
                     } else if token == connection.tcp_token {
-                        if readiness.is_readable() {
+                        if event.is_readable() {
                             match connection.tcp.update_from_stream() {
                                 Ok(UpdateFromStream::Success) => {}
                                 Ok(UpdateFromStream::ConnectionClosed) => event_sender.try_send(NetworkEvent::SocketClosed).unwrap(),
@@ -301,7 +303,7 @@ impl Worker {
                                 }
                             }
                         }
-                        if readiness.is_writable() {
+                        if event.is_writable() {
                             connection.tcp_writable = true;
                             attempt_send_next_tcp_packet(&mut connection.tcp_packet_queue, &mut connection.tcp.internal, &mut connection.tcp_writable)?;
                         }

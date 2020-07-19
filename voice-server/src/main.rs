@@ -9,7 +9,7 @@
 use mio::net::UdpSocket;
 use mio::net::TcpListener;
 use std::io;
-use mio::{Poll, Token, Ready, PollOpt, Events};
+use mio::{Poll, Token, Events, Interest, Waker};
 use voice_lib::packet;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
@@ -46,22 +46,23 @@ fn main() -> Result<(), CommsServerError> {
         id
     };
 
-    let (task_executor, spawner) = task::new();
-    let task_executor_token = Token(next_client_id() as usize);
+    let mut poll = Poll::new()?;
 
-    let udp_socket = UdpSocket::bind(&"0.0.0.0:18847".parse().unwrap())?;
+    let task_executor_token = Token(next_client_id() as usize);
+    let waker = Waker::new(poll.registry(), task_executor_token).unwrap();
+    let (task_executor, spawner) = task::new(waker);
+
+    let mut udp_socket = UdpSocket::bind("0.0.0.0:18847".parse().unwrap())?;
     let udp_token = Token(next_client_id() as usize);
-    let tcp_listener = TcpListener::bind(&"0.0.0.0:18847".parse().unwrap())?;
+    let mut tcp_listener = TcpListener::bind("0.0.0.0:18847".parse().unwrap())?;
     let tcp_listener_token = Token(next_client_id() as usize);
 
-    let (network_handle, mut outgoing_queue) = network::queue_and_handle();
     let outgoing_token = Token(next_client_id() as usize);
+    let waker = Waker::new(poll.registry(), outgoing_token).unwrap();
+    let (network_handle, mut outgoing_queue) = network::queue_and_handle(waker);
 
-    let poll = Poll::new()?;
-    poll.register(&task_executor, task_executor_token, Ready::readable(), PollOpt::edge())?;
-    poll.register(&udp_socket, udp_token, Ready::all(), PollOpt::edge())?;
-    poll.register(&tcp_listener, tcp_listener_token, Ready::readable(), PollOpt::edge())?;
-    poll.register(&outgoing_queue, outgoing_token, Ready::readable(), PollOpt::edge())?;
+    poll.registry().register(&mut udp_socket, udp_token, Interest::READABLE | Interest::WRITABLE)?;
+    poll.registry().register(&mut tcp_listener, tcp_listener_token, Interest::READABLE)?;
 
     let mut events = Events::with_capacity(1024);
     let mut buffer = [0u8; 65535];
@@ -75,8 +76,7 @@ fn main() -> Result<(), CommsServerError> {
             if token == task_executor_token {
                 task_executor.run();
             } else if token == udp_token {
-                let readiness = event.readiness();
-                if readiness.is_readable() {
+                if event.is_readable() {
                     match udp_socket.recv_from(&mut buffer) {
                         Ok((size, remote_addr)) => {
                             if size != 0 {
@@ -98,7 +98,7 @@ fn main() -> Result<(), CommsServerError> {
                         Err(_) => return Err(CommsServerError::IoError),
                     };
                 }
-                if readiness.is_writable() {
+                if event.is_writable() {
                     udp_socket_writable = true;
                     if let Err(CommunicationFailure(client_id)) = {
                         let mut clients = unsafe { &mut *clients.get() };
@@ -118,10 +118,10 @@ fn main() -> Result<(), CommsServerError> {
                     }
                 }
             } else if token == tcp_listener_token {
-                let (stream, _) = tcp_listener.accept()?;
+                let (mut stream, _) = tcp_listener.accept()?;
                 let client_id = next_client_id() as ClientId;
                 let token = Token(client_id as usize);
-                poll.register(&stream, token, Ready::all(), PollOpt::edge())?;
+                poll.registry().register(&mut stream, token, Interest::READABLE | Interest::WRITABLE)?;
 
                 let clients = unsafe { &mut *clients.get() };
                 clients.connecting.insert(client_id, ConnectingClient {
@@ -131,8 +131,7 @@ fn main() -> Result<(), CommsServerError> {
 
                 spawner.spawn(on_connect(network_handle.clone(), client_id));
             } else { // it's a TCP stream event
-                let readiness = event.readiness();
-                if readiness.is_readable() {
+                if event.is_readable() {
                     let client_id = token.0 as ClientId;
                     match handle_tcp_stream(client_id, clients.clone(), &spawner, &network_handle) {
                         Ok(StreamStatus::Closed) => {
@@ -144,7 +143,7 @@ fn main() -> Result<(), CommsServerError> {
                         _ => (),
                     }
                 }
-                if readiness.is_writable() {
+                if event.is_writable() {
                     let client_id = token.0 as ClientId;
                     let clients = unsafe { &mut *clients.get() };
                     clients.connection_by_id(&client_id).map(|c| {

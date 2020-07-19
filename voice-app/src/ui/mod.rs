@@ -285,7 +285,7 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
 
     gtk_start(move |app| {
         let stack = gtk::Stack::new();
-        let builder = gtk::Builder::new_from_file("resources/app.ui");
+        let builder = gtk::Builder::from_file("resources/app.ui");
         let ui = Rc::new(RefCell::new(UiModel {
             state: UiState::ChooseServer,
             pane_stack: stack.clone(),
@@ -299,10 +299,10 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
             ui.clone(),
         ));
 
-        let logo_16 = gdk_pixbuf::Pixbuf::new_from_file("resources/logo-16.png").unwrap();
-        let logo_32 = gdk_pixbuf::Pixbuf::new_from_file("resources/logo-32.png").unwrap();
-        let logo_48 = gdk_pixbuf::Pixbuf::new_from_file("resources/logo-48.png").unwrap();
-        let logo_256 = gdk_pixbuf::Pixbuf::new_from_file("resources/logo-256.png").unwrap();
+        let logo_16 = gdk_pixbuf::Pixbuf::from_file("resources/logo-16.png").unwrap();
+        let logo_32 = gdk_pixbuf::Pixbuf::from_file("resources/logo-32.png").unwrap();
+        let logo_48 = gdk_pixbuf::Pixbuf::from_file("resources/logo-48.png").unwrap();
+        let logo_256 = gdk_pixbuf::Pixbuf::from_file("resources/logo-256.png").unwrap();
 
         let window = gtk::ApplicationWindow::new(app);
         window.set_title("Comms");
