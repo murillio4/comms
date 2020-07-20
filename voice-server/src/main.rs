@@ -77,26 +77,29 @@ fn main() -> Result<(), CommsServerError> {
                 task_executor.run();
             } else if token == udp_token {
                 if event.is_readable() {
-                    match udp_socket.recv_from(&mut buffer) {
-                        Ok((size, remote_addr)) => {
-                            if size != 0 {
-                                let buffer = &buffer[0..size];
-                                match handle_udp_packet(remote_addr.clone(), buffer, clients.clone(), &spawner, network_handle.clone()) {
-                                    Err(HandlePacketError::CommunicationFailure) => {
-                                        if let Some(client_id) = {
-                                            let clients = unsafe { &mut *clients.get() };
-                                            clients.id_by_socket_addr(&remote_addr)
-                                        } {
-                                            spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
+                    loop {
+                        match udp_socket.recv_from(&mut buffer) {
+                            Ok((size, remote_addr)) => {
+                                if size != 0 {
+                                    let buffer = &buffer[0..size];
+                                    match handle_udp_packet(remote_addr.clone(), buffer, clients.clone(), &spawner, network_handle.clone()) {
+                                        Err(HandlePacketError::CommunicationFailure) => {
+                                            if let Some(client_id) = {
+                                                let clients = unsafe { &mut *clients.get() };
+                                                clients.id_by_socket_addr(&remote_addr)
+                                            } {
+                                                spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
+                                            }
                                         }
-                                    }
-                                    _ => ()
-                                };
-                            }
-                        },
-                        Err(e) if e.kind() == io::ErrorKind::ConnectionReset => (),
-                        Err(_) => return Err(CommsServerError::IoError),
-                    };
+                                        _ => ()
+                                    };
+                                }
+                            },
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                            Err(e) if e.kind() == io::ErrorKind::ConnectionReset => (),
+                            Err(_) => return Err(CommsServerError::IoError),
+                        };
+                    }
                 }
                 if event.is_writable() {
                     udp_socket_writable = true;
@@ -118,18 +121,26 @@ fn main() -> Result<(), CommsServerError> {
                     }
                 }
             } else if token == tcp_listener_token {
-                let (mut stream, _) = tcp_listener.accept()?;
-                let client_id = next_client_id() as ClientId;
-                let token = Token(client_id as usize);
-                poll.registry().register(&mut stream, token, Interest::READABLE | Interest::WRITABLE)?;
+                loop {
+                    let mut stream = match tcp_listener.accept() {
+                        Ok((stream, _)) => stream,
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            break;
+                        },
+                        Err(e) => panic!(e),
+                    };
+                    let client_id = next_client_id() as ClientId;
+                    let token = Token(client_id as usize);
+                    poll.registry().register(&mut stream, token, Interest::READABLE | Interest::WRITABLE)?;
 
-                let clients = unsafe { &mut *clients.get() };
-                clients.connecting.insert(client_id, ConnectingClient {
-                    connection: Connection::new(stream),
-                    udp_addr: None,
-                });
+                    let clients = unsafe { &mut *clients.get() };
+                    clients.connecting.insert(client_id, ConnectingClient {
+                        connection: Connection::new(stream),
+                        udp_addr: None,
+                    });
 
-                spawner.spawn(on_connect(network_handle.clone(), client_id));
+                    spawner.spawn(on_connect(network_handle.clone(), client_id));
+                }
             } else { // it's a TCP stream event
                 if event.is_readable() {
                     let client_id = token.0 as ClientId;

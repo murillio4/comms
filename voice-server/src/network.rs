@@ -92,7 +92,15 @@ impl OutgoingQueue {
                 connection.tcp_writable = false;
                 connection.outgoing_queue.push_front(packet)
             },
-            Err(_) => return Err(CommunicationFailure(packet.dest)),
+            Err(_) => {
+                // We say we're "done()" with this future, but it's not obvious to the calling
+                // future that this packet failed to reach its destination. This could cause
+                // issues if there's some back-and-forth between client and server, and the
+                // associated logic "waits" for a response, not knowing that a send failed here
+                // Perhaps we should be able to "packet.finish.failed()"? Hmm.
+                packet.finish.done();
+                return Err(CommunicationFailure(packet.dest))
+            },
         }
         Ok(())
     }
