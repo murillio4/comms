@@ -2,8 +2,6 @@ use std::net::{UdpSocket, TcpStream};
 use std::time::{SystemTime, Duration};
 use clap::{App, Arg};
 use std::io;
-#[cfg(windows)]
-use voice_lib::winlib::bump_priority;
 use voice_lib::packet::{Packet, Hello, PacketBody, AssociateUdpAccepted, FinishConnect, AssociateUdp, FinishConnectAccepted, AudioFromClient};
 use std::num::NonZeroU64;
 use std::io::{Read, Write};
@@ -11,7 +9,7 @@ use voice_lib::serialization::{HeaderParsedPacket, serialize, DeserializeError, 
 
 fn main() -> Result<(), BeepClientErr> {
     #[cfg(windows)]
-        bump_priority();
+    voice_lib::winlib::bump_priority();
 
     let matches = App::new("Beep Client")
         .version("0.1")
@@ -72,10 +70,10 @@ fn main() -> Result<(), BeepClientErr> {
     let sample_rate = 48000f32;
     let mut sample_clock = 0f32;
 
-    // Produce a sinusoid of maximum amplitude.
+    // Produce a sinusoid
     let mut next_value = || {
         sample_clock = (sample_clock + 1.0) % sample_rate;
-        ((sample_clock * 440.0 * 2.0 * std::f32::consts::PI / sample_rate).sin() * std::i16::MAX as f32 * 0.2) as i16
+        ((sample_clock * 440.0 * 2.0 * std::f32::consts::PI / sample_rate).sin() * 0.2) as f32
     };
 
     let start = SystemTime::now();
@@ -83,25 +81,29 @@ fn main() -> Result<(), BeepClientErr> {
     let mut next_packet_id = 3;
 
     loop {
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(3));
         let now = SystemTime::now();
         let diff = now.duration_since(start).unwrap();
         let ms = diff.as_millis();
-        let total_samples_since_start = ms * 48;
-        let sample_count_to_send = total_samples_since_start - sample_count;
-        sample_count = total_samples_since_start;
+        let samples_since_start_count = ms * 48;
 
-        let mut samples = Vec::with_capacity(sample_count_to_send as usize * 2);
-        for _ in 0..sample_count_to_send {
-            let value = next_value();
-            samples.extend(&value.to_le_bytes());
+        while samples_since_start_count - sample_count >= 480 {
+            sample_count += 480;
+            let mut chunk = [0f32; 480];
+            for i in 0..480 {
+                chunk[i] = next_value();
+            }
+
+            let bytes = chunk.iter()
+                .flat_map(|sample| sample.to_le_bytes().to_vec())
+                .collect();
+            udp.send(&serialize(
+                NonZeroU64::new(next_packet_id).unwrap(),
+                None,
+                AudioFromClient(bytes)
+            )?)?;
+            next_packet_id += 1;
         }
-        udp.send(&serialize(
-            NonZeroU64::new(next_packet_id).unwrap(),
-            None,
-            AudioFromClient(samples),
-        )?)?;
-        next_packet_id += 1;
     }
 }
 

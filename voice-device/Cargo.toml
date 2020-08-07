@@ -1,0 +1,16 @@
+[package]
+name = "voice-device"
+version = "0.1.0"
+authors = ["Mitchell Hentges <mitch9654@mozilla.com>"]
+edition = "2018"
+
+[dependencies]
+sample = "0.11.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+lazy_static = "1.4"
+winapi = { version = "0.3", features = ["audioclient", "avrt", "basetsd", "coml2api", "combaseapi", "devpkey", "errhandlingapi", "ksmedia", "mmdeviceapi", "mmreg", "objbase", "synchapi", "winbase", "winnt", "wtypes"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.69"
+libpulse-binding = { version = "2.13", default-features = false }

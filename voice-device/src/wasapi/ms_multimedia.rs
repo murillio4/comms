@@ -1,7 +1,7 @@
 use winapi::um::{audioclient, audiosessiontypes, combaseapi};
 use winapi::shared::{mmreg, winerror, ksmedia, guiddef};
-use crate::audio::wasapi::com::check_result;
-use crate::audio::wasapi::stream::{Format, SampleFormat, SampleRate};
+use crate::wasapi::com::check_result;
+use crate::wasapi::stream::{Format, SampleFormat, SampleRate};
 use winapi::shared::minwindef::{WORD, DWORD};
 use std::mem;
 

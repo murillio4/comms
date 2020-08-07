@@ -13,6 +13,7 @@ use voice_lib::serialization::DeserializeError;
 use crate::network;
 use crate::network::ipc::{ConnectError, NetworkEvent, NetworkHandle};
 use crate::ui::ipc::UICommand;
+use crate::audio::ipc::{AudioHandle, AudioCommand};
 
 pub mod ipc;
 
@@ -41,6 +42,7 @@ struct LocalStorage {
 }
 
 async fn try_connect(
+    audio_handle: AudioHandle,
     network: NetworkHandle,
     ui: Rc<RefCell<UiModel>>
 ) {
@@ -100,6 +102,10 @@ async fn try_connect(
 
         match connect_result {
             Ok(users) => {
+                for (client_id, _) in users.iter() {
+                    audio_handle.send(AudioCommand::NewClient(*client_id)).unwrap()
+                }
+
                 let col_indices: [u32; 2] = [
                     Columns::Id as u32,
                     Columns::Username as u32,
@@ -171,6 +177,7 @@ struct UiModel {
 
 async fn handle_network_events(
     mut receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
+    audio_handle: AudioHandle,
     network: NetworkHandle,
     ui: Rc<RefCell<UiModel>>,
 ) {
@@ -203,19 +210,20 @@ async fn handle_network_events(
             },
             NetworkEvent::Packet(packet) => {
                 if let UiState::Main { user_list_model } = ui.borrow().state.clone() {
-                    let result: Result<(), DeserializeError> = (move || {
+                    let result: Result<(), DeserializeError> = {
                         match packet.kind() {
                             UserJoined::KIND_ID => {
-                                let packet: Packet<UserJoined> = packet.finish_parse()?;
+                                let packet: Packet<UserJoined> = packet.finish_parse().unwrap();
+                                audio_handle.send(AudioCommand::NewClient(packet.body.client_id)).unwrap();
                                 let col_indices: [u32; 2] = [
                                     Columns::Id as u32,
                                     Columns::Username as u32,
                                 ];
-                                user_list_model.set(&user_list_model.append(), &col_indices, &[&(packet.body.id as u32), &packet.body.name]);
+                                user_list_model.set(&user_list_model.append(), &col_indices, &[&(packet.body.client_id as u32), &packet.body.name]);
                             },
                             UserLeft::KIND_ID => {
-                                let packet: Packet<UserLeft> = packet.finish_parse()?;
-                                let id = packet.body.id as u32;
+                                let packet: Packet<UserLeft> = packet.finish_parse().unwrap();
+                                let id = packet.body.client_id as u32;
                                 let iter = user_list_model.get_iter_first().unwrap();
                                 loop {
                                     let value = user_list_model.get_value(&iter, Columns::Id as i32)
@@ -235,7 +243,7 @@ async fn handle_network_events(
                         }
 
                         Ok(())
-                    })();
+                    };
                     if let Err(_) = result {
                         let builder = &ui.borrow().builder;
                         let connect_failure_status: gtk::Label = builder.get_object("connect_failure_status").unwrap();
@@ -264,8 +272,13 @@ fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
     application.run(&std::env::args().collect::<Vec<_>>());
 }
 
-pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>, ui_receiver: std::sync::mpsc::Receiver<UICommand>) {
-
+pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>, ui_receiver: std::sync::mpsc::Receiver<UICommand>, audio_handle: AudioHandle) {
+    let command = ui_receiver.recv().unwrap();
+    match command {
+        UICommand::AudioIPCReady => (),
+        _ => panic!("Expected first UICommand to be 'AudioIPCReady'"),
+    };
+    audio_handle.send(AudioCommand::ListDevices).unwrap();
     let ui_cmd_from_audio: UICommand = ui_receiver.recv().unwrap();
     let (input_devices, output_devices) = match ui_cmd_from_audio {
         UICommand::DevicesFound {
@@ -273,7 +286,8 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
             output_devices
         } => {
             (input_devices, output_devices)
-        }
+        },
+        _ => panic!("Expected second UICommand to be 'DevicesFound'"),
     };
 
     let initial_local_storage: Option<LocalStorage> = ProjectDirs::from("", "Comms", "Comms")
@@ -295,6 +309,7 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
         let glib_context = glib::MainContext::default();
         glib_context.spawn_local(handle_network_events(
             network_event_receiver,
+            audio_handle.clone(),
             network.clone(),
             ui.clone(),
         ));
@@ -326,6 +341,7 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
             let ui = ui.clone();
             Rc::new(RefCell::new(move || {
                 glib_context.spawn_local(try_connect(
+                    audio_handle.clone(),
                     network.clone(),
                     ui.clone(),
                 ));

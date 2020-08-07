@@ -1,7 +1,7 @@
 use voice_lib::serialization::WritePacketBuilder;
 use crate::task::{SyncUnsafeCell, EndpointError, PacketFuture, PacketFinish};
 use std::sync::Arc;
-use voice_lib::packet::{PacketId, PacketBody, ClientId};
+use voice_lib::packet::{PacketId, PacketBody, ClientId, PacketKind};
 use std::fmt::Debug;
 use std::cell::UnsafeCell;
 use voice_lib::network::Protocol;
@@ -37,6 +37,11 @@ impl OutgoingQueue {
                 Protocol::Tcp => {
                     if let Some(connection) = clients.connection_by_id(&packet.dest) {
                         connection.outgoing_queue.push_back(packet);
+                    } else {
+                        // I wonder if this will cause issues in higher layers if they expect a
+                        // packet to be sent, then wait for a (never coming) response.
+                        packet.finish.done();
+                        println!("connection could not be found :)");
                     }
                 }
             }
@@ -68,7 +73,10 @@ impl OutgoingQueue {
         match socket.send_to(&raw, addr) {
             Ok(_) => packet.finish.done(),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.udp_queue.push_front(packet),
-            Err(_) => return Err(CommunicationFailure(packet.dest)),
+            Err(_) =>  {
+                packet.finish.done();
+                return Err(CommunicationFailure(packet.dest))
+            },
         }
         Ok(())
     }
@@ -89,6 +97,7 @@ impl OutgoingQueue {
                 packet.finish.done();
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                println!("WouldBlock on sending {}", kind);
                 connection.tcp_writable = false;
                 connection.outgoing_queue.push_front(packet)
             },
@@ -132,8 +141,8 @@ pub struct NetworkHandle {
 }
 
 impl NetworkHandle {
-    pub fn send(&self, protocol: Protocol, dest: ClientId, builder: Arc<SyncUnsafeCell<WritePacketBuilder>>) -> PacketFuture {
-        let (future, finish) = PacketFuture::new();
+    pub fn send(&self, kind: PacketKind, protocol: Protocol, dest: ClientId, builder: Arc<SyncUnsafeCell<WritePacketBuilder>>) -> PacketFuture {
+        let (future, finish) = PacketFuture::new(kind);
         self.sender.send((protocol, OutgoingPacket {
             dest,
             builder,
@@ -164,6 +173,7 @@ pub enum Target {
 }
 
 pub struct SendPacket {
+    kind: PacketKind,
     destination: Target,
     protocol: Protocol,
     builder: Arc<SyncUnsafeCell<WritePacketBuilder>>,
@@ -176,6 +186,7 @@ impl SendPacket {
         let builder = WritePacketBuilder::new(reply_to, &packet)
             .map_err(|_| EndpointError::SerializeFailed { kind: B::KIND_ID, packet: Box::new(packet) })?;
         Ok(Self {
+            kind: B::KIND_ID,
             protocol: Protocol::Udp,
             destination,
             builder: Arc::new(SyncUnsafeCell(UnsafeCell::new(builder))),
@@ -188,6 +199,7 @@ impl SendPacket {
         let builder = WritePacketBuilder::new(reply_to, &packet)
             .map_err(|_| EndpointError::SerializeFailed { kind: B::KIND_ID, packet: Box::new(packet) })?;
         Ok(Self {
+            kind: B::KIND_ID,
             destination,
             protocol: Protocol::Tcp,
             builder: Arc::new(SyncUnsafeCell(UnsafeCell::new(builder))),
@@ -197,11 +209,12 @@ impl SendPacket {
     pub async fn send(self, handle: &NetworkHandle) {
         let protocol = self.protocol;
         let builder = self.builder;
+        let kind = self.kind.clone();
         match self.destination {
-            Target::One(dest) => handle.send(protocol, dest.clone(), builder).await,
+            Target::One(dest) => handle.send(kind, protocol, dest.clone(), builder).await,
             Target::Many(clients) => {
                 let futures: Vec<PacketFuture> = clients.into_iter()
-                    .map(|c| handle.send(protocol.clone(), c, builder.clone()))
+                    .map(|c| handle.send(kind, protocol.clone(), c, builder.clone()))
                     .collect();
                 join_all(futures).await;
             }
