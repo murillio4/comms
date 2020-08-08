@@ -39,6 +39,12 @@ impl Connection {
     pub fn next_packet_id(&mut self) -> PacketId {
         self.next_packet_id.next()
     }
+
+    pub fn clear_queue_for_disconnect(&mut self) {
+        for packet in self.outgoing_queue.drain(..) {
+            packet.finish.done();
+        }
+    }
 }
 
 pub struct ConnectingClient {

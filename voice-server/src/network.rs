@@ -1,7 +1,7 @@
 use voice_lib::serialization::WritePacketBuilder;
 use crate::task::{SyncUnsafeCell, EndpointError, PacketFuture, PacketFinish};
 use std::sync::Arc;
-use voice_lib::packet::{PacketId, PacketBody, ClientId, PacketKind};
+use voice_lib::packet::{PacketId, PacketBody, ClientId, PacketKind, Disconnect};
 use std::fmt::Debug;
 use std::cell::UnsafeCell;
 use voice_lib::network::Protocol;
@@ -48,37 +48,48 @@ impl OutgoingQueue {
         }
     }
 
-    pub fn attempt_write_udp(&mut self, socket: &UdpSocket, socket_writable: &mut bool, clients: &mut Clients) -> Result<(), CommunicationFailure> {
+    pub fn attempt_write_udp(&mut self, socket: &UdpSocket, socket_writable: &mut bool, clients: &mut Clients) -> Vec<ClientId> {
+        let mut failures = Vec::new();
+
         if !*socket_writable {
-            return Ok(());
+            return failures;
         }
 
-        let (packet_id, packet, addr) = loop {
+        loop {
             let packet = match self.udp_queue.pop_front() {
-                None => return Ok(()),
+                None => break,
                 Some(p) => p,
             };
 
-            break match clients.client_by_id(&packet.dest) {
-                None => continue,
-                Some(AnyClientRef::Established(c)) => (c.connection.next_packet_id(), packet, c.udp_addr),
-                Some(AnyClientRef::Connecting(c)) => (c.connection.next_packet_id(), packet, c.udp_addr.expect("attempting to send UDP packet to client that hasn't associated yet")),
+            let (packet_id, addr) = match clients.client_by_id(&packet.dest) {
+                None => {
+                    packet.finish.done();
+                    continue;
+                },
+                Some(AnyClientRef::Established(c)) => (c.connection.next_packet_id(), c.udp_addr),
+                Some(AnyClientRef::Connecting(c)) => (c.connection.next_packet_id(), c.udp_addr.expect("attempting to send UDP packet to client that hasn't associated yet")),
             };
-        };
 
-        *socket_writable = false;
-        let builder = unsafe { &mut *packet.builder.get() };
-        let kind = builder.kind;
-        let raw = builder.as_raw(packet_id).unwrap_or_else(|_| panic!("Serialization failed for packet id {} kind {}", packet_id, kind));
-        match socket.send_to(&raw, addr) {
-            Ok(_) => packet.finish.done(),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.udp_queue.push_front(packet),
-            Err(_) =>  {
-                packet.finish.done();
-                return Err(CommunicationFailure(packet.dest))
-            },
+            *socket_writable = false;
+            let builder = unsafe { &mut *packet.builder.get() };
+            let kind = builder.kind;
+
+            let raw = builder.as_raw(packet_id).unwrap_or_else(|_| panic!("Serialization failed for packet id {} kind {}", packet_id, kind));
+            match socket.send_to(&raw, addr) {
+                Ok(_) => packet.finish.done(),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    self.udp_queue.push_front(packet);
+                    break;
+                },
+                Err(_) =>  {
+                    packet.finish.done();
+                    if kind != Disconnect::KIND_ID {
+                        failures.push(packet.dest)
+                    }
+                },
+            }
         }
-        Ok(())
+        failures
     }
 
     pub fn attempt_write_tcp_for_client(&mut self, connection: &mut Connection) -> Result<(), CommunicationFailure> {
@@ -108,29 +119,25 @@ impl OutgoingQueue {
                 // associated logic "waits" for a response, not knowing that a send failed here
                 // Perhaps we should be able to "packet.finish.failed()"? Hmm.
                 packet.finish.done();
-                return Err(CommunicationFailure(packet.dest))
+                if kind != Disconnect::KIND_ID {
+                    return Err(CommunicationFailure(packet.dest))
+                }
             },
         }
         Ok(())
     }
 
-    pub fn attempt_write_all(&mut self, socket: &UdpSocket, udp_socket_writable: &mut bool, clients: &mut Clients) -> Result<(), Vec<CommunicationFailure>> {
-        let mut failures = Vec::new();
-        if let Err(e) = self.attempt_write_udp(socket, udp_socket_writable, clients) {
-            failures.push(e);
-        }
+    pub fn attempt_write_all(&mut self, socket: &UdpSocket, udp_socket_writable: &mut bool, clients: &mut Clients) -> Vec<ClientId> {
+        let mut failures = self.attempt_write_udp(socket, udp_socket_writable, clients);
 
         let writable_connections = clients.writable_connections();
         for connection in writable_connections.into_iter() {
             if let Err(e) = self.attempt_write_tcp_for_client(connection) {
-                failures.push(e);
+                failures.push(e.0);
             }
         }
 
-        match failures.is_empty() {
-            true => Ok(()),
-            false => Err(failures)
-        }
+        failures
     }
 }
 

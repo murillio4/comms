@@ -19,7 +19,7 @@ use std::sync::Arc;
 use crate::task::{SyncUnsafeCell, EndpointError};
 use voice_lib::packet::ClientId;
 use voice_lib::serialization::DeserializeError;
-use crate::network::{NetworkHandle, SendPacket, Target, CommunicationFailure};
+use crate::network::{NetworkHandle, SendPacket, Target};
 use crate::client::{Clients, ConnectingClient, Connection};
 use crate::endpoints::{handle_udp_packet, HandlePacketError, handle_tcp_stream, spawn_close_connection, StreamStatus, CloseConnectionReason};
 
@@ -100,22 +100,22 @@ fn main() -> Result<(), CommsServerError> {
                 }
                 if event.is_writable() {
                     udp_socket_writable = true;
-                    if let Err(CommunicationFailure(client_id)) = {
+                    let failed_client_ids = {
                         let mut clients = unsafe { &mut *clients.get() };
                         outgoing_queue.attempt_write_udp(&udp_socket, &mut udp_socket_writable, &mut clients)
-                    } {
+                    };
+                    for client_id in failed_client_ids {
                         spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
                     }
                 }
             } else if token == outgoing_token {
-                if let Err(failing_clients) = {
+                let failed_client_ids = {
                     let mut clients = unsafe { &mut *clients.get() };
                     outgoing_queue.sort_from_handle(&mut clients);
                     outgoing_queue.attempt_write_all(&udp_socket, &mut udp_socket_writable, &mut clients)
-                } {
-                    for failure in failing_clients {
-                        spawn_close_connection(failure.0, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
-                    }
+                };
+                for client_id in failed_client_ids {
+                    spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
                 }
             } else if token == tcp_listener_token {
                 loop {

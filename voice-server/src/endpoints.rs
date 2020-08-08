@@ -116,7 +116,13 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> Re
     let remaining_client_ids = {
         let clients = unsafe { &mut *context.clients.get() };
         if reason != CloseConnectionReason::SocketClosed {
-            clients.remove_client(&context.client_id).expect("Tried to close connection with nonexistant client");
+            clients
+                .remove_client(&context.client_id)
+                .map(|c| match c {
+                    AnyClient::Established(mut c) => c.connection.clear_queue_for_disconnect(),
+                    AnyClient::Connecting(mut c) => c.connection.clear_queue_for_disconnect(),
+                })
+                .expect("Tried to close connection with nonexistent client");
         }
         clients.established.keys()
             .copied()
@@ -214,7 +220,7 @@ pub fn handle_udp_packet(
 pub enum StreamStatus {
     Normal,
     Closed,
-    Nonexistant,
+    Nonexistent,
 }
 
 pub fn handle_tcp_stream(
@@ -228,7 +234,7 @@ pub fn handle_tcp_stream(
         if let Some(client) = clients.remove_client(&client_id) {
             client
         } else {
-            return Ok(StreamStatus::Nonexistant);
+            return Ok(StreamStatus::Nonexistent);
         }
     };
 
