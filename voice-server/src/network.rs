@@ -69,7 +69,7 @@ impl OutgoingQueue {
         *socket_writable = false;
         let builder = unsafe { &mut *packet.builder.get() };
         let kind = builder.kind;
-        let raw = builder.as_raw(packet_id).expect(&format!("Serialization failed for packet id {} kind {}", packet_id, kind));
+        let raw = builder.as_raw(packet_id).unwrap_or_else(|_| panic!("Serialization failed for packet id {} kind {}", packet_id, kind));
         match socket.send_to(&raw, addr) {
             Ok(_) => packet.finish.done(),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.udp_queue.push_front(packet),
@@ -90,7 +90,7 @@ impl OutgoingQueue {
         let packet_id = connection.next_packet_id();
         let builder = unsafe { &mut *packet.builder.get() };
         let kind = builder.kind;
-        let raw = builder.as_raw(packet_id.clone()).expect(&format!("Serialization failed for packet id {} kind {}", packet_id, kind));
+        let raw = builder.as_raw(packet_id).unwrap_or_else(|_| panic!("Serialization failed for packet id {} kind {}", packet_id, kind));
         match connection.stream.internal.write(&raw) {
             Ok(_) => {
                 // TODO if not all bytes written to buffer, try to re-send later
@@ -155,7 +155,7 @@ impl NetworkHandle {
 
 pub fn queue_and_handle(waker: Waker) -> (NetworkHandle, OutgoingQueue) {
     let (sender, receiver) = sync_channel(10_000);
-    return (
+    (
         NetworkHandle {
             sender,
             waker: Arc::new(waker),
@@ -164,7 +164,7 @@ pub fn queue_and_handle(waker: Waker) -> (NetworkHandle, OutgoingQueue) {
             receiver,
             udp_queue: VecDeque::new(),
         }
-    );
+    )
 }
 
 pub enum Target {
@@ -209,9 +209,9 @@ impl SendPacket {
     pub async fn send(self, handle: &NetworkHandle) {
         let protocol = self.protocol;
         let builder = self.builder;
-        let kind = self.kind.clone();
+        let kind = self.kind;
         match self.destination {
-            Target::One(dest) => handle.send(kind, protocol, dest.clone(), builder).await,
+            Target::One(dest) => handle.send(kind, protocol, dest, builder).await,
             Target::Many(clients) => {
                 let futures: Vec<PacketFuture> = clients.into_iter()
                     .map(|c| handle.send(kind, protocol.clone(), c, builder.clone()))

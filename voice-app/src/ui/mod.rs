@@ -31,7 +31,7 @@ fn initialize_user_list(treeview: &gtk::TreeView) -> gtk::ListStore {
     ];
 
     let user_list_model = gtk::ListStore::new(&col_types);
-    treeview.set_model(Some(&user_list_model.clone()));
+    treeview.set_model(Some(&user_list_model));
     user_list_model
 }
 
@@ -244,7 +244,7 @@ async fn handle_network_events(
 
                         Ok(())
                     };
-                    if let Err(_) = result {
+                    if result.is_err() {
                         let builder = &ui.borrow().builder;
                         let connect_failure_status: gtk::Label = builder.get_object("connect_failure_status").unwrap();
                         connect_failure_status.set_text("Disconnecting from the server because of a network issue");
@@ -367,13 +367,10 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
         }
 
         let server_entry: gtk::Entry = builder.get_object("server_entry").unwrap();
-        {
-            let submit_connection_form = submit_connection_form.clone();
-            server_entry.connect_activate(move |_| {
-                let submit_fn = &mut *submit_connection_form.borrow_mut();
-                submit_fn();
-            });
-        }
+        server_entry.connect_activate(move |_| {
+            let submit_fn = &mut *submit_connection_form.borrow_mut();
+            submit_fn();
+        });
         let connect_form: gtk::Box = builder.get_object("connect_form").unwrap();
         stack.add_named(&connect_form, "connect");
 
@@ -388,17 +385,12 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
         treeview.append_column(&column);
 
         let disconnect_menu_item: gtk::MenuItem = builder.get_object("disconnect_menu_item").unwrap();
-        {
-            let ui = ui.clone();
-            let network = network.clone();
-            let glib_context = glib_context.clone();
-            disconnect_menu_item.connect_activate(move |_| {
-                glib_context.spawn_local(disconnect_from_server(
-                    ui.clone(),
-                    network.clone(),
-                ));
-            });
-        }
+        disconnect_menu_item.connect_activate(move |_| {
+            glib_context.spawn_local(disconnect_from_server(
+                ui.clone(),
+                network.clone(),
+            ));
+        });
 
         let inputs_submenu: gtk::Menu = builder.get_object("inputs_submenu").unwrap();
         let outputs_submenu: gtk::Menu = builder.get_object("outputs_submenu").unwrap();

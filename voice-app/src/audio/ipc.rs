@@ -9,12 +9,13 @@ use crate::audio::buffer::RcMultiplexer;
 use voice_device::audio_connection::{AudioConnection, EventLoopNotify};
 use voice_device::buffer::{InterruptReceiver, MaybeSharedPlaybackSource};
 use crate::audio::{AudioPlatformImpl, AudioPlatform};
+use voice_lib::AudioFrame;
 
 pub enum AudioCommand {
     NewClient(ClientId),
-    AudioFromClient(ClientId, [f32; 480]),
-    SwitchInputDevice(String),
-    SwitchOutputDevice(String),
+    AudioFromClient(ClientId, Box<AudioFrame>),
+    #[allow(dead_code)] SwitchInputDevice(String),
+    #[allow(dead_code)] SwitchOutputDevice(String),
     ListDevices,
     // TODO remove client
 }
@@ -39,7 +40,7 @@ pub struct AudioHandle {
 
 impl AudioHandle {
     pub fn send_audio(&mut self, id: ClientId, bytes: &[u8]) {
-        let mut samples = [0f32; 480];
+        let mut samples = Box::new([0f32; 480]);
         for i in 0..samples.len() {
             samples[i] = f32::from_le_bytes([
                 bytes[i*4],

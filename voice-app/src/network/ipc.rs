@@ -13,6 +13,7 @@ use crate::audio::ipc::AudioHandle;
 use crate::network::{WorkerInit, NextPollToken};
 use crate::network::future::{RequestError, SendResponse};
 use voice_lib::packet::Hello;
+use voice_lib::AudioFrame;
 
 #[derive(Debug)]
 pub enum NetworkEvent {
@@ -47,7 +48,7 @@ pub enum NetworkCommand {
         outgoing: WritePacketBuilder,
         send_response: Option<SendResponse<OwnedHeaderParsedPacket>>,
     },
-    SendAudio([f32; 480]),
+    SendAudio(Box<AudioFrame>),
     Connect {
         destination: SocketAddr,
         send_response: SendResponse<Result<Hello, ConnectError>>,
@@ -59,11 +60,11 @@ pub enum NetworkCommand {
 
 impl Display for NetworkCommand {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
-        match &self {
-            &Self::Packet { protocol, outgoing, .. } => f.write_str(&format!("{:?} Packet of kind {}", protocol, outgoing.kind)),
-            &Self::Connect { .. } => f.write_str("Connect"),
-            &Self::Disconnect { .. } => f.write_str("Disconnect"),
-            &Self::SendAudio { .. } => f.write_str("SendAudio"),
+        match self {
+            Self::Packet { protocol, outgoing, .. } => f.write_str(&format!("{:?} Packet of kind {}", protocol, outgoing.kind)),
+            Self::Connect { .. } => f.write_str("Connect"),
+            Self::Disconnect { .. } => f.write_str("Disconnect"),
+            Self::SendAudio { .. } => f.write_str("SendAudio"),
         }
     }
 }
@@ -87,7 +88,7 @@ impl NetworkHandle {
         let command_token = next_poll_token.create();
         let waker = Waker::new(poll.registry(), command_token).unwrap();
 
-        return (
+        (
             NetworkHandle {
                 sender: command_sender,
                 waker: Arc::new(waker),
@@ -101,7 +102,7 @@ impl NetworkHandle {
                 next_poll_token,
                 poll,
             }
-        );
+        )
     }
 
     pub fn command(&self, command: NetworkCommand) {
@@ -109,7 +110,7 @@ impl NetworkHandle {
         self.waker.wake().unwrap();
     }
 
-    pub fn audio(&self, frame: [f32; 480]) -> Result<(), SerializeError>
+    pub fn audio(&self, frame: Box<AudioFrame>) -> Result<(), SerializeError>
     {
         self.command(NetworkCommand::SendAudio(frame));
         Ok(())

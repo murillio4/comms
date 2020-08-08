@@ -30,7 +30,7 @@ impl EventLoopNotify for WasapiEventLoopNotify {
 pub fn event_loop_channel() -> (WasapiEventLoopRegistration, WasapiEventLoopNotify) {
     let win_handle = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
     (WasapiEventLoopRegistration {
-        win_handle: win_handle.clone()
+        win_handle
     }, WasapiEventLoopNotify {
         win_handle
     })
@@ -46,9 +46,9 @@ enum WasapiHandle {
 impl WasapiHandle {
     fn get_winnt_handle(&self) -> winnt::HANDLE {
         match self {
-            WasapiHandle::MicStream(handle) => handle.clone(),
-            WasapiHandle::PlaybackStream(handle) => handle.clone(),
-            WasapiHandle::Receiver(handle) => handle.clone(),
+            WasapiHandle::MicStream(handle) => *handle,
+            WasapiHandle::PlaybackStream(handle) => *handle,
+            WasapiHandle::Receiver(handle) => *handle,
         }
     }
 }
@@ -65,7 +65,7 @@ impl SelectWasapiHandle for Vec<WasapiHandle> {
             Err(description) => return Err(description)
         };
 
-        self.get(handle_index).map(|h| h.clone()).ok_or_else(|| unimplemented!())
+        Ok(self.get(handle_index).cloned().unwrap())
     }
 }
 
@@ -107,18 +107,18 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>, I: Interru
 
     fn run(mut self) {
         let mut handles: Vec<WasapiHandle> = vec![
-            WasapiHandle::MicStream(self.connection.mic_stream.notify.win_handle.clone()),
-            WasapiHandle::PlaybackStream(self.connection.playback_stream.notify.win_handle.clone()),
+            WasapiHandle::MicStream(self.connection.mic_stream.notify.win_handle),
+            WasapiHandle::PlaybackStream(self.connection.playback_stream.notify.win_handle),
         ];
         if let Some(receiver) = &self.receiver {
-            handles.push(WasapiHandle::Receiver(receiver.registration().win_handle.clone()));
+            handles.push(WasapiHandle::Receiver(receiver.registration().win_handle));
         }
 
         loop {
             match handles.select() {
                 Err(_) => todo!("failed to select WASAPI handle"),
                 Ok(WasapiHandle::MicStream(_)) => {
-                    if let Err(_) = self.connection.mic_stream.invoke(&mut self.connection.mic_sink) {
+                    if self.connection.mic_stream.invoke(&mut self.connection.mic_sink).is_err() {
                         unimplemented!("mic error - change device?");
                     }
                 }
@@ -126,7 +126,7 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>, I: Interru
                     let source = &mut self.connection.playback_source;
                     let stream = &mut self.connection.playback_stream;
                     source.with(|mut playback| {
-                        if let Err(_) = stream.invoke(&mut playback) {
+                        if stream.invoke(&mut playback).is_err() {
                             unimplemented!("playback error - change device?");
                         }
                     });
@@ -160,7 +160,6 @@ fn wait_for_handle_signal(handles: &[winnt::HANDLE]) -> Result<usize, String> {
         return Err(description);
     }
 
-    debug_assert!(result >= winbase::WAIT_OBJECT_0);
     let handle_idx = (result - winbase::WAIT_OBJECT_0) as usize;
     Ok(handle_idx)
 }

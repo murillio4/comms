@@ -81,22 +81,17 @@ impl Clients {
         self.established.iter_mut()
             .map(|(_, c)| &mut c.connection)
             .chain(connecting)
-            .filter_map(|c| {
-                match c.tcp_writable {
-                    true => Some(c),
-                    false => None,
-                }
-            })
+            .filter(|c| c.tcp_writable)
             .collect()
     }
 
     pub fn id_by_socket_addr(&self, addr: &SocketAddr) -> Option<ClientId> {
         self.established.iter()
             .find(|(_, c)| &c.udp_addr == addr)
-            .map(|(id, _)| id.clone())
-            .or(self.connecting.iter()
+            .map(|(id, _)| *id)
+            .or_else(|| self.connecting.iter()
                 .find(|(_, c)| c.udp_addr == Some(*addr))
-                .map(|(id, _)| id.clone()))
+                .map(|(id, _)| *id))
     }
 
     pub fn connection_by_id(&mut self, client_id: &ClientId) -> Option<&mut Connection>
@@ -107,15 +102,16 @@ impl Clients {
     }
 
     pub fn client_by_id(&mut self, client_id: &ClientId) -> Option<AnyClientRef> {
-        self.established.get_mut(client_id)
-            .map(|c| AnyClientRef::Established(c))
-            .or(self.connecting.get_mut(client_id).map(|c| AnyClientRef::Connecting(c)))
+        match self.established.get_mut(client_id) {
+            Some(c) => Some(AnyClientRef::Established(c)),
+            None => self.connecting.get_mut(client_id).map(AnyClientRef::Connecting)
+        }
     }
 
     pub fn remove_client(&mut self, client_id: &ClientId) -> Option<AnyClient> {
         self.established.remove(client_id)
-            .map(|c| AnyClient::Established(c))
-            .or(self.connecting.remove(client_id).map(|c| AnyClient::Connecting(c)))
+            .map(AnyClient::Established)
+            .or_else(|| self.connecting.remove(client_id).map(AnyClient::Connecting))
     }
 
     pub fn insert_client(&mut self, client_id: ClientId, client: AnyClient) {

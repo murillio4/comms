@@ -21,10 +21,10 @@ struct DeviceQueryStatus {
 
 impl DeviceQueryStatus {
     pub fn new() -> Self {
-        return Self {
+        Self {
             finished: false,
             devices: vec![],
-        };
+        }
     }
 }
 
@@ -82,12 +82,12 @@ impl AudioConnection for PulseAudioConnection {
                         input_devices.finished = true;
                         if output_devices.finished {
                             let mut callback = callback.borrow_mut();
-                            callback.take().map(|cb| {
+                            if let Some(cb) = callback.take() {
                                 cb(FoundDevices {
                                     input_devices: input_devices.devices.drain(..).collect(),
                                     output_devices: output_devices.devices.drain(..).collect(),
                                 })
-                            });
+                            };
                         }
                     },
                     ListResult::Error => panic!("Failed to get audio inputs"),
@@ -115,12 +115,12 @@ impl AudioConnection for PulseAudioConnection {
                     output_devices.finished = true;
                     if input_devices.finished {
                         let mut callback = callback.borrow_mut();
-                        callback.take().map(|cb| {
+                        if let Some(cb) = callback.take() {
                             cb(FoundDevices {
                                 input_devices: input_devices.devices.drain(..).collect(),
                                 output_devices: output_devices.devices.drain(..).collect(),
                             })
-                        });
+                        };
                     }
                 },
                 ListResult::Error => panic!("Failed to get audio outputs"),

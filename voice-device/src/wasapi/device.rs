@@ -96,7 +96,7 @@ impl IAudioClientWrapper {
     pub fn create_notify(&self) -> Result<WasapiEventLoopRegistration, BuildStreamError> {
         let audio_client = self.0;
         let event = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
-        if event == ptr::null_mut() {
+        if event.is_null() {
             unsafe { (*audio_client).Release() };
             return Err(BuildStreamError::BackendSpecific("failed to create event".to_string()));
         }
@@ -231,7 +231,7 @@ impl IMMDeviceWrapper {
 
     fn id(&self) -> Result<String, ()>{
         // TODO: Return the actual ID --- more pointer work
-        return Ok("LATER NERD".to_string());
+        Ok("LATER NERD".to_string())
     }
 
     fn default(data_flow: mmdeviceapi::EDataFlow) -> Option<IMMDeviceWrapper> {
@@ -289,7 +289,7 @@ impl IMMDeviceWrapper {
                 result.push(device_wrapper);
             }
 
-            return result;
+            result
         }
     }
 }

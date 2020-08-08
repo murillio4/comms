@@ -21,7 +21,7 @@ impl AudioPlatform for PulseAudioPlatform {
     fn create_channel() -> (Self::Registration, Self::Notify) {
         let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK) };
         (PulseEventLoopRegistration {
-            fd: fd.clone()
+            fd
         }, PulseEventLoopNotify {
             fd
         })

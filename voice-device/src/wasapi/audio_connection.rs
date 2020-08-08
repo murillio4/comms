@@ -5,6 +5,8 @@ use crate::wasapi::stream::{WasapiMicStream, RawWasapiStream, WasapiPlaybackStre
 use crate::wasapi::event_loop::{WasapiEventLoopBuilder, WasapiEventLoopRegistration};
 use crate::buffer::{MicSink, PlaybackSource, InterruptReceiver, MaybeSharedPlaybackSource};
 
+pub struct WasapiParameters;
+
 pub struct WasapiAudioConnection<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> {
     pub mic_stream: WasapiMicStream<M>,
     pub playback_stream: WasapiPlaybackStream<P>,

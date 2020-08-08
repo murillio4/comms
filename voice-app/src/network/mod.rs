@@ -236,12 +236,10 @@ impl Worker {
                                 send_response,
                             } => {
                                 let mut connection = &mut self.connection;
-                                if let Err(e) = connect(&mut connection, &mut poll, destination, &mut next_poll_token) {
+                                if let Err(e) = connect(&mut connection, &poll, destination, &mut next_poll_token) {
                                     send_response.done(Err(e));
-                                } else {
-                                    if let Some(connection) = &mut connection {
-                                        connection.connect_response = Some(send_response);
-                                    }
+                                } else if let Some(connection) = &mut connection {
+                                    connection.connect_response = Some(send_response);
                                 }
                             }
                             NetworkCommand::Disconnect {
@@ -337,9 +335,9 @@ fn attempt_send_next_udp_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, s
         Ok(_) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
             outgoing_packet_queue.push_front(packet);
-            return Ok(());
+            Ok(())
         }
-        Err(e) => return Err(e)
+        Err(e) => Err(e)
     }
 }
 
@@ -360,16 +358,16 @@ fn attempt_send_next_tcp_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, s
         Ok(_) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
             outgoing_packet_queue.push_front(packet);
-            return Ok(());
+            Ok(())
         }
-        Err(e) => return Err(e)
+        Err(e) => Err(e)
     }
 }
 
 #[derive(Debug)]
 pub enum NetworkError {
     Io(Option<io::Error>),
-    SendCommandToAudioThread(SendError<AudioCommand>),
+    SendCommandToAudioThread,
     ReceiveFromAudioThread(RecvError),
 }
 
@@ -380,8 +378,8 @@ impl From<io::Error> for NetworkError {
 }
 
 impl From<SendError<AudioCommand>> for NetworkError {
-    fn from(e: SendError<AudioCommand>) -> Self {
-        NetworkError::SendCommandToAudioThread(e)
+    fn from(_: SendError<AudioCommand>) -> Self {
+        NetworkError::SendCommandToAudioThread
     }
 }
 
@@ -394,7 +392,7 @@ impl From<RecvError> for NetworkError {
 #[derive(Debug)]
 pub enum SendToNetworkThreadError {
     SerializeFailed(SerializeError),
-    SendFailed(SendError<NetworkCommand>),
+    SendFailed,
     SetReadinessFailed(io::Error),
 }
 
@@ -405,8 +403,8 @@ impl From<SerializeError> for SendToNetworkThreadError {
 }
 
 impl From<SendError<NetworkCommand>> for SendToNetworkThreadError {
-    fn from(e: SendError<NetworkCommand>) -> Self {
-        SendToNetworkThreadError::SendFailed(e)
+    fn from(_: SendError<NetworkCommand>) -> Self {
+        SendToNetworkThreadError::SendFailed
     }
 }
 

@@ -45,7 +45,7 @@ impl PulseEventLoopBuilder {
     }
 
     pub fn with_interrupt(mut self, receiver: impl InterruptReceiver<PulseEventLoopRegistration> + 'static) -> Self {
-        let fd = receiver.registration().fd.clone();
+        let fd = receiver.registration().fd;
         let receiver = Rc::new(RefCell::new(receiver));
         let connection = Rc::new(self.connection.take().unwrap());
         let io_event_handle = {
