@@ -149,8 +149,8 @@ enum MmregFormat {
 impl MmregFormat {
     fn as_word(&self) -> WORD {
         match self {
-            &MmregFormat::PCM => mmreg::WAVE_FORMAT_PCM,
-            &MmregFormat::EXTENSIBLE => mmreg::WAVE_FORMAT_EXTENSIBLE
+            MmregFormat::PCM => mmreg::WAVE_FORMAT_PCM,
+            MmregFormat::EXTENSIBLE => mmreg::WAVE_FORMAT_EXTENSIBLE
         }
     }
 }

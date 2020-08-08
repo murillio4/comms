@@ -5,6 +5,7 @@ use crate::network::ipc::NetworkHandle;
 use voice_device::buffer::{PlaybackSource, MicSink, MaybeSharedPlaybackSource};
 use glib::bitflags::_core::cell::RefCell;
 use std::rc::Rc;
+use voice_lib::AudioFrame;
 
 pub struct Multiplexer {
     client_queues: HashMap<ClientId, VecDeque<f32>>,
@@ -12,7 +13,7 @@ pub struct Multiplexer {
 
 impl Multiplexer {
     pub fn new() -> Self {
-        return Multiplexer {
+        Multiplexer {
             client_queues: HashMap::new(),
         }
     }
@@ -21,7 +22,7 @@ impl Multiplexer {
         self.client_queues.insert(id, VecDeque::new());
     }
 
-    pub fn append_chunk_from_client(&mut self, id: ClientId, data: [f32; 480]) {
+    pub fn append_chunk_from_client(&mut self, id: ClientId, data: Box<AudioFrame>) {
         let queue = match self.client_queues.get_mut(&id) {
             Some(queue ) => queue,
             None => return,
@@ -39,7 +40,7 @@ impl PlaybackSource for Multiplexer {
         let init = init.to_signed_sample();
         self.client_queues.values_mut()
             .fold(init, |acc, queue| {
-                let next_sample = queue.pop_front().unwrap_or(Sample::equilibrium());
+                let next_sample = queue.pop_front().unwrap_or_else(Sample::equilibrium);
                 let acc = acc.add_amp(next_sample);
                 if acc == f32::INFINITY {
                     f32::MAX
@@ -73,7 +74,7 @@ pub struct MicBuffer {
 
 impl MicBuffer {
     pub fn new(network_handle: NetworkHandle) -> Self {
-        return Self {
+        Self {
             network_handle,
             queue: VecDeque::new()
         }
@@ -87,7 +88,7 @@ impl MicSink for MicBuffer {
 
     fn publish_chunks(&mut self) {
         while self.queue.len() >= 480 {
-            let mut chunk = [0f32; 480];
+            let mut chunk = Box::new([0f32; 480]);
             for i in 0..chunk.len() {
                 chunk[i] = self.queue.pop_front().expect("Queue should have 480 samples");
             }

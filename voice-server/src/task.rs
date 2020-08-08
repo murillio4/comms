@@ -24,7 +24,7 @@ impl Future for PacketFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let receiver = self.receiver.0.get();
         match unsafe { &mut *receiver }.try_recv() {
-            Ok(Some(response)) => Poll::Ready(response),
+            Ok(Some(())) => Poll::Ready(()),
             Ok(None) => {
                 let waker = self.waker.0.get();
                 unsafe { *waker = Some(cx.waker().clone()) };

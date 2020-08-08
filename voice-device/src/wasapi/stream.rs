@@ -18,8 +18,8 @@ pub enum SampleFormat {
 impl SampleFormat {
     pub fn sample_size(&self) -> usize {
         match self {
-            &SampleFormat::I16 => mem::size_of::<i16>(),
-            &SampleFormat::F32 => mem::size_of::<f32>(),
+            SampleFormat::I16 => mem::size_of::<i16>(),
+            SampleFormat::F32 => mem::size_of::<f32>(),
         }
     }
 }
@@ -129,11 +129,14 @@ impl<M: MicSink> WasapiMicStream<M> {
 
             match self.raw_stream.sample_format {
                 SampleFormat::F32 => {
+                    // When the AudioClient is initialized, it is configured to align its buffer
+                    // according to the audio format in use.
+                    #[allow(clippy::cast_ptr_alignment)]
                     let buffer_data = raw_buffer as *mut _ as *const f32;
                     let sample_buffer = unsafe { slice::from_raw_parts(buffer_data, buffer_len) };
                     let sample_count = sample_buffer.len() / self.raw_stream.channel_count;
-                    for i in 0..sample_count {
-                        self.sample_rate_converter.feed_next(sample_buffer[i].to_sample(), mic_buffer);
+                    for sample in sample_buffer.iter().take(sample_count) {
+                        self.sample_rate_converter.feed_next(sample.to_sample(), mic_buffer);
                     }
                     let hresult = unsafe { (*self.capture_client).ReleaseBuffer(frames_available) };
                     if let Err(err) = stream_error_from_hresult(hresult) {
@@ -141,11 +144,14 @@ impl<M: MicSink> WasapiMicStream<M> {
                     }
                 }
                 SampleFormat::I16 => {
+                    // When the AudioClient is initialized, it is configured to align its buffer
+                    // according to the audio format in use.
+                    #[allow(clippy::cast_ptr_alignment)]
                     let buffer_data = raw_buffer as *mut _ as *const i16;
                     let sample_buffer = unsafe { slice::from_raw_parts(buffer_data, buffer_len) };
                     let sample_count = sample_buffer.len() / self.raw_stream.channel_count;
-                    for i in 0..sample_count {
-                        self.sample_rate_converter.feed_next(sample_buffer[i].to_sample(), mic_buffer);
+                    for sample in sample_buffer.iter().take(sample_count) {
+                        self.sample_rate_converter.feed_next(sample.to_sample(), mic_buffer);
                     }
                     let hresult = unsafe { (*self.capture_client).ReleaseBuffer(frames_available) };
                     if let Err(err) = stream_error_from_hresult(hresult) {
@@ -209,6 +215,9 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
 
             match self.raw_stream.sample_format {
                 SampleFormat::F32 => {
+                    // When the AudioClient is initialized, it is configured to align its buffer
+                    // according to the audio format in use.
+                    #[allow(clippy::cast_ptr_alignment)]
                     let buffer_data = raw_buffer as *mut f32;
                     let sample_buffer = unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
                     let sample_count = sample_buffer.len() / self.raw_stream.channel_count;
@@ -226,6 +235,9 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                     }
                 }
                 SampleFormat::I16 => {
+                    // When the AudioClient is initialized, it is configured to align its buffer
+                    // according to the audio format in use.
+                    #[allow(clippy::cast_ptr_alignment)]
                     let buffer_data = raw_buffer as *mut i16;
                     let sample_buffer = unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
                     let sample_count = sample_buffer.len() / self.raw_stream.channel_count;
@@ -250,7 +262,7 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
 // TODO refactor into useful abstraction around unsafe calls with results
 fn stream_error_from_hresult(hresult: winnt::HRESULT) -> Result<(), StreamError> {
     if hresult == audioclient::AUDCLNT_E_DEVICE_INVALIDATED {
-        return Err(StreamError::DeviceNotAvailable);
+        Err(StreamError::DeviceNotAvailable)
     } else if let Err(err) = check_result(hresult) {
         let description = format!("{}", err);
         Err(StreamError::BackendSpecific(description))

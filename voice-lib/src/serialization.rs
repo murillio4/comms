@@ -74,7 +74,7 @@ impl<'a> HeaderParsedPacket<'a> {
     }
 
     pub fn kind(&self) -> PacketKind {
-        return self.header.kind
+        self.header.kind
     }
 
     pub fn finish_parse<B>(self) -> Result<Packet<B>, DeserializeError>
@@ -85,7 +85,7 @@ impl<'a> HeaderParsedPacket<'a> {
     }
 
     pub fn into_owned(self) -> OwnedHeaderParsedPacket {
-        return OwnedHeaderParsedPacket {
+        OwnedHeaderParsedPacket {
             header: self.header,
             raw_body: self.raw_body.to_vec(),
         }
@@ -112,8 +112,9 @@ impl OwnedHeaderParsedPacket {
     }
 
     pub fn kind(&self) -> PacketKind {
-        return self.header.kind
+        self.header.kind
     }
+
     pub fn finish_parse<B>(self) -> Result<Packet<B>, DeserializeError>
         where B: PacketBody + DeserializeOwned
     {

@@ -33,7 +33,7 @@ async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) ->
     let client_ids = {
         let clients = unsafe { &*context.clients.get() };
         clients.established.iter()
-            .map(|(id, _)| id.clone())
+            .map(|(id, _)| *id)
             .filter(|id| id != &context.client_id)
             .collect()
     };
@@ -64,7 +64,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
             }
             Some(addr) => {
                 let other_clients = clients.established.keys()
-                    .map(|key| key.clone())
+                    .copied()
                     .collect();
                 clients.established.insert(context.client_id, Client {
                     udp_addr: addr,
@@ -78,7 +78,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
                         Some(packet.id),
                         FinishConnectAccepted {
                             users: clients.established.iter()
-                                .map(|(id, c)| (id.clone(), c.username.clone()))
+                                .map(|(id, c)| (*id, c.username.clone()))
                                 .collect()
                         }
                     )?,
@@ -119,7 +119,7 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> Re
             clients.remove_client(&context.client_id).expect("Tried to close connection with nonexistant client");
         }
         clients.established.keys()
-            .map(|k| k.clone())
+            .copied()
             .collect()
     };
 

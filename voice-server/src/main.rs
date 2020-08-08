@@ -82,16 +82,13 @@ fn main() -> Result<(), CommsServerError> {
                             Ok((size, remote_addr)) => {
                                 if size != 0 {
                                     let buffer = &buffer[0..size];
-                                    match handle_udp_packet(remote_addr.clone(), buffer, clients.clone(), &spawner, network_handle.clone()) {
-                                        Err(HandlePacketError::CommunicationFailure) => {
-                                            if let Some(client_id) = {
-                                                let clients = unsafe { &mut *clients.get() };
-                                                clients.id_by_socket_addr(&remote_addr)
-                                            } {
-                                                spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
-                                            }
+                                    if let Err(HandlePacketError::CommunicationFailure) = handle_udp_packet(remote_addr, buffer, clients.clone(), &spawner, network_handle.clone()) {
+                                        if let Some(client_id) = {
+                                            let clients = unsafe { &mut *clients.get() };
+                                            clients.id_by_socket_addr(&remote_addr)
+                                        } {
+                                            spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
                                         }
-                                        _ => ()
                                     };
                                 }
                             },

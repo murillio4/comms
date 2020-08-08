@@ -9,6 +9,8 @@ pub mod serialization;
 #[cfg(windows)]
 pub mod winlib;
 
+pub type AudioFrame = [f32; 480];
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PacketHeader {
     pub id: PacketId,

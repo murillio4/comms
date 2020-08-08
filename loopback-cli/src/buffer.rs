@@ -20,7 +20,7 @@ pub struct PlaybackForLoopback {
 
 impl PlaybackSource for PlaybackForLoopback {
     fn next_sample(&mut self) -> f32 {
-        self.receiver.try_recv().unwrap_or(Sample::equilibrium())
+        self.receiver.try_recv().unwrap_or_else(|_| Sample::equilibrium())
     }
 }
 
