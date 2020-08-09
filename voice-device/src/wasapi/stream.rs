@@ -4,7 +4,7 @@ use winapi::shared::{basetsd, minwindef, mmreg};
 use crate::wasapi::device::IAudioClientWrapper;
 use crate::wasapi::event_loop::WasapiEventLoopRegistration;
 use std::mem::MaybeUninit;
-use sample::Sample;
+use dasp::Sample;
 use crate::wasapi::com::check_result;
 use crate::buffer::{MicSink, PlaybackSource};
 use crate::wasapi::sample_rate_conversion::{MicSampleRateConverter, PlaybackSampleRateConverter};

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use voice_lib::packet::ClientId;
-use sample::Sample;
+use dasp::Sample;
 use crate::network::ipc::NetworkHandle;
 use voice_device::buffer::{PlaybackSource, MicSink, MaybeSharedPlaybackSource};
 use glib::bitflags::_core::cell::RefCell;
@@ -36,11 +36,11 @@ impl Multiplexer {
 
 impl PlaybackSource for Multiplexer {
     fn next_sample(&mut self) -> f32 {
-        let init: f32 = Sample::equilibrium();
+        let init: f32 = Sample::EQUILIBRIUM;
         let init = init.to_signed_sample();
         self.client_queues.values_mut()
             .fold(init, |acc, queue| {
-                let next_sample = queue.pop_front().unwrap_or_else(Sample::equilibrium);
+                let next_sample = queue.pop_front().unwrap_or(Sample::EQUILIBRIUM);
                 let acc = acc.add_amp(next_sample);
                 if acc == f32::INFINITY {
                     f32::MAX
