@@ -24,6 +24,7 @@ fn main() -> Result<(), BeepClientErr> {
     let matches = App::new("Beep Client")
         .version("0.1")
         .arg(Arg::with_name("server_address").takes_value(true).required(true))
+        .arg(Arg::with_name("client_name").takes_value(true))
         .get_matches();
 
     let server_address = match matches.value_of("server_address") {
@@ -33,6 +34,8 @@ fn main() -> Result<(), BeepClientErr> {
             return Err(BeepClientErr::Usage);
         }
     };
+
+    let client_name = matches.value_of("client_name").unwrap_or("beep");
 
     let server_address_with_port = format!("{}:18847", server_address);
     println!("Connecting to {}...", server_address_with_port);
@@ -67,7 +70,7 @@ fn main() -> Result<(), BeepClientErr> {
         NonZeroU64::new(2).unwrap(),
         None,
         FinishConnect {
-            name: "beep".to_string(),
+            name: client_name.to_string(),
         },
     )?)?;
 
