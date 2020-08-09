@@ -6,7 +6,7 @@ use libpulse_binding::sample::{Spec, Format};
 use libpulse_binding::time::MicroSeconds;
 use libpulse_binding::def::BufferAttr;
 use libpulse_binding::stream::flags::ADJUST_LATENCY;
-use sample::Sample;
+use dasp::Sample;
 use crate::buffer::{MicSink, PlaybackSource, MaybeSharedPlaybackSource};
 
 const SPEC: Spec = Spec {
