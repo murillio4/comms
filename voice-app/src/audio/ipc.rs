@@ -66,6 +66,17 @@ pub struct AudioReceiver<R> {
     pub(crate) ui_handle: Sender<UICommand>,
 }
 
+impl<R> AudioReceiver<R> {
+    pub fn new(multiplexer: RcMultiplexer, registration: R, command_rx: Receiver<AudioCommand>, ui_handle: Sender<UICommand>) -> Self {
+        Self {
+            multiplexer,
+            registration,
+            command_rx,
+            ui_handle,
+        }
+    }
+}
+
 impl<R> InterruptReceiver<R> for AudioReceiver<R> {
     fn registration(&self) -> &R {
         &self.registration

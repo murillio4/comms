@@ -25,12 +25,12 @@ pub fn run(
     receiver: Receiver<AudioCommand>,
 ) -> Result<(), AudioError> {
     let multiplexer = RcMultiplexer::new();
-    let receiver = AudioReceiver {
-        multiplexer: multiplexer.clone(),
-        ui_handle: ui_handle.clone(),
-        command_rx: receiver,
+    let receiver = AudioReceiver::new(
+        multiplexer.clone(),
         registration,
-    };
+        receiver,
+        ui_handle.clone(),
+    );
     let mic_buffer = MicBuffer::new(network_handle);
     let event_loop = AudioPlatformImpl::create_event_loop(parameters, receiver, mic_buffer, multiplexer);
     ui_handle.send(UICommand::AudioIPCReady).unwrap();
