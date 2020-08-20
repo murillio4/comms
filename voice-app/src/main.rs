@@ -1,4 +1,4 @@
-use std::process;
+use std::{process, panic};
 use std::sync::mpsc;
 
 use crate::network::{NetworkError, SendToNetworkThreadError, Worker};
@@ -13,6 +13,12 @@ mod ui;
 // const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 
 fn main() -> Result<(), CommsError> {
+    let orig_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        orig_hook(panic_info);
+        process::exit(1);
+    }));
+
     // Audio <> UI comm channel
     let (ui_handle, ui_receiver) = mpsc::channel();
     // Audio <> Network comm channel
