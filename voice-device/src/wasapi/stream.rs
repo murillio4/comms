@@ -135,9 +135,24 @@ impl<M: MicSink> WasapiMicStream<M> {
                     let buffer_data = raw_buffer as *mut _ as *const f32;
                     let sample_buffer = unsafe { slice::from_raw_parts(buffer_data, buffer_len) };
                     let sample_count = sample_buffer.len() / self.raw_stream.channel_count;
-                    for sample in sample_buffer.iter().take(sample_count) {
-                        self.sample_rate_converter.feed_next(sample.to_sample(), mic_buffer);
+                    let mut sample_buffer_iter = sample_buffer.iter();
+
+                    for _ in 0..sample_count {
+                        let mut next_sample: f64 = Sample::EQUILIBRIUM;
+                        for _ in 0..self.raw_stream.channel_count {
+                            next_sample = {
+                                let next = next_sample.add_amp(sample_buffer_iter.next().expect("Buffer had less samples than expected").to_sample());
+                                if next == f64::INFINITY {
+                                    f64::MAX
+                                } else {
+                                    next
+                                }
+                            }
+                        }
+
+                        self.sample_rate_converter.feed_next(next_sample, mic_buffer)
                     }
+
                     let hresult = unsafe { (*self.capture_client).ReleaseBuffer(frames_available) };
                     if let Err(err) = stream_error_from_hresult(hresult) {
                         return Err(err);
@@ -150,9 +165,24 @@ impl<M: MicSink> WasapiMicStream<M> {
                     let buffer_data = raw_buffer as *mut _ as *const i16;
                     let sample_buffer = unsafe { slice::from_raw_parts(buffer_data, buffer_len) };
                     let sample_count = sample_buffer.len() / self.raw_stream.channel_count;
-                    for sample in sample_buffer.iter().take(sample_count) {
-                        self.sample_rate_converter.feed_next(sample.to_sample(), mic_buffer);
+                    let mut sample_buffer_iter = sample_buffer.iter();
+
+                    for _ in 0..sample_count {
+                        let mut next_sample: f64 = Sample::EQUILIBRIUM;
+                        for _ in 0..self.raw_stream.channel_count {
+                            next_sample = {
+                                let next = next_sample.add_amp(sample_buffer_iter.next().expect("Buffer had less samples than expected").to_sample());
+                                if next == f64::INFINITY {
+                                    f64::MAX
+                                } else {
+                                    next
+                                }
+                            }
+                        }
+
+                        self.sample_rate_converter.feed_next(next_sample, mic_buffer)
                     }
+
                     let hresult = unsafe { (*self.capture_client).ReleaseBuffer(frames_available) };
                     if let Err(err) = stream_error_from_hresult(hresult) {
                         return Err(err);
