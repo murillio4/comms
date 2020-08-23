@@ -3,6 +3,7 @@
 members = [
     "beep-cli",
     "loopback-cli",
+    "latency-measurement-cli",
     "voice-app",
     "voice-device",
     "voice-lib",
