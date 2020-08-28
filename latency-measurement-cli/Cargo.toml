@@ -1,0 +1,12 @@
+[package]
+name = "latency-measurement-cli"
+version = "0.1.0"
+authors = ["Mitchell Hentges <mitch9654@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+audio_thread_priority = "0.23.4"
+dasp = "0.11.0"
+
+[dependencies.voice-device]
+path = "../voice-device"
