@@ -395,29 +395,26 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
         let inputs_submenu: gtk::Menu = builder.get_object("inputs_submenu").unwrap();
         let outputs_submenu: gtk::Menu = builder.get_object("outputs_submenu").unwrap();
 
-        let mut device_count = 0;
-        for device in input_devices {
+        for (device_count, device) in input_devices.into_iter().enumerate() {
             let input_menu_item: gtk::MenuItem = gtk::MenuItemBuilder::new()
                 .label(&device.label)
                 .build();
             input_menu_item.connect_activate(|_| {
                 //send command switch device
-
             });
+            let device_count = device_count as u32;
             inputs_submenu.attach(&input_menu_item, 0, 1, device_count, device_count + 1);
-            device_count += 1;
         }
 
-        let mut device_count = 0;
-        for device in output_devices {
+        for (device_count, device) in output_devices.into_iter().enumerate() {
             let output_menu_item: gtk::MenuItem = gtk::MenuItemBuilder::new()
                 .label(&device.label)
                 .build();
             output_menu_item.connect_activate(|_| {
                 println!("Clicked output menu item button.");
             });
+            let device_count = device_count as u32;
             outputs_submenu.attach(&output_menu_item, 0, 1, device_count, device_count + 1);
-            device_count += 1;
 
         }
 
