@@ -330,10 +330,10 @@ fn attempt_send_next_udp_packet(outgoing_packet_queue: &mut VecDeque<Vec<u8>>, s
         }
     };
 
-    *socket_writable = false;
     match socket.send(&packet) {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+            *socket_writable = false;
             outgoing_packet_queue.push_front(packet);
             Ok(())
         }
