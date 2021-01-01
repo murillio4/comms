@@ -58,7 +58,7 @@ async fn try_connect(
 
         let username: String = username_entry.get_buffer().get_text();
         let server: String = server_entry.get_buffer().get_text();
-        if username == "" || server == "" {
+        if username.is_empty() || server.is_empty() {
             connect_failure_status.set_text("Set both username and server");
             return;
         } else {
