@@ -2,7 +2,6 @@ use libpulse_binding::context::Context;
 use libpulse_binding::callbacks::ListResult;
 use std::rc::Rc;
 use libpulse_binding::mainloop::standard::{Mainloop, IterateResult};
-use libpulse_binding::context::flags::NOAUTOSPAWN;
 use libpulse_binding::error::PAErr;
 use std::fmt;
 use std::fmt::Formatter;
@@ -40,7 +39,7 @@ impl PulseAudioConnection {
     pub fn create<P: PlaybackSource>(parameters: PulseParameters, mic: impl MicSink + 'static, playback: impl MaybeSharedPlaybackSource<P> + 'static) -> PulseEventLoopBuilder {
         let mut mainloop = Mainloop::new().unwrap();
         let mut context = Context::new(&mainloop, "comms").unwrap();
-        context.connect(parameters.pulseaudio_server.as_deref(), NOAUTOSPAWN, None).unwrap();
+        context.connect(parameters.pulseaudio_server.as_deref(), context::FlagSet::NOAUTOSPAWN, None).unwrap();
         context.wait(&mut mainloop).unwrap();
 
         record(&mut context, mic);

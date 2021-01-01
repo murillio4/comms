@@ -14,6 +14,7 @@ use crate::network;
 use crate::network::ipc::{ConnectError, NetworkEvent, NetworkHandle};
 use crate::ui::ipc::UICommand;
 use crate::audio::ipc::{AudioHandle, AudioCommand};
+use glib::timeout_add_local;
 
 pub mod ipc;
 
@@ -72,7 +73,7 @@ async fn try_connect(
         let finished = Rc::new(Cell::new(false));
         {
             let finished = finished.clone();
-            timeout_add(80, move || {
+            timeout_add_local(80, move || {
                 if !finished.get() {
                     connect_progress.pulse();
                     Continue(true)

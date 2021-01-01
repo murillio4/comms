@@ -1,11 +1,11 @@
 use libpulse_binding::context::Context;
 use std::cell::RefCell;
 use std::rc::Rc;
+use libpulse_binding::stream;
 use libpulse_binding::stream::{Stream, PeekResult, SeekMode};
 use libpulse_binding::sample::{Spec, Format};
 use libpulse_binding::time::MicroSeconds;
 use libpulse_binding::def::BufferAttr;
-use libpulse_binding::stream::flags::ADJUST_LATENCY;
 use dasp::Sample;
 use crate::buffer::{MicSink, PlaybackSource, MaybeSharedPlaybackSource};
 
@@ -30,7 +30,7 @@ pub fn record(context: &mut Context, mut mic: impl MicSink + 'static) {
     };
     let stream = stream_rc.clone();
     let mut stream = stream.borrow_mut();
-    stream.connect_record(None, Some(&buffer_attr), ADJUST_LATENCY).unwrap();
+    stream.connect_record(None, Some(&buffer_attr), stream::FlagSet::ADJUST_LATENCY).unwrap();
     stream.set_read_callback(Some(Box::new(move |_| {
         let mut stream = stream_rc.borrow_mut();
         match stream.peek() {
@@ -69,7 +69,7 @@ pub fn play<P: PlaybackSource>(context: &mut Context, mut playback: impl MaybeSh
     let stream = stream_rc.clone();
     let mut stream = stream.borrow_mut();
 
-    stream.connect_playback(None, Some(&buffer_attr), ADJUST_LATENCY, None, None).unwrap();
+    stream.connect_playback(None, Some(&buffer_attr), stream::FlagSet::ADJUST_LATENCY, None, None).unwrap();
     stream.set_write_callback(Some(Box::new(move |bytes| {
         let mut stream = stream_rc.borrow_mut();
         playback.with(|playback: &mut P| {
