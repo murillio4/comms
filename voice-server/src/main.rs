@@ -48,17 +48,15 @@ fn main() -> Result<(), CommsServerError> {
 
     let mut poll = Poll::new()?;
 
-    let task_executor_token = Token(next_client_id() as usize);
-    let waker = Waker::new(poll.registry(), task_executor_token).unwrap();
-    let (task_executor, spawner) = task::new(waker);
+    let waker_token = Token(next_client_id() as usize);
+    let waker = Arc::new(Waker::new(poll.registry(), waker_token).unwrap());
+    let (task_executor, spawner) = task::new(waker.clone());
 
     let mut udp_socket = UdpSocket::bind("0.0.0.0:18847".parse().unwrap())?;
     let udp_token = Token(next_client_id() as usize);
     let mut tcp_listener = TcpListener::bind("0.0.0.0:18847".parse().unwrap())?;
     let tcp_listener_token = Token(next_client_id() as usize);
 
-    let outgoing_token = Token(next_client_id() as usize);
-    let waker = Waker::new(poll.registry(), outgoing_token).unwrap();
     let (network_handle, mut outgoing_queue) = network::queue_and_handle(waker);
 
     poll.registry().register(&mut udp_socket, udp_token, Interest::READABLE | Interest::WRITABLE)?;
@@ -73,8 +71,18 @@ fn main() -> Result<(), CommsServerError> {
         poll.poll(&mut events, None)?;
         for event in events.iter() {
             let token = event.token();
-            if token == task_executor_token {
+            if token == waker_token {
+                // Waker has been triggered, this could either be because a future is ready to move
+                // or because there's new packets to send.
                 task_executor.run();
+                let failed_client_ids = {
+                    let mut clients = unsafe { &mut *clients.get() };
+                    outgoing_queue.sort_from_handle(&mut clients);
+                    outgoing_queue.attempt_write_all(&udp_socket, &mut udp_socket_writable, &mut clients)
+                };
+                for client_id in failed_client_ids {
+                    spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
+                }
             } else if token == udp_token {
                 if event.is_readable() {
                     loop {
@@ -107,15 +115,6 @@ fn main() -> Result<(), CommsServerError> {
                     for client_id in failed_client_ids {
                         spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
                     }
-                }
-            } else if token == outgoing_token {
-                let failed_client_ids = {
-                    let mut clients = unsafe { &mut *clients.get() };
-                    outgoing_queue.sort_from_handle(&mut clients);
-                    outgoing_queue.attempt_write_all(&udp_socket, &mut udp_socket_writable, &mut clients)
-                };
-                for client_id in failed_client_ids {
-                    spawn_close_connection(client_id, CloseConnectionReason::MalformedData, &network_handle, &clients, &spawner);
                 }
             } else if token == tcp_listener_token {
                 loop {

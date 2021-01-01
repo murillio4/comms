@@ -161,10 +161,10 @@ impl ArcWake for Task {
     }
 }
 
-pub fn new(waker: mio::Waker) -> (TaskExecutor, Spawner) {
+pub fn new(waker: Arc<mio::Waker>) -> (TaskExecutor, Spawner) {
     let (task_sender, ready_queue) = sync_channel(10_000);
     (TaskExecutor { ready_queue }, Spawner { task_scheduler: Scheduler {
         task_sender,
-        waker: Arc::new(waker)
+        waker
     }})
 }

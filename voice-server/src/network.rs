@@ -160,12 +160,12 @@ impl NetworkHandle {
     }
 }
 
-pub fn queue_and_handle(waker: Waker) -> (NetworkHandle, OutgoingQueue) {
+pub fn queue_and_handle(waker: Arc<Waker>) -> (NetworkHandle, OutgoingQueue) {
     let (sender, receiver) = sync_channel(10_000);
     (
         NetworkHandle {
             sender,
-            waker: Arc::new(waker),
+            waker,
         },
         OutgoingQueue {
             receiver,
