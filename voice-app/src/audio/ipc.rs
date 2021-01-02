@@ -1,21 +1,23 @@
-use std::sync::mpsc::{Receiver, Sender, SendError};
+use std::sync::mpsc::{Receiver, SendError, Sender};
 
-use voice_lib::packet::ClientId;
 use crate::ui::ipc::UICommand;
-use std::fmt::{Display, Formatter};
 use std::fmt;
+use std::fmt::{Display, Formatter};
+use voice_lib::packet::ClientId;
 
 use crate::audio::buffer::RcMultiplexer;
+use crate::audio::{AudioPlatform, AudioPlatformImpl};
 use voice_device::audio_connection::{AudioConnection, EventLoopNotify};
 use voice_device::buffer::{InterruptReceiver, MaybeSharedPlaybackSource};
-use crate::audio::{AudioPlatformImpl, AudioPlatform};
 use voice_lib::AudioFrame;
 
 pub enum AudioCommand {
     NewClient(ClientId),
     AudioFromClient(ClientId, Box<AudioFrame>),
-    #[allow(dead_code)] SwitchInputDevice(String),
-    #[allow(dead_code)] SwitchOutputDevice(String),
+    #[allow(dead_code)]
+    SwitchInputDevice(String),
+    #[allow(dead_code)]
+    SwitchOutputDevice(String),
     ListDevices,
     // TODO remove client
 }
@@ -43,13 +45,14 @@ impl AudioHandle {
         let mut samples = Box::new([0f32; 480]);
         for i in 0..samples.len() {
             samples[i] = f32::from_le_bytes([
-                bytes[i*4],
-                bytes[i*4 + 1],
-                bytes[i*4 + 2],
-                bytes[i*4 + 3],
+                bytes[i * 4],
+                bytes[i * 4 + 1],
+                bytes[i * 4 + 2],
+                bytes[i * 4 + 3],
             ]);
         }
-        self.send(AudioCommand::AudioFromClient(id, samples)).unwrap();
+        self.send(AudioCommand::AudioFromClient(id, samples))
+            .unwrap();
     }
 
     pub fn send(&self, command: AudioCommand) -> Result<(), SendError<AudioCommand>> {
@@ -67,7 +70,12 @@ pub struct AudioReceiver<R> {
 }
 
 impl<R> AudioReceiver<R> {
-    pub fn new(multiplexer: RcMultiplexer, registration: R, command_rx: Receiver<AudioCommand>, ui_handle: Sender<UICommand>) -> Self {
+    pub fn new(
+        multiplexer: RcMultiplexer,
+        registration: R,
+        command_rx: Receiver<AudioCommand>,
+        ui_handle: Sender<UICommand>,
+    ) -> Self {
         Self {
             multiplexer,
             registration,
@@ -82,26 +90,27 @@ impl<R> InterruptReceiver<R> for AudioReceiver<R> {
         &self.registration
     }
 
-    fn invoke<AC: AudioConnection>(&mut self, connection: &AC)
-    {
+    fn invoke<AC: AudioConnection>(&mut self, connection: &AC) {
         for command in self.command_rx.try_iter() {
             let command: AudioCommand = command;
             match command {
-                AudioCommand::NewClient(id) => {
-                    self.multiplexer.with(|multiplexer| multiplexer.new_client(id))
-                },
-                AudioCommand::AudioFromClient(client_id, chunk) => {
-                    self.multiplexer.with(|multiplexer| multiplexer.append_chunk_from_client(client_id, chunk))
-                },
+                AudioCommand::NewClient(id) => self
+                    .multiplexer
+                    .with(|multiplexer| multiplexer.new_client(id)),
+                AudioCommand::AudioFromClient(client_id, chunk) => self
+                    .multiplexer
+                    .with(|multiplexer| multiplexer.append_chunk_from_client(client_id, chunk)),
                 AudioCommand::SwitchInputDevice(device_id) => AC::change_input_device(device_id),
                 AudioCommand::SwitchOutputDevice(device_id) => AC::change_output_device(device_id),
                 AudioCommand::ListDevices => {
                     let ui_handle = self.ui_handle.clone();
                     connection.list_devices(move |devices| {
-                        ui_handle.send(UICommand::DevicesFound {
-                            input_devices: devices.input_devices,
-                            output_devices: devices.output_devices
-                        }).unwrap();
+                        ui_handle
+                            .send(UICommand::DevicesFound {
+                                input_devices: devices.input_devices,
+                                output_devices: devices.output_devices,
+                            })
+                            .unwrap();
                     });
                 }
             }

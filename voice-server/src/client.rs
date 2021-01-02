@@ -1,9 +1,9 @@
-use voice_lib::packet::{PacketId, ClientId};
-use voice_lib::network::CommsTcpStream;
-use std::net::SocketAddr;
-use std::collections::{HashMap, VecDeque};
-use mio::net::TcpStream;
 use crate::network::OutgoingPacket;
+use mio::net::TcpStream;
+use std::collections::{HashMap, VecDeque};
+use std::net::SocketAddr;
+use voice_lib::network::CommsTcpStream;
+use voice_lib::packet::{ClientId, PacketId};
 
 pub struct NextPacketId(PacketId);
 
@@ -23,7 +23,7 @@ pub struct Connection {
     next_packet_id: NextPacketId,
     pub stream: CommsTcpStream,
     pub tcp_writable: bool,
-    pub outgoing_queue: VecDeque<OutgoingPacket>
+    pub outgoing_queue: VecDeque<OutgoingPacket>,
 }
 
 impl Connection {
@@ -82,9 +82,9 @@ impl Clients {
     }
 
     pub fn writable_connections(&mut self) -> Vec<&mut Connection> {
-        let connecting = self.connecting.iter_mut()
-            .map(|(_, c)| &mut c.connection);
-        self.established.iter_mut()
+        let connecting = self.connecting.iter_mut().map(|(_, c)| &mut c.connection);
+        self.established
+            .iter_mut()
             .map(|(_, c)| &mut c.connection)
             .chain(connecting)
             .filter(|c| c.tcp_writable)
@@ -92,38 +92,55 @@ impl Clients {
     }
 
     pub fn id_by_socket_addr(&self, addr: &SocketAddr) -> Option<ClientId> {
-        self.established.iter()
+        self.established
+            .iter()
             .find(|(_, c)| &c.udp_addr == addr)
             .map(|(id, _)| *id)
-            .or_else(|| self.connecting.iter()
-                .find(|(_, c)| c.udp_addr == Some(*addr))
-                .map(|(id, _)| *id))
+            .or_else(|| {
+                self.connecting
+                    .iter()
+                    .find(|(_, c)| c.udp_addr == Some(*addr))
+                    .map(|(id, _)| *id)
+            })
     }
 
-    pub fn connection_by_id(&mut self, client_id: &ClientId) -> Option<&mut Connection>
-    {
-        let established_connection = self.established.get_mut(client_id).map(|c| &mut c.connection);
-        let connecting = self.connecting.get_mut(client_id).map(|c| &mut c.connection);
+    pub fn connection_by_id(&mut self, client_id: &ClientId) -> Option<&mut Connection> {
+        let established_connection = self
+            .established
+            .get_mut(client_id)
+            .map(|c| &mut c.connection);
+        let connecting = self
+            .connecting
+            .get_mut(client_id)
+            .map(|c| &mut c.connection);
         established_connection.or(connecting)
     }
 
     pub fn client_by_id(&mut self, client_id: &ClientId) -> Option<AnyClientRef> {
         match self.established.get_mut(client_id) {
             Some(c) => Some(AnyClientRef::Established(c)),
-            None => self.connecting.get_mut(client_id).map(AnyClientRef::Connecting)
+            None => self
+                .connecting
+                .get_mut(client_id)
+                .map(AnyClientRef::Connecting),
         }
     }
 
     pub fn remove_client(&mut self, client_id: &ClientId) -> Option<AnyClient> {
-        self.established.remove(client_id)
+        self.established
+            .remove(client_id)
             .map(AnyClient::Established)
             .or_else(|| self.connecting.remove(client_id).map(AnyClient::Connecting))
     }
 
     pub fn insert_client(&mut self, client_id: ClientId, client: AnyClient) {
         match client {
-            AnyClient::Established(client) => { self.established.insert(client_id, client); },
-            AnyClient::Connecting(client) => { self.connecting.insert(client_id, client); },
+            AnyClient::Established(client) => {
+                self.established.insert(client_id, client);
+            }
+            AnyClient::Connecting(client) => {
+                self.connecting.insert(client_id, client);
+            }
         };
     }
 }

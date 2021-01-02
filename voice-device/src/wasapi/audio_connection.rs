@@ -1,9 +1,11 @@
-use crate::audio_connection::{AudioConnection, FoundDevices, DeviceInfo};
+use crate::audio_connection::{AudioConnection, DeviceInfo, FoundDevices};
+use crate::buffer::{InterruptReceiver, MaybeSharedPlaybackSource, MicSink, PlaybackSource};
 use crate::wasapi::device::{InputDevice, OutputDevice};
-use crate::wasapi::sample_rate_conversion::{create_mic_sample_rate_converter, create_playback_sample_rate_converter};
-use crate::wasapi::stream::{WasapiMicStream, RawWasapiStream, WasapiPlaybackStream};
 use crate::wasapi::event_loop::{WasapiEventLoopBuilder, WasapiEventLoopRegistration};
-use crate::buffer::{MicSink, PlaybackSource, InterruptReceiver, MaybeSharedPlaybackSource};
+use crate::wasapi::sample_rate_conversion::{
+    create_mic_sample_rate_converter, create_playback_sample_rate_converter,
+};
+use crate::wasapi::stream::{RawWasapiStream, WasapiMicStream, WasapiPlaybackStream};
 
 pub struct WasapiParameters;
 
@@ -14,8 +16,13 @@ pub struct WasapiAudioConnection<M: MicSink, P: PlaybackSource, SP: MaybeSharedP
     pub mic_sink: M,
 }
 
-impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> WasapiAudioConnection<M, P, SP> {
-    pub fn create<I: InterruptReceiver<WasapiEventLoopRegistration>>(mic_sink: M, playback_source: SP) -> WasapiEventLoopBuilder<M, P, SP, I> {
+impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>>
+    WasapiAudioConnection<M, P, SP>
+{
+    pub fn create<I: InterruptReceiver<WasapiEventLoopRegistration>>(
+        mic_sink: M,
+        playback_source: SP,
+    ) -> WasapiEventLoopBuilder<M, P, SP, I> {
         let input_device = InputDevice::default().unwrap();
         let output_device = OutputDevice::default().unwrap();
 
@@ -32,8 +39,12 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> WasapiAudi
         );
         mic_stream.raw_stream.start();
 
-        let playback_converter = create_playback_sample_rate_converter(48000, output_format.sample_rate.0);
-        let waveformatex = output_device.audio_client.initialize(&output_format).unwrap();
+        let playback_converter =
+            create_playback_sample_rate_converter(48000, output_format.sample_rate.0);
+        let waveformatex = output_device
+            .audio_client
+            .initialize(&output_format)
+            .unwrap();
         let playback_stream = WasapiPlaybackStream::new(
             playback_converter,
             output_device.create_client().unwrap(),
@@ -41,22 +52,34 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> WasapiAudi
             RawWasapiStream::new(waveformatex, output_device.audio_client, output_format),
         );
         playback_stream.raw_stream.start();
-        WasapiEventLoopBuilder::new(
-            Self {
-                mic_sink,
-                mic_stream,
-                playback_stream,
-                playback_source,
-            }
-        )
+        WasapiEventLoopBuilder::new(Self {
+            mic_sink,
+            mic_stream,
+            playback_stream,
+            playback_source,
+        })
     }
 }
 
-impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> AudioConnection for WasapiAudioConnection<M, P, SP> {
+impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> AudioConnection
+    for WasapiAudioConnection<M, P, SP>
+{
     fn list_devices(&self, callback: impl FnOnce(FoundDevices)) {
         callback(FoundDevices {
-            input_devices: InputDevice::get_list().into_iter().map(|device| { DeviceInfo { label: device.name().unwrap(), id: device.id().unwrap() } }).collect(),
-            output_devices: OutputDevice::get_list().into_iter().map(|device| { DeviceInfo { label: device.name().unwrap(), id: device.id().unwrap() } }).collect(),
+            input_devices: InputDevice::get_list()
+                .into_iter()
+                .map(|device| DeviceInfo {
+                    label: device.name().unwrap(),
+                    id: device.id().unwrap(),
+                })
+                .collect(),
+            output_devices: OutputDevice::get_list()
+                .into_iter()
+                .map(|device| DeviceInfo {
+                    label: device.name().unwrap(),
+                    id: device.id().unwrap(),
+                })
+                .collect(),
         });
     }
 

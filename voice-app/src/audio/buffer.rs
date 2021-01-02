@@ -1,10 +1,10 @@
-use std::collections::{HashMap, VecDeque};
-use voice_lib::packet::ClientId;
-use dasp::Sample;
 use crate::network::ipc::NetworkHandle;
-use voice_device::buffer::{PlaybackSource, MicSink, MaybeSharedPlaybackSource};
+use dasp::Sample;
 use glib::bitflags::_core::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use voice_device::buffer::{MaybeSharedPlaybackSource, MicSink, PlaybackSource};
+use voice_lib::packet::ClientId;
 use voice_lib::AudioFrame;
 
 pub struct Multiplexer {
@@ -24,7 +24,7 @@ impl Multiplexer {
 
     pub fn append_chunk_from_client(&mut self, id: ClientId, data: Box<AudioFrame>) {
         let queue = match self.client_queues.get_mut(&id) {
-            Some(queue ) => queue,
+            Some(queue) => queue,
             None => return,
         };
 
@@ -38,16 +38,15 @@ impl PlaybackSource for Multiplexer {
     fn next_sample(&mut self) -> f32 {
         let init: f32 = Sample::EQUILIBRIUM;
         let init = init.to_signed_sample();
-        self.client_queues.values_mut()
-            .fold(init, |acc, queue| {
-                let next_sample = queue.pop_front().unwrap_or(Sample::EQUILIBRIUM);
-                let acc = acc.add_amp(next_sample);
-                if acc == f32::INFINITY {
-                    f32::MAX
-                } else {
-                    acc
-                }
-            })
+        self.client_queues.values_mut().fold(init, |acc, queue| {
+            let next_sample = queue.pop_front().unwrap_or(Sample::EQUILIBRIUM);
+            let acc = acc.add_amp(next_sample);
+            if acc == f32::INFINITY {
+                f32::MAX
+            } else {
+                acc
+            }
+        })
     }
 }
 
@@ -69,14 +68,14 @@ impl MaybeSharedPlaybackSource<Multiplexer> for RcMultiplexer {
 
 pub struct MicBuffer {
     network_handle: NetworkHandle,
-    queue: VecDeque<f32>
+    queue: VecDeque<f32>,
 }
 
 impl MicBuffer {
     pub fn new(network_handle: NetworkHandle) -> Self {
         Self {
             network_handle,
-            queue: VecDeque::new()
+            queue: VecDeque::new(),
         }
     }
 }
@@ -90,7 +89,10 @@ impl MicSink for MicBuffer {
         while self.queue.len() >= 480 {
             let mut chunk = Box::new([0f32; 480]);
             for i in 0..chunk.len() {
-                chunk[i] = self.queue.pop_front().expect("Queue should have 480 samples");
+                chunk[i] = self
+                    .queue
+                    .pop_front()
+                    .expect("Queue should have 480 samples");
             }
             self.network_handle.audio(chunk).unwrap();
         }

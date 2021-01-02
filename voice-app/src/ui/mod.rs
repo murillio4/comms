@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 use voice_lib::packet::{Packet, PacketBody, UserJoined, UserLeft};
 use voice_lib::serialization::DeserializeError;
 
+use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network;
 use crate::network::ipc::{ConnectError, NetworkEvent, NetworkHandle};
 use crate::ui::ipc::UICommand;
-use crate::audio::ipc::{AudioHandle, AudioCommand};
 use glib::timeout_add_local;
 
 pub mod ipc;
@@ -26,10 +26,7 @@ enum Columns {
 }
 
 fn initialize_user_list(treeview: &gtk::TreeView) -> gtk::ListStore {
-    let col_types: [glib::Type; 2] = [
-        glib::Type::U32,
-        glib::Type::String,
-    ];
+    let col_types: [glib::Type; 2] = [glib::Type::U32, glib::Type::String];
 
     let user_list_model = gtk::ListStore::new(&col_types);
     treeview.set_model(Some(&user_list_model));
@@ -42,20 +39,18 @@ struct LocalStorage {
     server: String,
 }
 
-async fn try_connect(
-    audio_handle: AudioHandle,
-    network: NetworkHandle,
-    ui: Rc<RefCell<UiModel>>
-) {
+async fn try_connect(audio_handle: AudioHandle, network: NetworkHandle, ui: Rc<RefCell<UiModel>>) {
     let old_state = ui.borrow().state.clone();
     if let UiState::ChooseServer = old_state {
         let builder = ui.borrow().builder.clone();
         let username_entry: gtk::Entry = builder.get_object("username_entry").unwrap();
         let server_entry: gtk::Entry = builder.get_object("server_entry").unwrap();
         let connect_button: gtk::Button = builder.get_object("connect_button").unwrap();
-        let connect_progress_stack: gtk::Stack = builder.get_object("connect_progress_stack").unwrap();
+        let connect_progress_stack: gtk::Stack =
+            builder.get_object("connect_progress_stack").unwrap();
         let connect_progress: gtk::ProgressBar = builder.get_object("connect_progress").unwrap();
-        let connect_failure_status: gtk::Label = builder.get_object("connect_failure_status").unwrap();
+        let connect_failure_status: gtk::Label =
+            builder.get_object("connect_failure_status").unwrap();
 
         let username: String = username_entry.get_buffer().get_text();
         let server: String = server_entry.get_buffer().get_text();
@@ -83,16 +78,20 @@ async fn try_connect(
             });
         }
 
-        if let Some((project_dirs, storage)) = ProjectDirs::from("", "Comms", "Comms")
-            .and_then(|project_dirs| {
+        if let Some((project_dirs, storage)) =
+            ProjectDirs::from("", "Comms", "Comms").and_then(|project_dirs| {
                 let local_storage = LocalStorage {
                     username: username.clone(),
                     server: server.clone(),
                 };
-                serde_json::to_string(&local_storage).ok().map(|storage| (project_dirs, storage))
-            }) {
+                serde_json::to_string(&local_storage)
+                    .ok()
+                    .map(|storage| (project_dirs, storage))
+            })
+        {
             let _ = async_std::fs::create_dir(project_dirs.data_dir()).await;
-            let _ = async_std::fs::write(project_dirs.data_dir().join("local_storage"), storage).await;
+            let _ =
+                async_std::fs::write(project_dirs.data_dir().join("local_storage"), storage).await;
         }
 
         let connect_result = network::future::connect(&network, server, username).await;
@@ -104,13 +103,12 @@ async fn try_connect(
         match connect_result {
             Ok(users) => {
                 for (client_id, _) in users.iter() {
-                    audio_handle.send(AudioCommand::NewClient(*client_id)).unwrap()
+                    audio_handle
+                        .send(AudioCommand::NewClient(*client_id))
+                        .unwrap()
                 }
 
-                let col_indices: [u32; 2] = [
-                    Columns::Id as u32,
-                    Columns::Username as u32,
-                ];
+                let col_indices: [u32; 2] = [Columns::Id as u32, Columns::Username as u32];
 
                 let mut ui = ui.borrow_mut();
                 let status_treeview = ui.builder.get_object("status_treeview").unwrap();
@@ -120,18 +118,21 @@ async fn try_connect(
                     user_list_model.insert_with_values(None, &col_indices, &values);
                 }
 
-                ui.pane_stack.set_transition_type(gtk::StackTransitionType::SlideUp);
+                ui.pane_stack
+                    .set_transition_type(gtk::StackTransitionType::SlideUp);
                 ui.pane_stack.set_visible_child_name("status");
-                ui.state = UiState::Main {
-                    user_list_model
-                };
+                ui.state = UiState::Main { user_list_model };
             }
             Err(e) => {
                 let error_message = match e {
-                    ConnectError::DestinationUnusable => "Could not find the server provided".to_string(),
+                    ConnectError::DestinationUnusable => {
+                        "Could not find the server provided".to_string()
+                    }
                     ConnectError::NetworkError => "Could not connect to the server".to_string(),
                     // AlreadyConnected shouldn't be possible, but it's useful for end-to-end testing network futures right now.
-                    ConnectError::AlreadyConnected => "Can't connect because you're already connected to a server".to_string(),
+                    ConnectError::AlreadyConnected => {
+                        "Can't connect because you're already connected to a server".to_string()
+                    }
                     ConnectError::RequestError(e) => format!("Request failed: {:?}", e),
                 };
                 connect_failure_status.set_text(&error_message);
@@ -141,15 +142,12 @@ async fn try_connect(
     }
 }
 
-async fn disconnect_from_server(
-    ui: Rc<RefCell<UiModel>>,
-    handle: NetworkHandle,
-) {
+async fn disconnect_from_server(ui: Rc<RefCell<UiModel>>, handle: NetworkHandle) {
     let state = ui.borrow().state.clone();
     if let UiState::Main {
-        user_list_model,
-        ..
-    } = state {
+        user_list_model, ..
+    } = state
+    {
         network::future::disconnect(&handle).await;
         {
             let pane_stack = &ui.borrow().pane_stack;
@@ -164,10 +162,8 @@ async fn disconnect_from_server(
 #[derive(Clone, Debug)]
 enum UiState {
     ChooseServer,
-    Main {
-        user_list_model: gtk::ListStore
-    },
-    Connecting
+    Main { user_list_model: gtk::ListStore },
+    Connecting,
 }
 
 struct UiModel {
@@ -187,47 +183,50 @@ async fn handle_network_events(
         match event {
             NetworkEvent::SocketClosed => {
                 if let UiState::Main { .. } = state {
-                    disconnect_from_server(
-                        ui.clone(),
-                        network.clone(),
-                    ).await;
+                    disconnect_from_server(ui.clone(), network.clone()).await;
 
                     let builder = &ui.borrow().builder;
-                    let connect_failure_status: gtk::Label = builder.get_object("connect_failure_status").unwrap();
-                    connect_failure_status.set_text("Disconnecting from the server because the socket closed");
+                    let connect_failure_status: gtk::Label =
+                        builder.get_object("connect_failure_status").unwrap();
+                    connect_failure_status
+                        .set_text("Disconnecting from the server because the socket closed");
                 }
-            },
+            }
             NetworkEvent::NetworkError => {
                 if let UiState::Main { .. } = state {
-                    disconnect_from_server(
-                        ui.clone(),
-                        network.clone(),
-                    ).await;
+                    disconnect_from_server(ui.clone(), network.clone()).await;
 
                     let builder = &ui.borrow().builder;
-                    let connect_failure_status: gtk::Label = builder.get_object("connect_failure_status").unwrap();
-                    connect_failure_status.set_text("Disconnecting from the server because of a network issue");
+                    let connect_failure_status: gtk::Label =
+                        builder.get_object("connect_failure_status").unwrap();
+                    connect_failure_status
+                        .set_text("Disconnecting from the server because of a network issue");
                 }
-            },
+            }
             NetworkEvent::Packet(packet) => {
                 if let UiState::Main { user_list_model } = ui.borrow().state.clone() {
                     let result: Result<(), DeserializeError> = {
                         match packet.kind() {
                             UserJoined::KIND_ID => {
                                 let packet: Packet<UserJoined> = packet.finish_parse().unwrap();
-                                audio_handle.send(AudioCommand::NewClient(packet.body.client_id)).unwrap();
-                                let col_indices: [u32; 2] = [
-                                    Columns::Id as u32,
-                                    Columns::Username as u32,
-                                ];
-                                user_list_model.set(&user_list_model.append(), &col_indices, &[&(packet.body.client_id as u32), &packet.body.name]);
-                            },
+                                audio_handle
+                                    .send(AudioCommand::NewClient(packet.body.client_id))
+                                    .unwrap();
+                                let col_indices: [u32; 2] =
+                                    [Columns::Id as u32, Columns::Username as u32];
+                                user_list_model.set(
+                                    &user_list_model.append(),
+                                    &col_indices,
+                                    &[&(packet.body.client_id as u32), &packet.body.name],
+                                );
+                            }
                             UserLeft::KIND_ID => {
                                 let packet: Packet<UserLeft> = packet.finish_parse().unwrap();
                                 let id = packet.body.client_id as u32;
                                 let iter = user_list_model.get_iter_first().unwrap();
                                 loop {
-                                    let value = user_list_model.get_value(&iter, Columns::Id as i32)
+                                    let value = user_list_model
+                                        .get_value(&iter, Columns::Id as i32)
                                         .get_some::<u32>()
                                         .unwrap();
                                     if value == id {
@@ -247,8 +246,10 @@ async fn handle_network_events(
                     };
                     if result.is_err() {
                         let builder = &ui.borrow().builder;
-                        let connect_failure_status: gtk::Label = builder.get_object("connect_failure_status").unwrap();
-                        connect_failure_status.set_text("Disconnecting from the server because of a network issue");
+                        let connect_failure_status: gtk::Label =
+                            builder.get_object("connect_failure_status").unwrap();
+                        connect_failure_status
+                            .set_text("Disconnecting from the server because of a network issue");
                     }
                 }
             }
@@ -257,10 +258,8 @@ async fn handle_network_events(
 }
 
 fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
-    let application = gtk::Application::new(
-        Some("ca.mitchhentges.comms"),
-        Default::default(),
-    ).unwrap();
+    let application =
+        gtk::Application::new(Some("ca.mitchhentges.comms"), Default::default()).unwrap();
 
     let o = RefCell::new(Some(f));
     application.connect_startup(move |a| {
@@ -273,7 +272,12 @@ fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
     application.run(&std::env::args().collect::<Vec<_>>());
 }
 
-pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>, ui_receiver: std::sync::mpsc::Receiver<UICommand>, audio_handle: AudioHandle) {
+pub fn run(
+    network: NetworkHandle,
+    network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
+    ui_receiver: std::sync::mpsc::Receiver<UICommand>,
+    audio_handle: AudioHandle,
+) {
     let command = ui_receiver.recv().unwrap();
     match command {
         UICommand::AudioIPCReady => (),
@@ -284,19 +288,16 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
     let (input_devices, output_devices) = match ui_cmd_from_audio {
         UICommand::DevicesFound {
             input_devices,
-            output_devices
-        } => {
-            (input_devices, output_devices)
-        },
+            output_devices,
+        } => (input_devices, output_devices),
         _ => panic!("Expected second UICommand to be 'DevicesFound'"),
     };
 
     let initial_local_storage: Option<LocalStorage> = ProjectDirs::from("", "Comms", "Comms")
         .and_then(|project_dirs| {
             std::fs::read_to_string(project_dirs.data_dir().join("local_storage")).ok()
-        }).and_then(|storage_string| {
-            serde_json::from_str(&storage_string).ok()
-        });
+        })
+        .and_then(|storage_string| serde_json::from_str(&storage_string).ok());
 
     gtk_start(move |app| {
         let stack = gtk::Stack::new();
@@ -336,7 +337,8 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
             server_entry.set_text(&initial_storage.server);
         }
 
-        let submit_connection_form = { // TODO use clone! macro?
+        let submit_connection_form = {
+            // TODO use clone! macro?
             let glib_context = glib_context.clone();
             let network = network.clone();
             let ui = ui.clone();
@@ -385,21 +387,18 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
         column.add_attribute(&renderer, "text", Columns::Username as i32);
         treeview.append_column(&column);
 
-        let disconnect_menu_item: gtk::MenuItem = builder.get_object("disconnect_menu_item").unwrap();
+        let disconnect_menu_item: gtk::MenuItem =
+            builder.get_object("disconnect_menu_item").unwrap();
         disconnect_menu_item.connect_activate(move |_| {
-            glib_context.spawn_local(disconnect_from_server(
-                ui.clone(),
-                network.clone(),
-            ));
+            glib_context.spawn_local(disconnect_from_server(ui.clone(), network.clone()));
         });
 
         let inputs_submenu: gtk::Menu = builder.get_object("inputs_submenu").unwrap();
         let outputs_submenu: gtk::Menu = builder.get_object("outputs_submenu").unwrap();
 
         for (device_count, device) in input_devices.into_iter().enumerate() {
-            let input_menu_item: gtk::MenuItem = gtk::MenuItemBuilder::new()
-                .label(&device.label)
-                .build();
+            let input_menu_item: gtk::MenuItem =
+                gtk::MenuItemBuilder::new().label(&device.label).build();
             input_menu_item.connect_activate(|_| {
                 //send command switch device
             });
@@ -408,17 +407,14 @@ pub fn run(network: NetworkHandle, network_event_receiver: futures::channel::mps
         }
 
         for (device_count, device) in output_devices.into_iter().enumerate() {
-            let output_menu_item: gtk::MenuItem = gtk::MenuItemBuilder::new()
-                .label(&device.label)
-                .build();
+            let output_menu_item: gtk::MenuItem =
+                gtk::MenuItemBuilder::new().label(&device.label).build();
             output_menu_item.connect_activate(|_| {
                 println!("Clicked output menu item button.");
             });
             let device_count = device_count as u32;
             outputs_submenu.attach(&output_menu_item, 0, 1, device_count, device_count + 1);
-
         }
-
 
         let status_box: gtk::Box = builder.get_object("status_box").unwrap();
         stack.add_named(&status_box, "status");

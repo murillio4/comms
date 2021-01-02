@@ -1,18 +1,23 @@
-use std::net::{UdpSocket, TcpStream};
-use std::time::{SystemTime, Duration};
 use clap::{App, Arg};
 use std::io;
-use voice_lib::packet::{Packet, Hello, PacketBody, AssociateUdpAccepted, FinishConnect, AssociateUdp, FinishConnectAccepted, AudioFromClient};
-use std::num::NonZeroU64;
 use std::io::{Read, Write};
-use voice_lib::serialization::{UdpHeaderParsedPacket, serialize, DeserializeError, SerializeError};
+use std::net::{TcpStream, UdpSocket};
+use std::num::NonZeroU64;
+use std::time::{Duration, SystemTime};
+use voice_lib::packet::{
+    AssociateUdp, AssociateUdpAccepted, AudioFromClient, FinishConnect, FinishConnectAccepted,
+    Hello, Packet, PacketBody,
+};
+use voice_lib::serialization::{
+    serialize, DeserializeError, SerializeError, UdpHeaderParsedPacket,
+};
 
-fn read_next_tcp<'a>(tcp: &mut TcpStream, buffer: &'a mut [u8]) -> &'a[u8]{
+fn read_next_tcp<'a>(tcp: &mut TcpStream, buffer: &'a mut [u8]) -> &'a [u8] {
     let size = tcp.read(buffer).unwrap();
     &buffer[..size]
 }
 
-fn read_next_udp<'a>(udp: &UdpSocket, buffer: &'a mut [u8]) -> &'a[u8]{
+fn read_next_udp<'a>(udp: &UdpSocket, buffer: &'a mut [u8]) -> &'a [u8] {
     let size = udp.recv(buffer).unwrap();
     &buffer[..size]
 }
@@ -23,7 +28,11 @@ fn main() -> Result<(), BeepClientErr> {
 
     let matches = App::new("Beep Client")
         .version("0.1")
-        .arg(Arg::with_name("server_address").takes_value(true).required(true))
+        .arg(
+            Arg::with_name("server_address")
+                .takes_value(true)
+                .required(true),
+        )
         .arg(Arg::with_name("client_name").takes_value(true))
         .get_matches();
 
@@ -107,13 +116,14 @@ fn main() -> Result<(), BeepClientErr> {
                 *sample = next_value()
             }
 
-            let bytes = chunk.iter()
+            let bytes = chunk
+                .iter()
                 .flat_map(|sample| sample.to_le_bytes().to_vec())
                 .collect();
             udp.send(&serialize(
                 NonZeroU64::new(next_packet_id).unwrap(),
                 None,
-                AudioFromClient(bytes)
+                AudioFromClient(bytes),
             )?)?;
             next_packet_id += 1;
         }

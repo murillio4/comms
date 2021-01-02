@@ -1,13 +1,13 @@
-use crate::pulseaudio::audio_connection::PulseAudioConnection;
 use crate::audio_connection::{EventLoop, EventLoopNotify};
+use crate::buffer::InterruptReceiver;
+use crate::pulseaudio::audio_connection::PulseAudioConnection;
+use libpulse_binding::mainloop::api::{Mainloop, MainloopInner};
+use libpulse_binding::mainloop::events::io;
 use libpulse_binding::mainloop::events::io::IoEvent;
+use libpulse_binding::mainloop::standard::{Mainloop as MainloopImpl, MainloopInternal};
+use std::cell::RefCell;
 use std::mem::size_of_val;
 use std::rc::Rc;
-use libpulse_binding::mainloop::standard::{Mainloop as MainloopImpl, MainloopInternal};
-use libpulse_binding::mainloop::api::{Mainloop, MainloopInner};
-use crate::buffer::InterruptReceiver;
-use std::cell::RefCell;
-use libpulse_binding::mainloop::events::io;
 
 #[derive(Clone)]
 pub struct PulseEventLoopNotify {
@@ -45,16 +45,23 @@ impl PulseEventLoopBuilder {
         }
     }
 
-    pub fn with_interrupt(mut self, receiver: impl InterruptReceiver<PulseEventLoopRegistration> + 'static) -> Self {
+    pub fn with_interrupt(
+        mut self,
+        receiver: impl InterruptReceiver<PulseEventLoopRegistration> + 'static,
+    ) -> Self {
         let fd = receiver.registration().fd;
         let receiver = Rc::new(RefCell::new(receiver));
         let connection = Rc::new(self.connection.take().unwrap());
         let io_event_handle = {
-            self.mainloop.new_io_event(fd, io::FlagSet::INPUT, Box::new(move |_, fd, _| {
-                unsafe { libc::read(fd, std::ptr::null() as *const u64 as _, 8) };
-                let mut receiver = receiver.borrow_mut();
-                receiver.invoke(&*connection);
-            }))
+            self.mainloop.new_io_event(
+                fd,
+                io::FlagSet::INPUT,
+                Box::new(move |_, fd, _| {
+                    unsafe { libc::read(fd, std::ptr::null() as *const u64 as _, 8) };
+                    let mut receiver = receiver.borrow_mut();
+                    receiver.invoke(&*connection);
+                }),
+            )
         };
         self.io_event_handle = io_event_handle;
         self
@@ -74,7 +81,7 @@ pub struct PulseEventLoop {
     // Need to keep Context in scope, otherwise mainloop.run() doesn't do anything
     _connection: Option<PulseAudioConnection>,
     // Keep IO handle in scope while mainloop.run() is invoked
-    _io_event_handle: Option<IoEvent<MainloopInner<MainloopInternal>>>
+    _io_event_handle: Option<IoEvent<MainloopInner<MainloopInternal>>>,
 }
 
 impl EventLoop for PulseEventLoop {

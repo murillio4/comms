@@ -1,12 +1,12 @@
-use winapi::um::{winnt, synchapi, winbase};
-use winapi::shared::minwindef;
-use std::ptr;
-use crate::wasapi::audio_connection::WasapiAudioConnection;
 use crate::audio_connection::{EventLoop, EventLoopNotify};
-use crate::buffer::{MicSink, PlaybackSource, InterruptReceiver, MaybeSharedPlaybackSource};
+use crate::buffer::{InterruptReceiver, MaybeSharedPlaybackSource, MicSink, PlaybackSource};
+use crate::wasapi::audio_connection::WasapiAudioConnection;
+use std::ptr;
+use winapi::shared::minwindef;
+use winapi::um::{synchapi, winbase, winnt};
 
 pub struct WasapiEventLoopRegistration {
-    pub win_handle: winnt::HANDLE
+    pub win_handle: winnt::HANDLE,
 }
 
 unsafe impl Send for WasapiEventLoopRegistration {}
@@ -29,11 +29,10 @@ impl EventLoopNotify for WasapiEventLoopNotify {
 
 pub fn event_loop_channel() -> (WasapiEventLoopRegistration, WasapiEventLoopNotify) {
     let win_handle = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
-    (WasapiEventLoopRegistration {
-        win_handle
-    }, WasapiEventLoopNotify {
-        win_handle
-    })
+    (
+        WasapiEventLoopRegistration { win_handle },
+        WasapiEventLoopNotify { win_handle },
+    )
 }
 
 #[derive(Clone)]
@@ -62,19 +61,30 @@ impl SelectWasapiHandle for Vec<WasapiHandle> {
         let winnt_handles: Vec<winnt::HANDLE> = self.iter().map(|h| h.get_winnt_handle()).collect();
         let handle_index = match wait_for_handle_signal(&winnt_handles) {
             Ok(index) => index,
-            Err(description) => return Err(description)
+            Err(description) => return Err(description),
         };
 
         Ok(self.get(handle_index).cloned().unwrap())
     }
 }
 
-pub struct WasapiEventLoopBuilder<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>, I: InterruptReceiver<WasapiEventLoopRegistration>> {
+pub struct WasapiEventLoopBuilder<
+    M: MicSink,
+    P: PlaybackSource,
+    SP: MaybeSharedPlaybackSource<P>,
+    I: InterruptReceiver<WasapiEventLoopRegistration>,
+> {
     connection: WasapiAudioConnection<M, P, SP>,
     receiver: Option<I>,
 }
 
-impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>, I: InterruptReceiver<WasapiEventLoopRegistration>> WasapiEventLoopBuilder<M, P, SP, I> {
+impl<
+        M: MicSink,
+        P: PlaybackSource,
+        SP: MaybeSharedPlaybackSource<P>,
+        I: InterruptReceiver<WasapiEventLoopRegistration>,
+    > WasapiEventLoopBuilder<M, P, SP, I>
+{
     pub fn new(connection: WasapiAudioConnection<M, P, SP>) -> Self {
         Self {
             connection,
@@ -95,12 +105,23 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>, I: Interru
     }
 }
 
-pub struct WasapiEventLoop<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>, I: InterruptReceiver<WasapiEventLoopRegistration>> {
+pub struct WasapiEventLoop<
+    M: MicSink,
+    P: PlaybackSource,
+    SP: MaybeSharedPlaybackSource<P>,
+    I: InterruptReceiver<WasapiEventLoopRegistration>,
+> {
     connection: WasapiAudioConnection<M, P, SP>,
     receiver: Option<I>,
 }
 
-impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>, I: InterruptReceiver<WasapiEventLoopRegistration>> EventLoop for WasapiEventLoop<M, P, SP, I> {
+impl<
+        M: MicSink,
+        P: PlaybackSource,
+        SP: MaybeSharedPlaybackSource<P>,
+        I: InterruptReceiver<WasapiEventLoopRegistration>,
+    > EventLoop for WasapiEventLoop<M, P, SP, I>
+{
     type Registration = WasapiEventLoopRegistration;
     type Notify = WasapiEventLoopNotify;
     type AudioConnection = WasapiAudioConnection<M, P, SP>;
@@ -118,7 +139,12 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>, I: Interru
             match handles.select() {
                 Err(_) => todo!("failed to select WASAPI handle"),
                 Ok(WasapiHandle::MicStream(_)) => {
-                    if self.connection.mic_stream.invoke(&mut self.connection.mic_sink).is_err() {
+                    if self
+                        .connection
+                        .mic_stream
+                        .invoke(&mut self.connection.mic_sink)
+                        .is_err()
+                    {
                         unimplemented!("mic error - change device?");
                     }
                 }
@@ -153,9 +179,7 @@ fn wait_for_handle_signal(handles: &[winnt::HANDLE]) -> Result<usize, String> {
         )
     };
     if result == winbase::WAIT_FAILED {
-        let err = unsafe {
-            winapi::um::errhandlingapi::GetLastError()
-        };
+        let err = unsafe { winapi::um::errhandlingapi::GetLastError() };
         let description = format!("WaitForMultipleObjectsEx failed: {}", err);
         return Err(description);
     }

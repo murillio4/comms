@@ -1,16 +1,16 @@
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
-use std::sync::Arc;
-use futures::future::BoxFuture;
-use std::future::Future;
-use futures::FutureExt;
-use futures::task::{ArcWake, Context, Poll, waker_ref};
 use futures::channel::oneshot;
-use std::task::Waker;
-use std::pin::Pin;
+use futures::future::BoxFuture;
+use futures::task::{waker_ref, ArcWake, Context, Poll};
+use futures::FutureExt;
 use std::cell::UnsafeCell;
-use std::ops::Deref;
-use voice_lib::packet::PacketKind;
 use std::fmt::Debug;
+use std::future::Future;
+use std::ops::Deref;
+use std::pin::Pin;
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
+use std::sync::Arc;
+use std::task::Waker;
+use voice_lib::packet::PacketKind;
 
 pub struct PacketFuture {
     kind: PacketKind,
@@ -29,11 +29,11 @@ impl Future for PacketFuture {
                 let waker = self.waker.0.get();
                 unsafe { *waker = Some(cx.waker().clone()) };
                 Poll::Pending
-            },
+            }
             Err(e) => {
                 dbg!(self.kind);
                 panic!(e)
-            },
+            }
         }
     }
 }
@@ -49,10 +49,7 @@ impl PacketFuture {
                 receiver: Arc::new(SyncUnsafeCell(UnsafeCell::new(receiver))),
                 waker: waker.clone(),
             },
-            PacketFinish {
-                sender,
-                waker,
-            },
+            PacketFinish { sender, waker },
         )
     }
 }
@@ -110,7 +107,7 @@ pub struct Spawner {
 pub enum EndpointError {
     SerializeFailed {
         kind: PacketKind,
-        packet: Box<dyn Debug>
+        packet: Box<dyn Debug>,
     },
 }
 
@@ -163,8 +160,10 @@ impl ArcWake for Task {
 
 pub fn new(waker: Arc<mio::Waker>) -> (TaskExecutor, Spawner) {
     let (task_sender, ready_queue) = sync_channel(10_000);
-    (TaskExecutor { ready_queue }, Spawner { task_scheduler: Scheduler {
-        task_sender,
-        waker
-    }})
+    (
+        TaskExecutor { ready_queue },
+        Spawner {
+            task_scheduler: Scheduler { task_sender, waker },
+        },
+    )
 }

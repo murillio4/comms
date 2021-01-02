@@ -1,7 +1,7 @@
 #[derive(Clone)]
 pub struct DeviceInfo {
     pub label: String,
-    pub id: String
+    pub id: String,
 }
 
 pub struct FoundDevices {

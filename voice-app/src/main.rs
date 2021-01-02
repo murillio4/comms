@@ -1,10 +1,10 @@
-use std::{process, panic};
 use std::sync::mpsc;
+use std::{panic, process};
 
-use crate::network::{NetworkError, SendToNetworkThreadError, Worker};
-use crate::network::ipc::NetworkHandle;
 use crate::audio::ipc::AudioHandle;
-use crate::audio::{AudioPlatformImpl, AudioPlatform};
+use crate::audio::{AudioPlatform, AudioPlatformImpl};
+use crate::network::ipc::NetworkHandle;
+use crate::network::{NetworkError, SendToNetworkThreadError, Worker};
 
 mod audio;
 mod network;
@@ -29,17 +29,16 @@ fn main() -> Result<(), CommsError> {
         command_tx: audio_sender,
     };
     // UI <> Network comm channel
-    let (network_handle, network_event_receiver, network_worker_init) = {
-        NetworkHandle::new_handle_and_worker(audio_handle.clone())
-    };
-
+    let (network_handle, network_event_receiver, network_worker_init) =
+        { NetworkHandle::new_handle_and_worker(audio_handle.clone()) };
 
     std::thread::spawn(move || {
         #[cfg(windows)]
         voice_lib::winlib::bump_priority();
         if let Err(e) = Worker::new()
             .map_err(|e| NetworkError::Io(Some(e)))
-            .and_then(|w| w.run(network_worker_init)) {
+            .and_then(|w| w.run(network_worker_init))
+        {
             eprintln!("Encountered an error in network operations, stopping");
             eprintln!("Error details: {:?}", e);
             process::exit(1);
@@ -52,7 +51,13 @@ fn main() -> Result<(), CommsError> {
         std::thread::spawn(move || {
             #[cfg(windows)]
             voice_lib::winlib::bump_priority();
-            if let Err(e) = audio::run(parameters, network_handle, ui_handle, audio_registration, audio_receiver) {
+            if let Err(e) = audio::run(
+                parameters,
+                network_handle,
+                ui_handle,
+                audio_registration,
+                audio_receiver,
+            ) {
                 eprintln!("Encountered an error in audio operations, stopping");
                 eprintln!("Error details: {:?}", e);
                 process::exit(1);
@@ -60,7 +65,12 @@ fn main() -> Result<(), CommsError> {
         });
     }
 
-    ui::run(network_handle, network_event_receiver, ui_receiver, audio_handle);
+    ui::run(
+        network_handle,
+        network_event_receiver,
+        ui_receiver,
+        audio_handle,
+    );
     Ok(())
 }
 

@@ -1,9 +1,9 @@
-use voice_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use crate::state::MeasureState;
-use std::sync::mpsc::Sender;
-use std::sync::{Mutex, Arc};
-use std::time::{SystemTime, Duration};
 use std::collections::VecDeque;
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
+use voice_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 
 pub struct CalculateDelayMic {
     tx: Sender<Duration>,
@@ -46,28 +46,53 @@ impl MicSink for CalculateDelayMic {
                 MeasureState::Measuring { measure_start_time } => {
                     if !self.just_finished_detecting_noise {
                         self.just_finished_detecting_noise = true;
-                        println!("[{}ms] \tMax noise volume is: {}", SystemTime::now().duration_since(self.start_time).unwrap().as_millis(), self.max_noise_volume);
+                        println!(
+                            "[{}ms] \tMax noise volume is: {}",
+                            SystemTime::now()
+                                .duration_since(self.start_time)
+                                .unwrap()
+                                .as_millis(),
+                            self.max_noise_volume
+                        );
                     }
 
                     let threshold = self.max_noise_volume + 0.3;
                     if sample.abs() > threshold && self.beep_latency.is_none() {
-                        println!("[{}ms] \tFound sample above max noise volume + buffer", SystemTime::now().duration_since(self.start_time).unwrap().as_millis());
-                        self.beep_latency = Some(SystemTime::now().duration_since(measure_start_time).unwrap());
+                        println!(
+                            "[{}ms] \tFound sample above max noise volume + buffer",
+                            SystemTime::now()
+                                .duration_since(self.start_time)
+                                .unwrap()
+                                .as_millis()
+                        );
+                        self.beep_latency = Some(
+                            SystemTime::now()
+                                .duration_since(measure_start_time)
+                                .unwrap(),
+                        );
                         Some(MeasureState::FinishMeasuring)
                     } else {
                         None
                     }
-                },
+                }
                 MeasureState::FinishMeasuring => {
                     if self.beep_latency.is_some() {
                         self.recent_samples.push_back(sample.abs());
                         if self.recent_samples.len() > 100 {
                             self.recent_samples.pop_front();
-                            let avg = self.recent_samples.iter().fold(0f32, |acc, next| {
-                                acc + next
-                            }) / self.recent_samples.len() as f32;
+                            let avg = self
+                                .recent_samples
+                                .iter()
+                                .fold(0f32, |acc, next| acc + next)
+                                / self.recent_samples.len() as f32;
                             if avg < self.max_noise_volume {
-                                println!("[{}ms] \tBack under noise threshold", SystemTime::now().duration_since(self.start_time).unwrap().as_millis());
+                                println!(
+                                    "[{}ms] \tBack under noise threshold",
+                                    SystemTime::now()
+                                        .duration_since(self.start_time)
+                                        .unwrap()
+                                        .as_millis()
+                                );
                                 self.tx.send(self.beep_latency.take().unwrap()).unwrap();
                                 Some(MeasureState::Idle)
                             } else {
@@ -79,7 +104,7 @@ impl MicSink for CalculateDelayMic {
                     } else {
                         None
                     }
-                },
+                }
                 MeasureState::Idle => {
                     self.beep_latency.take();
                     self.max_noise_volume = 0f32;
@@ -105,7 +130,7 @@ pub struct CalculateDelayPlayback {
 }
 
 impl CalculateDelayPlayback {
-    fn new(state: Arc<Mutex<MeasureState>>, start_time: SystemTime,) -> Self {
+    fn new(state: Arc<Mutex<MeasureState>>, start_time: SystemTime) -> Self {
         Self {
             sample_clock: 0f32,
             state,
@@ -131,12 +156,19 @@ impl PlaybackSource for CalculateDelayPlayback {
             MeasureState::DetectNoiseProfile => (0f32, None),
             MeasureState::ReadyToMeasure { ready_time } => {
                 let now = SystemTime::now();
-                println!("[{}ms] \tTook {}ms from prompt-to-beep", now.duration_since(self.start_time).unwrap().as_millis(), now.duration_since(ready_time).unwrap().as_millis());
-                (calc_sample(), Some(MeasureState::Measuring { measure_start_time: now }))
-            },
-            MeasureState::Measuring { .. } => {
-                (calc_sample(), None)
-            },
+                println!(
+                    "[{}ms] \tTook {}ms from prompt-to-beep",
+                    now.duration_since(self.start_time).unwrap().as_millis(),
+                    now.duration_since(ready_time).unwrap().as_millis()
+                );
+                (
+                    calc_sample(),
+                    Some(MeasureState::Measuring {
+                        measure_start_time: now,
+                    }),
+                )
+            }
+            MeasureState::Measuring { .. } => (calc_sample(), None),
             MeasureState::FinishMeasuring => (0f32, None),
         };
 
@@ -148,7 +180,14 @@ impl PlaybackSource for CalculateDelayPlayback {
     }
 }
 
-pub fn create_measurement_pipeline(state: Arc<Mutex<MeasureState>>, tx: Sender<Duration>, start_time: SystemTime) -> (CalculateDelayMic, UnsharedPlaybackSource<CalculateDelayPlayback>) {
+pub fn create_measurement_pipeline(
+    state: Arc<Mutex<MeasureState>>,
+    tx: Sender<Duration>,
+    start_time: SystemTime,
+) -> (
+    CalculateDelayMic,
+    UnsharedPlaybackSource<CalculateDelayPlayback>,
+) {
     (
         CalculateDelayMic::new(state.clone(), tx, start_time),
         UnsharedPlaybackSource(CalculateDelayPlayback::new(state, start_time)),

@@ -1,6 +1,6 @@
-use voice_device::audio_connection::{EventLoop, EventLoopNotify};
 use crate::audio::buffer::{MicBuffer, RcMultiplexer};
 use crate::audio::ipc::AudioReceiver;
+use voice_device::audio_connection::{EventLoop, EventLoopNotify};
 
 pub trait AudioPlatform {
     type Parameters;

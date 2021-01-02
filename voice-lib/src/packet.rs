@@ -14,17 +14,15 @@ pub struct Packet<T: PacketBody> {
 
 impl<T: PacketBody> Packet<T> {
     pub fn new(id: PacketId, reply_to: Option<PacketId>, body: T) -> Self {
-        Packet {
-            id,
-            reply_to,
-            body,
-        }
+        Packet { id, reply_to, body }
     }
 }
 
 pub trait PacketBody {
     const KIND_ID: PacketKind;
-    fn kind_id() -> PacketKind { Self::KIND_ID }
+    fn kind_id() -> PacketKind {
+        Self::KIND_ID
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -53,10 +51,7 @@ impl PacketBody for FinishConnect {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct AudioFromClient(
-    #[serde(with = "serde_bytes")]
-    pub Vec<u8>
-);
+pub struct AudioFromClient(#[serde(with = "serde_bytes")] pub Vec<u8>);
 
 impl PacketBody for AudioFromClient {
     const KIND_ID: PacketKind = 3u8;
@@ -92,7 +87,7 @@ impl PacketBody for FinishConnectAccepted {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ErrorResponse {
     AssociateUdpFirst,
-    UnexpectedPacket(PacketId)
+    UnexpectedPacket(PacketId),
 }
 
 impl PacketBody for ErrorResponse {

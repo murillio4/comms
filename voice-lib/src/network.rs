@@ -1,11 +1,11 @@
+use crate::packet::{Packet, PacketBody};
+use crate::serialization::{DeserializeError, OwnedHeaderParsedPacket};
+use crate::{PacketHeader, PACKET_HEADER_SIZE};
+use mio::net::TcpStream;
+use serde::de::DeserializeOwned;
+use slice_deque::SliceDeque;
 use std::io;
 use std::io::Read;
-use mio::net::TcpStream;
-use slice_deque::SliceDeque;
-use crate::{PacketHeader, PACKET_HEADER_SIZE};
-use crate::serialization::{DeserializeError, OwnedHeaderParsedPacket};
-use crate::packet::{Packet, PacketBody};
-use serde::de::DeserializeOwned;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Protocol {
@@ -34,9 +34,13 @@ impl CommsTcpStream {
             match self.internal.read(&mut buf) {
                 Ok(0) => return Ok(UpdateFromStream::ConnectionClosed),
                 Ok(amount) => self.slice_deque.extend_from_slice(&buf[0..amount]),
-                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(UpdateFromStream::Success),
+                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    return Ok(UpdateFromStream::Success)
+                }
                 Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                Err(ref err) if err.kind() == io::ErrorKind::ConnectionReset => return Ok(UpdateFromStream::ConnectionClosed),
+                Err(ref err) if err.kind() == io::ErrorKind::ConnectionReset => {
+                    return Ok(UpdateFromStream::ConnectionClosed)
+                }
                 Err(err) => return Err(err),
             }
         }
@@ -50,8 +54,7 @@ impl CommsTcpStream {
                 return Ok(None);
             }
             let bytes = &self.slice_deque.as_slice()[0..PACKET_HEADER_SIZE];
-            let header = bincode::deserialize(bytes)
-                .map_err(|_| DeserializeError)?;
+            let header = bincode::deserialize(bytes).map_err(|_| DeserializeError)?;
             unsafe { self.slice_deque.move_head(PACKET_HEADER_SIZE as isize) };
             header
         };
@@ -64,7 +67,9 @@ impl CommsTcpStream {
     }
 
     fn take_packet_body<R, F>(&mut self, body_len: usize, parse: F) -> R
-        where F: FnOnce(&[u8]) -> R {
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
         let slice = &self.slice_deque.as_slice()[0..body_len];
         let return_value: R = parse(slice);
         unsafe { self.slice_deque.move_head(body_len as isize) };
@@ -93,17 +98,17 @@ impl<'a> TcpBodyInStream<'a> {
 
     fn into_vec(mut self) -> Vec<u8> {
         self.has_consumed_stream = true;
-        self.stream.take_packet_body(self.len, |bytes| {
-            bytes.to_vec()
-        })
+        self.stream
+            .take_packet_body(self.len, |bytes| bytes.to_vec())
     }
 
     fn into_body<B>(mut self) -> Result<B, Box<bincode::ErrorKind>>
-        where B: DeserializeOwned {
+    where
+        B: DeserializeOwned,
+    {
         self.has_consumed_stream = true;
-        self.stream.take_packet_body(self.len, |bytes| {
-            bincode::deserialize(bytes)
-        })
+        self.stream
+            .take_packet_body(self.len, |bytes| bincode::deserialize(bytes))
     }
 }
 
@@ -129,7 +134,8 @@ impl<'a> TcpHeaderParsedPacket<'a> {
     }
 
     pub fn finish_parse<B>(self) -> Result<Packet<B>, DeserializeError>
-        where B: PacketBody + DeserializeOwned
+    where
+        B: PacketBody + DeserializeOwned,
     {
         let body: B = self.stream_body.into_body().map_err(|_| DeserializeError)?;
         Ok(Packet::new(self.header.id, self.header.reply_to, body))
@@ -146,4 +152,3 @@ pub enum UpdateFromStream {
     Success,
     ConnectionClosed,
 }
-

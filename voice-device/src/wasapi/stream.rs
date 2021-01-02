@@ -1,13 +1,13 @@
-use std::{mem, ptr, slice};
-use winapi::um::{audioclient, winnt};
-use winapi::shared::{basetsd, minwindef, mmreg};
+use crate::buffer::{MicSink, PlaybackSource};
+use crate::wasapi::com::check_result;
 use crate::wasapi::device::IAudioClientWrapper;
 use crate::wasapi::event_loop::WasapiEventLoopRegistration;
-use std::mem::MaybeUninit;
-use dasp::Sample;
-use crate::wasapi::com::check_result;
-use crate::buffer::{MicSink, PlaybackSource};
 use crate::wasapi::sample_rate_conversion::{MicSampleRateConverter, PlaybackSampleRateConverter};
+use dasp::Sample;
+use std::mem::MaybeUninit;
+use std::{mem, ptr, slice};
+use winapi::shared::{basetsd, minwindef, mmreg};
+use winapi::um::{audioclient, winnt};
 
 #[derive(Debug, Clone, Copy)]
 pub enum SampleFormat {
@@ -49,7 +49,11 @@ pub struct RawWasapiStream {
 }
 
 impl RawWasapiStream {
-    pub fn new(waveformatex: mmreg::WAVEFORMATEX, audio_client: IAudioClientWrapper, format: Format) -> Self {
+    pub fn new(
+        waveformatex: mmreg::WAVEFORMATEX,
+        audio_client: IAudioClientWrapper,
+        format: Format,
+    ) -> Self {
         let max_buffer_frames = audio_client.get_buffer_max_frames().unwrap();
 
         Self {
@@ -98,7 +102,8 @@ impl<M: MicSink> WasapiMicStream<M> {
         let mut flags = MaybeUninit::<_>::uninit();
 
         loop {
-            let hresult = unsafe { (*self.capture_client).GetNextPacketSize(&mut frames_available) };
+            let hresult =
+                unsafe { (*self.capture_client).GetNextPacketSize(&mut frames_available) };
             if let Err(err) = stream_error_from_hresult(hresult) {
                 return Err(err);
             }
@@ -125,7 +130,8 @@ impl<M: MicSink> WasapiMicStream<M> {
 
             let raw_buffer = unsafe { buffer.assume_init() };
             let sample_size = self.raw_stream.sample_format.sample_size();
-            let buffer_len = frames_available as usize * self.raw_stream.bytes_per_frame as usize / sample_size;
+            let buffer_len =
+                frames_available as usize * self.raw_stream.bytes_per_frame as usize / sample_size;
 
             match self.raw_stream.sample_format {
                 SampleFormat::F32 => {
@@ -141,7 +147,12 @@ impl<M: MicSink> WasapiMicStream<M> {
                         let mut next_sample: f64 = Sample::EQUILIBRIUM;
                         for _ in 0..self.raw_stream.channel_count {
                             next_sample = {
-                                let next = next_sample.add_amp(sample_buffer_iter.next().expect("Buffer had less samples than expected").to_sample());
+                                let next = next_sample.add_amp(
+                                    sample_buffer_iter
+                                        .next()
+                                        .expect("Buffer had less samples than expected")
+                                        .to_sample(),
+                                );
                                 if next == f64::INFINITY {
                                     f64::MAX
                                 } else {
@@ -150,7 +161,8 @@ impl<M: MicSink> WasapiMicStream<M> {
                             }
                         }
 
-                        self.sample_rate_converter.feed_next(next_sample, mic_buffer)
+                        self.sample_rate_converter
+                            .feed_next(next_sample, mic_buffer)
                     }
 
                     let hresult = unsafe { (*self.capture_client).ReleaseBuffer(frames_available) };
@@ -171,7 +183,12 @@ impl<M: MicSink> WasapiMicStream<M> {
                         let mut next_sample: f64 = Sample::EQUILIBRIUM;
                         for _ in 0..self.raw_stream.channel_count {
                             next_sample = {
-                                let next = next_sample.add_amp(sample_buffer_iter.next().expect("Buffer had less samples than expected").to_sample());
+                                let next = next_sample.add_amp(
+                                    sample_buffer_iter
+                                        .next()
+                                        .expect("Buffer had less samples than expected")
+                                        .to_sample(),
+                                );
                                 if next == f64::INFINITY {
                                     f64::MAX
                                 } else {
@@ -180,7 +197,8 @@ impl<M: MicSink> WasapiMicStream<M> {
                             }
                         }
 
-                        self.sample_rate_converter.feed_next(next_sample, mic_buffer)
+                        self.sample_rate_converter
+                            .feed_next(next_sample, mic_buffer)
                     }
 
                     let hresult = unsafe { (*self.capture_client).ReleaseBuffer(frames_available) };
@@ -219,21 +237,19 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
     pub fn invoke(&mut self, playback_source: &mut P) -> Result<(), StreamError> {
         loop {
             let mut padding = MaybeUninit::<u32>::uninit();
-            let hresult = unsafe { (*self.raw_stream.audio_client).GetCurrentPadding(padding.as_mut_ptr()) };
+            let hresult =
+                unsafe { (*self.raw_stream.audio_client).GetCurrentPadding(padding.as_mut_ptr()) };
             stream_error_from_hresult(hresult)?;
-            let frames_available = self.raw_stream.max_frames_in_buffer - unsafe { padding.assume_init() };
+            let frames_available =
+                self.raw_stream.max_frames_in_buffer - unsafe { padding.assume_init() };
 
             if frames_available == 0 {
                 return Ok(());
             }
 
             let mut buffer = MaybeUninit::<*mut minwindef::BYTE>::uninit();
-            let hresult = unsafe {
-                (*self.render_client).GetBuffer(
-                    frames_available,
-                    buffer.as_mut_ptr(),
-                )
-            };
+            let hresult =
+                unsafe { (*self.render_client).GetBuffer(frames_available, buffer.as_mut_ptr()) };
 
             if let Err(err) = stream_error_from_hresult(hresult) {
                 return Err(err);
@@ -241,7 +257,8 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
 
             let raw_buffer = unsafe { buffer.assume_init() };
             let sample_size = self.raw_stream.sample_format.sample_size();
-            let buffer_len = frames_available as usize * self.raw_stream.bytes_per_frame as usize / sample_size;
+            let buffer_len =
+                frames_available as usize * self.raw_stream.bytes_per_frame as usize / sample_size;
 
             match self.raw_stream.sample_format {
                 SampleFormat::F32 => {
@@ -249,17 +266,23 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                     // according to the audio format in use.
                     #[allow(clippy::cast_ptr_alignment)]
                     let buffer_data = raw_buffer as *mut f32;
-                    let sample_buffer = unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
+                    let sample_buffer =
+                        unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
                     let sample_count = sample_buffer.len() / self.raw_stream.channel_count;
 
                     for i in 0..sample_count {
-                        let sample = self.sample_rate_converter.get_next(playback_source).to_sample();
+                        let sample = self
+                            .sample_rate_converter
+                            .get_next(playback_source)
+                            .to_sample();
                         for channel_index in 0..self.raw_stream.channel_count {
-                            sample_buffer[(i * self.raw_stream.channel_count) + channel_index] = sample;
+                            sample_buffer[(i * self.raw_stream.channel_count) + channel_index] =
+                                sample;
                         }
                     }
 
-                    let hresult = unsafe { (*self.render_client).ReleaseBuffer(frames_available as u32, 0) };
+                    let hresult =
+                        unsafe { (*self.render_client).ReleaseBuffer(frames_available as u32, 0) };
                     if let Err(err) = stream_error_from_hresult(hresult) {
                         return Err(err);
                     }
@@ -269,17 +292,23 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                     // according to the audio format in use.
                     #[allow(clippy::cast_ptr_alignment)]
                     let buffer_data = raw_buffer as *mut i16;
-                    let sample_buffer = unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
+                    let sample_buffer =
+                        unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
                     let sample_count = sample_buffer.len() / self.raw_stream.channel_count;
 
                     for i in 0..sample_count {
-                        let sample = self.sample_rate_converter.get_next(playback_source).to_sample();
+                        let sample = self
+                            .sample_rate_converter
+                            .get_next(playback_source)
+                            .to_sample();
                         for channel_index in 0..self.raw_stream.channel_count {
-                            sample_buffer[(i * self.raw_stream.channel_count) + channel_index] = sample;
+                            sample_buffer[(i * self.raw_stream.channel_count) + channel_index] =
+                                sample;
                         }
                     }
 
-                    let hresult = unsafe { (*self.render_client).ReleaseBuffer(frames_available as u32, 0) };
+                    let hresult =
+                        unsafe { (*self.render_client).ReleaseBuffer(frames_available as u32, 0) };
                     if let Err(err) = stream_error_from_hresult(hresult) {
                         return Err(err);
                     }

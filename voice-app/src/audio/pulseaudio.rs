@@ -1,8 +1,10 @@
-use crate::audio::platform::AudioPlatform;
-use voice_device::pulseaudio::event_loop::{PulseEventLoop, PulseEventLoopRegistration, PulseEventLoopNotify};
 use crate::audio::buffer::{MicBuffer, RcMultiplexer};
 use crate::audio::ipc::AudioReceiver;
+use crate::audio::platform::AudioPlatform;
 use voice_device::pulseaudio::audio_connection::{PulseAudioConnection, PulseParameters};
+use voice_device::pulseaudio::event_loop::{
+    PulseEventLoop, PulseEventLoopNotify, PulseEventLoopRegistration,
+};
 
 pub struct PulseAudioPlatform;
 
@@ -14,17 +16,17 @@ impl AudioPlatform for PulseAudioPlatform {
 
     fn create_parameters() -> Self::Parameters {
         PulseParameters {
-            pulseaudio_server: std::env::var_os("PULSEAUDIO_SERVER").map(|s| s.to_string_lossy().to_string())
+            pulseaudio_server: std::env::var_os("PULSEAUDIO_SERVER")
+                .map(|s| s.to_string_lossy().to_string()),
         }
     }
 
     fn create_channel() -> (Self::Registration, Self::Notify) {
         let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK) };
-        (PulseEventLoopRegistration {
-            fd
-        }, PulseEventLoopNotify {
-            fd
-        })
+        (
+            PulseEventLoopRegistration { fd },
+            PulseEventLoopNotify { fd },
+        )
     }
 
     fn create_event_loop(

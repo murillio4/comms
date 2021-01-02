@@ -1,13 +1,18 @@
-use crate::packet::{PacketBody, PacketKind, Packet, PacketId};
+use crate::packet::{Packet, PacketBody, PacketId, PacketKind};
 use crate::{PacketHeader, PACKET_HEADER_SIZE};
-use std::{mem, fmt};
-use serde::{Serialize, Deserialize};
-use std::io::Cursor;
-use std::fmt::{Formatter, Debug};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use std::fmt::{Debug, Formatter};
+use std::io::Cursor;
+use std::{fmt, mem};
 
-pub fn serialize<B>(id: PacketId, reply_to: Option<PacketId>, packet: B) -> Result<Vec<u8>, SerializeError>
-    where B: PacketBody + Serialize
+pub fn serialize<B>(
+    id: PacketId,
+    reply_to: Option<PacketId>,
+    packet: B,
+) -> Result<Vec<u8>, SerializeError>
+where
+    B: PacketBody + Serialize,
 {
     WritePacketBuilder::new(reply_to, &packet)?.into_raw(id)
 }
@@ -20,7 +25,8 @@ pub struct WritePacketBuilder {
 
 impl WritePacketBuilder {
     pub fn new<B>(reply_to: Option<PacketId>, body: &B) -> Result<Self, SerializeError>
-        where B: PacketBody + Serialize
+    where
+        B: PacketBody + Serialize,
     {
         let mut raw = vec![0u8; mem::size_of::<PacketHeader>()];
         bincode::serialize_into(&mut raw, body).map_err(|_| SerializeError)?;
@@ -35,12 +41,16 @@ impl WritePacketBuilder {
         let body_len = self.raw.len() as u16;
         let mut cursor = Cursor::new(&mut self.raw);
         cursor.set_position(0);
-        bincode::serialize_into(cursor, &PacketHeader {
-            id,
-            reply_to: self.reply_to,
-            kind: self.kind,
-            body_len: body_len - PACKET_HEADER_SIZE as u16,
-        }).map_err(|_| SerializeError)?;
+        bincode::serialize_into(
+            cursor,
+            &PacketHeader {
+                id,
+                reply_to: self.reply_to,
+                kind: self.kind,
+                body_len: body_len - PACKET_HEADER_SIZE as u16,
+            },
+        )
+        .map_err(|_| SerializeError)?;
         Ok(&self.raw)
     }
 
@@ -57,16 +67,13 @@ pub struct UdpHeaderParsedPacket<'a> {
 
 impl<'a> UdpHeaderParsedPacket<'a> {
     pub fn from_header(header: PacketHeader, raw_body: &'a [u8]) -> Self {
-        UdpHeaderParsedPacket {
-            header,
-            raw_body,
-        }
+        UdpHeaderParsedPacket { header, raw_body }
     }
 
     pub fn from_raw(raw: &'a [u8]) -> Result<Self, DeserializeError> {
         let raw_header_size = mem::size_of::<PacketHeader>();
-        let header: PacketHeader = bincode::deserialize(&raw[0..raw_header_size])
-            .map_err(|_| DeserializeError)?;
+        let header: PacketHeader =
+            bincode::deserialize(&raw[0..raw_header_size]).map_err(|_| DeserializeError)?;
         Ok(Self {
             raw_body: &raw[raw_header_size..],
             header,
@@ -78,7 +85,8 @@ impl<'a> UdpHeaderParsedPacket<'a> {
     }
 
     pub fn finish_parse<B>(self) -> Result<Packet<B>, DeserializeError>
-        where B: PacketBody + Deserialize<'a>
+    where
+        B: PacketBody + Deserialize<'a>,
     {
         let body = bincode::deserialize(&self.raw_body).map_err(|_| DeserializeError)?;
         Ok(Packet::new(self.header.id, self.header.reply_to, body))
@@ -105,10 +113,7 @@ impl Debug for OwnedHeaderParsedPacket {
 
 impl OwnedHeaderParsedPacket {
     pub fn new(header: PacketHeader, raw_body: Vec<u8>) -> Self {
-        Self {
-            header,
-            raw_body,
-        }
+        Self { header, raw_body }
     }
 
     pub fn kind(&self) -> PacketKind {
@@ -116,7 +121,8 @@ impl OwnedHeaderParsedPacket {
     }
 
     pub fn finish_parse<B>(self) -> Result<Packet<B>, DeserializeError>
-        where B: PacketBody + DeserializeOwned
+    where
+        B: PacketBody + DeserializeOwned,
     {
         let body = bincode::deserialize(&self.raw_body).map_err(|_| DeserializeError)?;
         Ok(Packet::new(self.header.id, self.header.reply_to, body))

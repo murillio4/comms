@@ -1,5 +1,5 @@
-use std::sync::mpsc::{Sender, Receiver, channel};
 use dasp::Sample;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use voice_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 
 pub struct MicForLoopback {
@@ -31,7 +31,10 @@ impl PlaybackSource for PlaybackForLoopback {
 pub fn create_loopback_pipeline() -> (MicForLoopback, UnsharedPlaybackSource<PlaybackForLoopback>) {
     let (tx, rx) = channel();
     (
-        MicForLoopback { sender: tx, number_of_samples: 0 },
+        MicForLoopback {
+            sender: tx,
+            number_of_samples: 0,
+        },
         UnsharedPlaybackSource(PlaybackForLoopback { receiver: rx }),
     )
 }

@@ -9,6 +9,8 @@ build_linux:
   script:
     - cargo build --all
     - cargo clippy --all-targets --all-features -- -D warnings
+    - cargo fmt --all -- --check
+    - cargo test
   tags:
     - linux
 
@@ -19,6 +21,8 @@ build_windows:
   script:
     - cargo build --all
     - cargo clippy --all-targets --all-features -- -D warnings
+    - cargo fmt --all -- --check
+    - cargo test
   # There's no Windows worker at the moment
   when: manual
   tags:
@@ -31,6 +35,8 @@ build_release_linux:
   script:
     - cargo build --all --release
     - cargo clippy --all-targets --all-features -- -D warnings
+    - cargo fmt --all -- --check
+    - cargo test
   artifacts:
     paths:
       - target/release/beep-cli
@@ -46,6 +52,8 @@ build_release_windows:
   script:
     - cargo build --all --release
     - cargo clippy --all-targets --all-features -- -D warnings
+    - cargo fmt --all -- --check
+    - cargo test
   artifacts:
     paths:
       - target/release/beep-cli.exe

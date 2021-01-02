@@ -1,7 +1,7 @@
-use dasp::Sample;
 use crate::buffer::{MicSink, PlaybackSource};
 use dasp::interpolate::linear::Linear;
 use dasp::interpolate::Interpolator;
+use dasp::Sample;
 
 pub trait MicSampleRateConverter<M: MicSink> {
     fn feed_next(&mut self, sample: f64, mic_sink: &mut M);
@@ -36,7 +36,8 @@ impl<M: MicSink> MicSampleRateConverter<M> for LinearSampleRateConverter {
 impl<P: PlaybackSource> PlaybackSampleRateConverter<P> for LinearSampleRateConverter {
     fn get_next(&mut self, playback_source: &mut P) -> f64 {
         while self.interpolation_value >= 1.0 {
-            self.interpolator.next_source_frame([playback_source.next_sample().to_sample()]);
+            self.interpolator
+                .next_source_frame([playback_source.next_sample().to_sample()]);
             self.interpolation_value -= 1.0;
         }
 
@@ -59,7 +60,10 @@ impl<P: PlaybackSource> PlaybackSampleRateConverter<P> for PassthroughSampleRate
     }
 }
 
-pub fn create_mic_sample_rate_converter<M: MicSink>(source_hz: u32, target_hz: u32) -> Box<dyn MicSampleRateConverter<M>> {
+pub fn create_mic_sample_rate_converter<M: MicSink>(
+    source_hz: u32,
+    target_hz: u32,
+) -> Box<dyn MicSampleRateConverter<M>> {
     if source_hz == target_hz {
         return Box::new(PassthroughSampleRateConverter);
     }
@@ -71,7 +75,10 @@ pub fn create_mic_sample_rate_converter<M: MicSink>(source_hz: u32, target_hz: u
     })
 }
 
-pub fn create_playback_sample_rate_converter<P: PlaybackSource>(source_hz: u32, target_hz: u32) -> Box<dyn PlaybackSampleRateConverter<P>> {
+pub fn create_playback_sample_rate_converter<P: PlaybackSource>(
+    source_hz: u32,
+    target_hz: u32,
+) -> Box<dyn PlaybackSampleRateConverter<P>> {
     if source_hz == target_hz {
         return Box::new(PassthroughSampleRateConverter);
     }

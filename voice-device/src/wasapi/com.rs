@@ -1,8 +1,8 @@
 use std::io::Error as IoError;
-use std::ptr;
-use winapi::um::{winnt,mmdeviceapi, combaseapi, objbase};
-use winapi::Interface;
 use std::mem::MaybeUninit;
+use std::ptr;
+use winapi::um::{combaseapi, mmdeviceapi, objbase, winnt};
+use winapi::Interface;
 
 pub fn check_result(result: winnt::HRESULT) -> Result<(), IoError> {
     if result < 0 {
@@ -49,9 +49,7 @@ pub struct ComInitialized(*mut ());
 
 impl Drop for ComInitialized {
     fn drop(&mut self) {
-        unsafe {
-            combaseapi::CoUninitialize()
-        };
+        unsafe { combaseapi::CoUninitialize() };
     }
 }
 

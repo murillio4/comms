@@ -1,4 +1,4 @@
-use crate::packet::{PacketKind, PacketId};
+use crate::packet::{PacketId, PacketKind};
 
 pub use serde::{Deserialize, Serialize};
 use std::mem;
@@ -19,4 +19,3 @@ pub struct PacketHeader {
     pub body_len: u16,
 }
 pub const PACKET_HEADER_SIZE: usize = mem::size_of::<PacketHeader>();
-

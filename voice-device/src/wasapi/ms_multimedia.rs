@@ -1,9 +1,9 @@
-use winapi::um::{audioclient, audiosessiontypes, combaseapi};
-use winapi::shared::{mmreg, winerror, ksmedia, guiddef};
 use crate::wasapi::com::check_result;
 use crate::wasapi::stream::{Format, SampleFormat, SampleRate};
-use winapi::shared::minwindef::{WORD, DWORD};
 use std::mem;
+use winapi::shared::minwindef::{DWORD, WORD};
+use winapi::shared::{guiddef, ksmedia, mmreg, winerror};
+use winapi::um::{audioclient, audiosessiontypes, combaseapi};
 
 #[derive(Debug)]
 pub enum MmregSupportedFormatsError {
@@ -27,7 +27,9 @@ pub fn is_format_supported(
             Ok(false)
         } else {
             match check_result(result) {
-                Err(ref e) if e.raw_os_error() == Some(audioclient::AUDCLNT_E_DEVICE_INVALIDATED) => {
+                Err(ref e)
+                    if e.raw_os_error() == Some(audioclient::AUDCLNT_E_DEVICE_INVALIDATED) =>
+                {
                     Err(MmregSupportedFormatsError::DeviceNotAvailable)
                 }
                 Err(_) => Ok(false),
@@ -44,10 +46,12 @@ pub fn is_format_supported(
                 is_supported(waveformatex_ptr, closest_waveformatex_ptr)
             }
             mmreg::WAVE_FORMAT_EXTENSIBLE => {
-                let waveformatextensible_ptr = waveformatex_ptr as *const mmreg::WAVEFORMATEXTENSIBLE;
+                let waveformatextensible_ptr =
+                    waveformatex_ptr as *const mmreg::WAVEFORMATEXTENSIBLE;
                 let mut closest_waveformatextensible = *waveformatextensible_ptr;
                 let closest_waveformatextensible_ptr = &mut closest_waveformatextensible as *mut _;
-                let closest_waveformatex_ptr = closest_waveformatextensible_ptr as *mut mmreg::WAVEFORMATEX;
+                let closest_waveformatex_ptr =
+                    closest_waveformatextensible_ptr as *mut mmreg::WAVEFORMATEX;
                 is_supported(waveformatex_ptr, closest_waveformatex_ptr)
             }
             _ => Ok(false),
@@ -100,14 +104,16 @@ pub fn format_to_waveformatextensible(format: &Format) -> Option<mmreg::WAVEFORM
     Some(waveformatextensible)
 }
 
-pub unsafe fn format_from_waveformatex_ptr(waveformatex_ptr: *const mmreg::WAVEFORMATEX) -> Option<Format> {
+pub unsafe fn format_from_waveformatex_ptr(
+    waveformatex_ptr: *const mmreg::WAVEFORMATEX,
+) -> Option<Format> {
     fn cmp_guid(a: &guiddef::GUID, b: &guiddef::GUID) -> bool {
-        a.Data1 == b.Data1
-            && a.Data2 == b.Data2
-            && a.Data3 == b.Data3
-            && a.Data4 == b.Data4
+        a.Data1 == b.Data1 && a.Data2 == b.Data2 && a.Data3 == b.Data3 && a.Data4 == b.Data4
     }
-    let data_type = match ((*waveformatex_ptr).wBitsPerSample, (*waveformatex_ptr).wFormatTag) {
+    let data_type = match (
+        (*waveformatex_ptr).wBitsPerSample,
+        (*waveformatex_ptr).wFormatTag,
+    ) {
         (16, mmreg::WAVE_FORMAT_PCM) => SampleFormat::I16,
         (32, mmreg::WAVE_FORMAT_IEEE_FLOAT) => SampleFormat::F32,
         (n_bits, mmreg::WAVE_FORMAT_EXTENSIBLE) => {
@@ -150,7 +156,7 @@ impl MmregFormat {
     fn as_word(&self) -> WORD {
         match self {
             MmregFormat::PCM => mmreg::WAVE_FORMAT_PCM,
-            MmregFormat::EXTENSIBLE => mmreg::WAVE_FORMAT_EXTENSIBLE
+            MmregFormat::EXTENSIBLE => mmreg::WAVE_FORMAT_EXTENSIBLE,
         }
     }
 }

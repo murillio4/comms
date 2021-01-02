@@ -1,24 +1,29 @@
-use winapi::ctypes;
-use winapi::um::{mmdeviceapi, audioclient, coml2api, combaseapi, winnt, audiosessiontypes, synchapi};
-use std::{ptr, slice};
-use std::mem::MaybeUninit;
 use crate::wasapi::com;
-use std::io::Error as IoError;
-use winapi::shared::{devpkey, wtypes, mmreg, winerror, guiddef};
-use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt;
-use crate::wasapi::stream::Format;
-use winapi::um::audioclient::AUDCLNT_E_DEVICE_INVALIDATED;
-use crate::wasapi::device::DefaultFormatError::BackendSpecific;
-use crate::wasapi::ms_multimedia::{WaveFormatExPtr, format_from_waveformatex_ptr, format_to_waveformatextensible, is_format_supported};
-use std::ops::Deref;
-use winapi::um::audiosessiontypes::AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
 use crate::wasapi::com::check_result;
-use winapi::um::mmdeviceapi::DEVICE_STATE_ACTIVE;
-use winapi::um::mmdeviceapi::IMMDeviceCollection;
-use winapi::um::winsock2::u_int;
-use winapi::um::mmdeviceapi::IMMDevice;
+use crate::wasapi::device::DefaultFormatError::BackendSpecific;
 use crate::wasapi::event_loop::WasapiEventLoopRegistration;
+use crate::wasapi::ms_multimedia::{
+    format_from_waveformatex_ptr, format_to_waveformatextensible, is_format_supported,
+    WaveFormatExPtr,
+};
+use crate::wasapi::stream::Format;
+use std::ffi::OsString;
+use std::io::Error as IoError;
+use std::mem::MaybeUninit;
+use std::ops::Deref;
+use std::os::windows::ffi::OsStringExt;
+use std::{ptr, slice};
+use winapi::ctypes;
+use winapi::shared::{devpkey, guiddef, mmreg, winerror, wtypes};
+use winapi::um::audioclient::AUDCLNT_E_DEVICE_INVALIDATED;
+use winapi::um::audiosessiontypes::AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+use winapi::um::mmdeviceapi::IMMDevice;
+use winapi::um::mmdeviceapi::IMMDeviceCollection;
+use winapi::um::mmdeviceapi::DEVICE_STATE_ACTIVE;
+use winapi::um::winsock2::u_int;
+use winapi::um::{
+    audioclient, audiosessiontypes, combaseapi, coml2api, mmdeviceapi, synchapi, winnt,
+};
 
 pub struct InputDevice {
     device: IMMDeviceWrapper,
@@ -35,8 +40,8 @@ pub struct IAudioClientWrapper(*mut audioclient::IAudioClient);
 impl IAudioClientWrapper {
     pub fn initialize(&self, format: &Format) -> Result<mmreg::WAVEFORMATEX, BuildStreamError> {
         let audio_client = self.0;
-        let format_attempt = format_to_waveformatextensible(format)
-            .ok_or(BuildStreamError::FormatNotSupported)?;
+        let format_attempt =
+            format_to_waveformatextensible(format).ok_or(BuildStreamError::FormatNotSupported)?;
         let share_mode = audiosessiontypes::AUDCLNT_SHAREMODE_SHARED;
 
         match is_format_supported(audio_client, &format_attempt.Format) {
@@ -68,7 +73,6 @@ impl IAudioClientWrapper {
             Ok(()) => (),
         };
 
-
         Ok(format_attempt.Format)
     }
 
@@ -98,7 +102,9 @@ impl IAudioClientWrapper {
         let event = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
         if event.is_null() {
             unsafe { (*audio_client).Release() };
-            return Err(BuildStreamError::BackendSpecific("failed to create event".to_string()));
+            return Err(BuildStreamError::BackendSpecific(
+                "failed to create event".to_string(),
+            ));
         }
 
         if let Err(e) = check_result(unsafe { (*audio_client).SetEventHandle(event) }) {
@@ -107,9 +113,7 @@ impl IAudioClientWrapper {
             return Err(BuildStreamError::BackendSpecific(description));
         }
 
-        Ok(WasapiEventLoopRegistration {
-            win_handle: event
-        })
+        Ok(WasapiEventLoopRegistration { win_handle: event })
     }
 
     fn create_client<T>(&self, interface_id: &guiddef::GUID) -> Result<T, BuildStreamError> {
@@ -170,13 +174,23 @@ impl IAudioClientWrapper {
         };
 
         let format_ptr = WaveFormatExPtr(unsafe { format_ptr.assume_init() });
-        unsafe { format_from_waveformatex_ptr(format_ptr.0).ok_or(DefaultFormatError::StreamTypeNotSupported) }
+        unsafe {
+            format_from_waveformatex_ptr(format_ptr.0)
+                .ok_or(DefaultFormatError::StreamTypeNotSupported)
+        }
     }
 
-    fn from_immdevice(immdevice: *mut mmdeviceapi::IMMDevice) -> Result<IAudioClientWrapper, IoError> {
+    fn from_immdevice(
+        immdevice: *mut mmdeviceapi::IMMDevice,
+    ) -> Result<IAudioClientWrapper, IoError> {
         let mut audio_client = MaybeUninit::<*mut audioclient::IAudioClient>::uninit();
         let hresult = unsafe {
-            (*immdevice).Activate(&audioclient::IID_IAudioClient, combaseapi::CLSCTX_ALL, ptr::null_mut(), audio_client.as_mut_ptr() as *mut *mut ctypes::c_void)
+            (*immdevice).Activate(
+                &audioclient::IID_IAudioClient,
+                combaseapi::CLSCTX_ALL,
+                ptr::null_mut(),
+                audio_client.as_mut_ptr() as *mut *mut ctypes::c_void,
+            )
         };
         com::check_result(hresult)?;
         Ok(IAudioClientWrapper(unsafe { audio_client.assume_init() }))
@@ -196,21 +210,22 @@ impl IMMDeviceWrapper {
         unsafe { (*self.0).OpenPropertyStore(coml2api::STGM_READ, &mut property_store) };
 
         let mut property_value = MaybeUninit::uninit();
-        if let Err(err) = com::check_result(
-            unsafe {
-                (*property_store).GetValue(
-                    &devpkey::DEVPKEY_Device_FriendlyName as *const _ as *const _,
-                    property_value.as_mut_ptr(),
-                )
-            }
-        ) {
+        if let Err(err) = com::check_result(unsafe {
+            (*property_store).GetValue(
+                &devpkey::DEVPKEY_Device_FriendlyName as *const _ as *const _,
+                property_value.as_mut_ptr(),
+            )
+        }) {
             let description = format!("failed to retrieve name from property store: {}", err);
             return Err(DeviceNameError { description });
         }
 
         let mut property_value = unsafe { property_value.assume_init() };
         if property_value.vt != wtypes::VT_LPWSTR as u16 {
-            let description = format!("property store produced invalid data: {:?}", property_value.vt);
+            let description = format!(
+                "property store produced invalid data: {:?}",
+                property_value.vt
+            );
             return Err(DeviceNameError { description });
         }
         let ptr_usize: usize = unsafe { *(&property_value.data as *const _ as *const usize) };
@@ -229,7 +244,7 @@ impl IMMDeviceWrapper {
         Ok(name_string)
     }
 
-    fn id(&self) -> Result<String, ()>{
+    fn id(&self) -> Result<String, ()> {
         // TODO: Return the actual ID --- more pointer work
         Ok("LATER NERD".to_string())
     }
@@ -237,7 +252,11 @@ impl IMMDeviceWrapper {
     fn default(data_flow: mmdeviceapi::EDataFlow) -> Option<IMMDeviceWrapper> {
         let mut device = MaybeUninit::uninit();
         let hres = unsafe {
-            (*com::ENUMERATOR.0).GetDefaultAudioEndpoint(data_flow, mmdeviceapi::eConsole, device.as_mut_ptr())
+            (*com::ENUMERATOR.0).GetDefaultAudioEndpoint(
+                data_flow,
+                mmdeviceapi::eConsole,
+                device.as_mut_ptr(),
+            )
         };
 
         // This should be a constant once HRESULT_FROM_WIN32(..) is a const fn
@@ -249,7 +268,7 @@ impl IMMDeviceWrapper {
             Err(e) => {
                 panic!(e) // hmm, should we bubble up the error instead?
             }
-            Ok(()) => ()
+            Ok(()) => (),
         };
         Some(IMMDeviceWrapper(unsafe { device.assume_init() }))
     }
@@ -257,13 +276,17 @@ impl IMMDeviceWrapper {
     fn endpoints(data_flow: mmdeviceapi::EDataFlow) -> Vec<IMMDeviceWrapper> {
         let mut device_collection: MaybeUninit<*mut IMMDeviceCollection> = MaybeUninit::uninit();
         let hres = unsafe {
-            (*com::ENUMERATOR.0).EnumAudioEndpoints(data_flow, DEVICE_STATE_ACTIVE, device_collection.as_mut_ptr())
+            (*com::ENUMERATOR.0).EnumAudioEndpoints(
+                data_flow,
+                DEVICE_STATE_ACTIVE,
+                device_collection.as_mut_ptr(),
+            )
         };
         match com::check_result(hres) {
             Err(e) => {
                 panic!(e)
             }
-            Ok(()) => ()
+            Ok(()) => (),
         }
 
         // TODO: This is kinda nasty -- thanks Billy Gates
@@ -308,30 +331,31 @@ impl InputDevice {
     }
 
     pub fn create_client(&self) -> Result<*mut audioclient::IAudioCaptureClient, BuildStreamError> {
-        self.audio_client.create_client(&audioclient::IID_IAudioCaptureClient)
+        self.audio_client
+            .create_client(&audioclient::IID_IAudioCaptureClient)
     }
 
     pub fn default() -> Option<InputDevice> {
         com::initialized();
-        IMMDeviceWrapper::default(mmdeviceapi::eCapture)
-            .and_then(|device| {
-                IAudioClientWrapper::from_immdevice(device.0)
-                    .ok()
-                    .map(|audio_client| InputDevice {
-                        device,
-                        audio_client,
-                    })
-            })
+        IMMDeviceWrapper::default(mmdeviceapi::eCapture).and_then(|device| {
+            IAudioClientWrapper::from_immdevice(device.0)
+                .ok()
+                .map(|audio_client| InputDevice {
+                    device,
+                    audio_client,
+                })
+        })
     }
 
     pub fn get_list() -> Vec<InputDevice> {
         com::initialized();
-        IMMDeviceWrapper::endpoints(mmdeviceapi::eCapture).into_iter().map(|wrapper| {
-            InputDevice {
+        IMMDeviceWrapper::endpoints(mmdeviceapi::eCapture)
+            .into_iter()
+            .map(|wrapper| InputDevice {
                 audio_client: IAudioClientWrapper::from_immdevice(wrapper.0).unwrap(),
-                device: wrapper
-            }
-        }).collect()
+                device: wrapper,
+            })
+            .collect()
     }
 }
 
@@ -349,30 +373,31 @@ impl OutputDevice {
     }
 
     pub fn create_client(&self) -> Result<*mut audioclient::IAudioRenderClient, BuildStreamError> {
-        self.audio_client.create_client(&audioclient::IID_IAudioRenderClient)
+        self.audio_client
+            .create_client(&audioclient::IID_IAudioRenderClient)
     }
 
     pub fn default() -> Option<OutputDevice> {
         com::initialized();
-        IMMDeviceWrapper::default(mmdeviceapi::eRender)
-            .and_then(|device| {
-                IAudioClientWrapper::from_immdevice(device.0)
-                    .ok()
-                    .map(|audio_client| OutputDevice {
-                        device,
-                        audio_client,
-                    })
-            })
+        IMMDeviceWrapper::default(mmdeviceapi::eRender).and_then(|device| {
+            IAudioClientWrapper::from_immdevice(device.0)
+                .ok()
+                .map(|audio_client| OutputDevice {
+                    device,
+                    audio_client,
+                })
+        })
     }
 
     pub fn get_list() -> Vec<OutputDevice> {
         com::initialized();
-        IMMDeviceWrapper::endpoints(mmdeviceapi::eRender).into_iter().map(|wrapper| {
-            OutputDevice {
+        IMMDeviceWrapper::endpoints(mmdeviceapi::eRender)
+            .into_iter()
+            .map(|wrapper| OutputDevice {
                 audio_client: IAudioClientWrapper::from_immdevice(wrapper.0).unwrap(),
-                device: wrapper
-            }
-        }).collect()
+                device: wrapper,
+            })
+            .collect()
     }
 }
 

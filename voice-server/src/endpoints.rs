@@ -1,13 +1,17 @@
-use std::sync::Arc;
-use crate::task::{SyncUnsafeCell, EndpointError, Spawner};
-use crate::client::{Clients, Client, AnyClient};
-use voice_lib::packet::{ClientId, Packet, AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, FinishConnect, ErrorResponse, FinishConnectAccepted, UserJoined, PacketId, PacketBody, UserLeft, DisconnectReason, Disconnect};
+use crate::client::{AnyClient, Client, Clients};
 use crate::network::{NetworkHandle, SendPacket, Target};
-use std::net::SocketAddr;
-use voice_lib::network::{TcpHeaderParsedPacket, UpdateFromStream};
-use voice_lib::serialization::{UdpHeaderParsedPacket, DeserializeError};
-use std::io;
+use crate::task::{EndpointError, Spawner, SyncUnsafeCell};
 use futures::future;
+use std::io;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use voice_lib::network::{TcpHeaderParsedPacket, UpdateFromStream};
+use voice_lib::packet::{
+    AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, ClientId, Disconnect,
+    DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, Packet, PacketBody,
+    PacketId, UserJoined, UserLeft,
+};
+use voice_lib::serialization::{DeserializeError, UdpHeaderParsedPacket};
 
 pub struct Context {
     pub clients: Arc<SyncUnsafeCell<Clients>>,
@@ -15,7 +19,12 @@ pub struct Context {
     pub network_handle: NetworkHandle,
 }
 
-async fn associate_udp(udp_handle: NetworkHandle, clients: Arc<SyncUnsafeCell<Clients>>, addr: SocketAddr, packet: Packet<AssociateUdp>) -> Result<(), EndpointError> {
+async fn associate_udp(
+    udp_handle: NetworkHandle,
+    clients: Arc<SyncUnsafeCell<Clients>>,
+    addr: SocketAddr,
+    packet: Packet<AssociateUdp>,
+) -> Result<(), EndpointError> {
     let outgoing = {
         let clients = unsafe { &mut *clients.get() };
         let mut client = match clients.connecting.get_mut(&packet.body.client_id) {
@@ -23,29 +32,45 @@ async fn associate_udp(udp_handle: NetworkHandle, clients: Arc<SyncUnsafeCell<Cl
             None => return Ok(()),
         };
         client.udp_addr = Some(addr);
-        SendPacket::udp(Target::One(packet.body.client_id), Some(packet.id), AssociateUdpAccepted)?
+        SendPacket::udp(
+            Target::One(packet.body.client_id),
+            Some(packet.id),
+            AssociateUdpAccepted,
+        )?
     };
     outgoing.send(&udp_handle).await;
     Ok(())
 }
 
-async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) -> Result<(), EndpointError> {
+async fn audio_from_client(
+    context: Context,
+    packet: Packet<AudioFromClient>,
+) -> Result<(), EndpointError> {
     let client_ids = {
         let clients = unsafe { &*context.clients.get() };
-        clients.established.iter()
+        clients
+            .established
+            .iter()
             .map(|(id, _)| *id)
             .filter(|id| id != &context.client_id)
             .collect()
     };
-    let outgoing = SendPacket::udp(Target::Many(client_ids), None, AudioToClient {
-        author: context.client_id,
-        bytes: packet.body.0,
-    })?;
+    let outgoing = SendPacket::udp(
+        Target::Many(client_ids),
+        None,
+        AudioToClient {
+            author: context.client_id,
+            bytes: packet.body.0,
+        },
+    )?;
     outgoing.send(&context.network_handle).await;
     Ok(())
 }
 
-async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Result<(), EndpointError> {
+async fn finish_connect(
+    context: Context,
+    packet: Packet<FinishConnect>,
+) -> Result<(), EndpointError> {
     let packets = {
         let clients = unsafe { &mut *context.clients.get() };
         let mut client = match clients.connecting.remove(&context.client_id) {
@@ -59,28 +84,31 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
                 vec![SendPacket::tcp(
                     Target::One(context.client_id),
                     Some(packet.id),
-                    ErrorResponse::AssociateUdpFirst
+                    ErrorResponse::AssociateUdpFirst,
                 )?]
             }
             Some(addr) => {
-                let other_clients = clients.established.keys()
-                    .copied()
-                    .collect();
-                clients.established.insert(context.client_id, Client {
-                    udp_addr: addr,
-                    connection: client.connection,
-                    username: packet.body.name.clone(),
-                });
+                let other_clients = clients.established.keys().copied().collect();
+                clients.established.insert(
+                    context.client_id,
+                    Client {
+                        udp_addr: addr,
+                        connection: client.connection,
+                        username: packet.body.name.clone(),
+                    },
+                );
 
                 vec![
                     SendPacket::tcp(
                         Target::One(context.client_id),
                         Some(packet.id),
                         FinishConnectAccepted {
-                            users: clients.established.iter()
+                            users: clients
+                                .established
+                                .iter()
                                 .map(|(id, c)| (*id, c.username.clone()))
-                                .collect()
-                        }
+                                .collect(),
+                        },
                     )?,
                     SendPacket::tcp(
                         Target::Many(other_clients),
@@ -88,28 +116,44 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Resu
                         UserJoined {
                             name: packet.body.name,
                             client_id: context.client_id,
-                        }
+                        },
                     )?,
                 ]
             }
         }
     };
 
-    future::join_all(packets.into_iter().map(|packet| packet.send(&context.network_handle))).await;
+    future::join_all(
+        packets
+            .into_iter()
+            .map(|packet| packet.send(&context.network_handle)),
+    )
+    .await;
     Ok(())
 }
 
 async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> Result<(), EndpointError> {
-    let outgoing = SendPacket::tcp(Target::One(context.client_id), Some(packet_id), ErrorResponse::UnexpectedPacket(packet_id))?;
+    let outgoing = SendPacket::tcp(
+        Target::One(context.client_id),
+        Some(packet_id),
+        ErrorResponse::UnexpectedPacket(packet_id),
+    )?;
     outgoing.send(&context.network_handle).await;
     Ok(())
 }
 
-async fn close_connection(context: Context, reason: CloseConnectionReason) -> Result<(), EndpointError> {
+async fn close_connection(
+    context: Context,
+    reason: CloseConnectionReason,
+) -> Result<(), EndpointError> {
     if reason == CloseConnectionReason::MalformedData {
-        let outgoing = SendPacket::tcp(Target::One(context.client_id), None, Disconnect {
-            reason: DisconnectReason::MalformedData,
-        })?;
+        let outgoing = SendPacket::tcp(
+            Target::One(context.client_id),
+            None,
+            Disconnect {
+                reason: DisconnectReason::MalformedData,
+            },
+        )?;
         outgoing.send(&context.network_handle).await;
     }
 
@@ -124,19 +168,25 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> Re
                 })
                 .expect("Tried to close connection with nonexistent client");
         }
-        clients.established.keys()
-            .copied()
-            .collect()
+        clients.established.keys().copied().collect()
     };
 
-    let outgoing = SendPacket::tcp(Target::Many(remaining_client_ids), None, UserLeft {
-        client_id: context.client_id
-    })?;
+    let outgoing = SendPacket::tcp(
+        Target::Many(remaining_client_ids),
+        None,
+        UserLeft {
+            client_id: context.client_id,
+        },
+    )?;
     outgoing.send(&context.network_handle).await;
     Ok(())
 }
 
-fn tcp_packet_to_endpoint(spawner: &Spawner, context: Context, packet: TcpHeaderParsedPacket) -> Result<(), HandlePacketError> {
+fn tcp_packet_to_endpoint(
+    spawner: &Spawner,
+    context: Context,
+    packet: TcpHeaderParsedPacket,
+) -> Result<(), HandlePacketError> {
     let kind = packet.header.kind;
     match kind {
         FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, packet.finish_parse()?)),
@@ -145,10 +195,16 @@ fn tcp_packet_to_endpoint(spawner: &Spawner, context: Context, packet: TcpHeader
     Ok(())
 }
 
-fn udp_packet_to_endpoint(spawner: &Spawner, packet: UdpHeaderParsedPacket, context: Context) -> Result<(), HandlePacketError> {
+fn udp_packet_to_endpoint(
+    spawner: &Spawner,
+    packet: UdpHeaderParsedPacket,
+    context: Context,
+) -> Result<(), HandlePacketError> {
     match packet.kind() {
-        AudioFromClient::KIND_ID => spawner.spawn(audio_from_client(context, packet.finish_parse()?)),
-        _ => spawner.spawn(sent_wrong_packet(context, packet.header.id))
+        AudioFromClient::KIND_ID => {
+            spawner.spawn(audio_from_client(context, packet.finish_parse()?))
+        }
+        _ => spawner.spawn(sent_wrong_packet(context, packet.header.id)),
     };
     Ok(())
 }
@@ -159,7 +215,13 @@ pub enum CloseConnectionReason {
     MalformedData,
 }
 
-pub fn spawn_close_connection(client_id: ClientId, reason: CloseConnectionReason, network_handle: &NetworkHandle, clients: &Arc<SyncUnsafeCell<Clients>>, spawner: &Spawner) {
+pub fn spawn_close_connection(
+    client_id: ClientId,
+    reason: CloseConnectionReason,
+    network_handle: &NetworkHandle,
+    clients: &Arc<SyncUnsafeCell<Clients>>,
+    spawner: &Spawner,
+) {
     let context = Context {
         client_id,
         network_handle: network_handle.clone(),
@@ -197,7 +259,12 @@ pub fn handle_udp_packet(
     let kind = parsed_packet.kind();
     if kind == AssociateUdp::KIND_ID {
         // This is the only packet that doesn't need to be sent from a client
-        spawner.spawn(associate_udp(network_handle, clients, addr, parsed_packet.finish_parse()?));
+        spawner.spawn(associate_udp(
+            network_handle,
+            clients,
+            addr,
+            parsed_packet.finish_parse()?,
+        ));
         return Ok(());
     }
 
@@ -205,15 +272,19 @@ pub fn handle_udp_packet(
         let clients = unsafe { &mut *clients.get() };
         match clients.id_by_socket_addr(&addr) {
             Some(client_id) => client_id,
-            None => return Ok(())
+            None => return Ok(()),
         }
     };
 
-    udp_packet_to_endpoint(spawner, parsed_packet, Context {
-        client_id,
-        clients,
-        network_handle,
-    })
+    udp_packet_to_endpoint(
+        spawner,
+        parsed_packet,
+        Context {
+            client_id,
+            clients,
+            network_handle,
+        },
+    )
 }
 
 #[derive(Debug)]
