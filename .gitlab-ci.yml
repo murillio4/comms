@@ -57,5 +57,9 @@ build_release_windows:
     - windows
 
 cache:
+  key:
+    files:
+      - Cargo.lock
+    prefix: ${CI_JOB_NAME}
   paths:
     - target
