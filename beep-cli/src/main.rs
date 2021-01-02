@@ -5,7 +5,7 @@ use std::io;
 use voice_lib::packet::{Packet, Hello, PacketBody, AssociateUdpAccepted, FinishConnect, AssociateUdp, FinishConnectAccepted, AudioFromClient};
 use std::num::NonZeroU64;
 use std::io::{Read, Write};
-use voice_lib::serialization::{HeaderParsedPacket, serialize, DeserializeError, SerializeError};
+use voice_lib::serialization::{UdpHeaderParsedPacket, serialize, DeserializeError, SerializeError};
 
 fn read_next_tcp<'a>(tcp: &mut TcpStream, buffer: &'a mut [u8]) -> &'a[u8]{
     let size = tcp.read(buffer).unwrap();
@@ -47,7 +47,7 @@ fn main() -> Result<(), BeepClientErr> {
     let mut buffer = [0u8; 65535];
 
     let current_buffer = read_next_tcp(&mut tcp, &mut buffer);
-    let parsed_packet = HeaderParsedPacket::from_raw(&current_buffer)?;
+    let parsed_packet = UdpHeaderParsedPacket::from_raw(&current_buffer)?;
     assert_eq!(parsed_packet.kind(), Hello::KIND_ID);
     let hello: Packet<Hello> = parsed_packet.finish_parse()?;
     dbg!(&hello);
@@ -61,7 +61,7 @@ fn main() -> Result<(), BeepClientErr> {
     )?)?;
 
     let current_buffer = read_next_udp(&udp, &mut buffer);
-    let parsed_packet = HeaderParsedPacket::from_raw(&current_buffer)?;
+    let parsed_packet = UdpHeaderParsedPacket::from_raw(&current_buffer)?;
     assert_eq!(parsed_packet.kind(), AssociateUdpAccepted::KIND_ID);
     let accepted: Packet<AssociateUdpAccepted> = parsed_packet.finish_parse()?;
     dbg!(&accepted);
@@ -75,7 +75,7 @@ fn main() -> Result<(), BeepClientErr> {
     )?)?;
 
     let current_buffer = read_next_tcp(&mut tcp, &mut buffer);
-    let parsed_packet = HeaderParsedPacket::from_raw(&current_buffer)?;
+    let parsed_packet = UdpHeaderParsedPacket::from_raw(&current_buffer)?;
     assert_eq!(parsed_packet.kind(), FinishConnectAccepted::KIND_ID);
     let finish_connect_accepted: Packet<FinishConnectAccepted> = parsed_packet.finish_parse()?;
     dbg!(&finish_connect_accepted);

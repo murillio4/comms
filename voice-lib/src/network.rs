@@ -42,7 +42,7 @@ impl CommsTcpStream {
         }
     }
 
-    pub fn next_packet(&mut self) -> Result<Option<IncomingStreamPacket<'_>>, DeserializeError> {
+    pub fn next_packet(&mut self) -> Result<Option<TcpHeaderParsedPacket<'_>>, DeserializeError> {
         let header = if let Some(header) = self.next_header.take() {
             header
         } else {
@@ -60,40 +60,83 @@ impl CommsTcpStream {
             self.next_header = Some(header);
             return Ok(None);
         }
-        Ok(Some(IncomingStreamPacket::new(header, self)))
+        Ok(Some(TcpHeaderParsedPacket::new(header, self)))
+    }
+
+    fn take_packet_body<R, F>(&mut self, body_len: usize, parse: F) -> R
+        where F: FnOnce(&[u8]) -> R {
+        let slice = &self.slice_deque.as_slice()[0..body_len];
+        let return_value: R = parse(slice);
+        unsafe { self.slice_deque.move_head(body_len as isize) };
+        return_value
+    }
+
+    fn ignore_packet_body(&mut self, body_len: usize) {
+        unsafe { self.slice_deque.move_head(body_len as isize) };
     }
 }
 
-pub struct IncomingStreamPacket<'a> {
-    pub header: PacketHeader,
+pub struct TcpBodyInStream<'a> {
+    len: usize,
     stream: &'a mut CommsTcpStream,
+    has_consumed_stream: bool,
 }
 
-impl<'a> IncomingStreamPacket<'a> {
-    pub fn new(header: PacketHeader, stream: &'a mut CommsTcpStream) -> Self {
-        IncomingStreamPacket {
-            header,
+impl<'a> TcpBodyInStream<'a> {
+    pub fn new(len: usize, stream: &'a mut CommsTcpStream) -> Self {
+        Self {
+            len,
             stream,
+            has_consumed_stream: false,
+        }
+    }
+
+    fn into_vec(mut self) -> Vec<u8> {
+        self.has_consumed_stream = true;
+        self.stream.take_packet_body(self.len, |bytes| {
+            bytes.to_vec()
+        })
+    }
+
+    fn into_body<B>(mut self) -> Result<B, Box<bincode::ErrorKind>>
+        where B: DeserializeOwned {
+        self.has_consumed_stream = true;
+        self.stream.take_packet_body(self.len, |bytes| {
+            bincode::deserialize(bytes)
+        })
+    }
+}
+
+impl<'a> Drop for TcpBodyInStream<'a> {
+    fn drop(&mut self) {
+        if !self.has_consumed_stream {
+            self.stream.ignore_packet_body(self.len);
+        }
+    }
+}
+
+pub struct TcpHeaderParsedPacket<'a> {
+    pub header: PacketHeader,
+    stream_body: TcpBodyInStream<'a>,
+}
+
+impl<'a> TcpHeaderParsedPacket<'a> {
+    pub fn new(header: PacketHeader, stream: &'a mut CommsTcpStream) -> Self {
+        TcpHeaderParsedPacket {
+            stream_body: TcpBodyInStream::new(header.body_len as usize, stream),
+            header,
         }
     }
 
     pub fn finish_parse<B>(self) -> Result<Packet<B>, DeserializeError>
         where B: PacketBody + DeserializeOwned
     {
-        let slice_deque = &mut self.stream.slice_deque;
-        let body = {
-            let slice = &slice_deque.as_slice()[0..self.header.body_len as usize];
-            bincode::deserialize(slice).map_err(|_| DeserializeError)?
-        };
-        unsafe { slice_deque.move_head(self.header.body_len as isize) };
+        let body: B = self.stream_body.into_body().map_err(|_| DeserializeError)?;
         Ok(Packet::new(self.header.id, self.header.reply_to, body))
     }
 
     pub fn into_owned(self) -> OwnedHeaderParsedPacket {
-        let slice_deque = &mut self.stream.slice_deque;
-        let body_slice = &slice_deque.as_slice()[0..self.header.body_len as usize];
-        let raw_body = body_slice.to_vec();
-        unsafe { slice_deque.move_head(self.header.body_len as isize) };
+        let raw_body: Vec<u8> = self.stream_body.into_vec();
         OwnedHeaderParsedPacket::new(self.header, raw_body)
     }
 }

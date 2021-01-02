@@ -50,14 +50,14 @@ impl WritePacketBuilder {
     }
 }
 
-pub struct HeaderParsedPacket<'a> {
+pub struct UdpHeaderParsedPacket<'a> {
     pub header: PacketHeader,
     raw_body: &'a [u8],
 }
 
-impl<'a> HeaderParsedPacket<'a> {
+impl<'a> UdpHeaderParsedPacket<'a> {
     pub fn from_header(header: PacketHeader, raw_body: &'a [u8]) -> Self {
-        HeaderParsedPacket {
+        UdpHeaderParsedPacket {
             header,
             raw_body,
         }

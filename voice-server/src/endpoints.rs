@@ -4,8 +4,8 @@ use crate::client::{Clients, Client, AnyClient};
 use voice_lib::packet::{ClientId, Packet, AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, FinishConnect, ErrorResponse, FinishConnectAccepted, UserJoined, PacketId, PacketBody, UserLeft, DisconnectReason, Disconnect};
 use crate::network::{NetworkHandle, SendPacket, Target};
 use std::net::SocketAddr;
-use voice_lib::network::{IncomingStreamPacket, UpdateFromStream};
-use voice_lib::serialization::{HeaderParsedPacket, DeserializeError};
+use voice_lib::network::{TcpHeaderParsedPacket, UpdateFromStream};
+use voice_lib::serialization::{UdpHeaderParsedPacket, DeserializeError};
 use std::io;
 use futures::future;
 
@@ -136,7 +136,7 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> Re
     Ok(())
 }
 
-fn tcp_packet_to_endpoint(spawner: &Spawner, context: Context, packet: IncomingStreamPacket) -> Result<(), HandlePacketError> {
+fn tcp_packet_to_endpoint(spawner: &Spawner, context: Context, packet: TcpHeaderParsedPacket) -> Result<(), HandlePacketError> {
     let kind = packet.header.kind;
     match kind {
         FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, packet.finish_parse()?)),
@@ -145,7 +145,7 @@ fn tcp_packet_to_endpoint(spawner: &Spawner, context: Context, packet: IncomingS
     Ok(())
 }
 
-fn udp_packet_to_endpoint(spawner: &Spawner, packet: HeaderParsedPacket, context: Context) -> Result<(), HandlePacketError> {
+fn udp_packet_to_endpoint(spawner: &Spawner, packet: UdpHeaderParsedPacket, context: Context) -> Result<(), HandlePacketError> {
     match packet.kind() {
         AudioFromClient::KIND_ID => spawner.spawn(audio_from_client(context, packet.finish_parse()?)),
         _ => spawner.spawn(sent_wrong_packet(context, packet.header.id))
@@ -193,7 +193,7 @@ pub fn handle_udp_packet(
     spawner: &Spawner,
     network_handle: NetworkHandle,
 ) -> Result<(), HandlePacketError> {
-    let parsed_packet = HeaderParsedPacket::from_raw(raw_packet)?;
+    let parsed_packet = UdpHeaderParsedPacket::from_raw(raw_packet)?;
     let kind = parsed_packet.kind();
     if kind == AssociateUdp::KIND_ID {
         // This is the only packet that doesn't need to be sent from a client

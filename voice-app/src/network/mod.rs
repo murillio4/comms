@@ -9,10 +9,10 @@ use mio::{Events, Poll, Token, Interest};
 use mio::net::TcpStream;
 use mio::net::UdpSocket;
 
-use voice_lib::network::{CommsTcpStream, IncomingStreamPacket, Protocol, UpdateFromStream};
+use voice_lib::network::{CommsTcpStream, TcpHeaderParsedPacket, Protocol, UpdateFromStream};
 use voice_lib::packet::{AudioToClient, Hello, PacketBody, PacketKind, AudioFromClient,  Packet};
 use voice_lib::packet;
-use voice_lib::serialization::{HeaderParsedPacket, OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
+use voice_lib::serialization::{UdpHeaderParsedPacket, OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network::future::SendResponse;
@@ -91,7 +91,7 @@ enum HandlePacketError {
     UnexpectedPacket(OwnedHeaderParsedPacket),
 }
 
-fn handle_udp_packet(parsed_packet: HeaderParsedPacket, reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>, audio_handle: &mut AudioHandle) -> Result<(), HandlePacketError> {
+fn handle_udp_packet(parsed_packet: UdpHeaderParsedPacket, reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>, audio_handle: &mut AudioHandle) -> Result<(), HandlePacketError> {
     if let Some(reply_to) = parsed_packet.header.reply_to {
         if let Some(sender) = reply_map.remove(&reply_to) {
             sender.done(parsed_packet.into_owned());
@@ -111,7 +111,7 @@ fn handle_udp_packet(parsed_packet: HeaderParsedPacket, reply_map: &mut HashMap<
     Ok(())
 }
 
-fn handle_tcp_packet(stream_packet: IncomingStreamPacket, reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>, await_hello: &mut Option<SendResponse<Result<Hello, ConnectError>>>) -> Result<(), HandlePacketError> {
+fn handle_tcp_packet(stream_packet: TcpHeaderParsedPacket, reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>, await_hello: &mut Option<SendResponse<Result<Hello, ConnectError>>>) -> Result<(), HandlePacketError> {
     if let Some(reply_to) = stream_packet.header.reply_to {
         if let Some(sender) = reply_map.remove(&reply_to) {
             sender.done(stream_packet.into_owned());
@@ -261,7 +261,7 @@ impl Worker {
                                         }
 
                                         let raw_packet = &buffer[0..size];
-                                        if let Ok(parsed_packet) = HeaderParsedPacket::from_raw(raw_packet) {
+                                        if let Ok(parsed_packet) = UdpHeaderParsedPacket::from_raw(raw_packet) {
                                             match handle_udp_packet(parsed_packet, &mut connection.reply_map, &mut audio_handle) {
                                                 Ok(_) => {}
                                                 Err(HandlePacketError::UnexpectedPacket(packet)) => {
