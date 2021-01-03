@@ -1,4 +1,5 @@
 use crate::network::OutgoingPacket;
+use crate::task::PacketFinish;
 use mio::net::TcpStream;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -19,11 +20,17 @@ impl NextPacketId {
     }
 }
 
+pub struct PartiallySentPacket {
+    pub bytes: Vec<u8>,
+    pub finish: PacketFinish,
+}
+
 pub struct Connection {
     next_packet_id: NextPacketId,
     pub stream: CommsTcpStream,
     pub tcp_writable: bool,
     pub outgoing_queue: VecDeque<OutgoingPacket>,
+    pub partially_sent_packet: Option<PartiallySentPacket>,
 }
 
 impl Connection {
@@ -33,6 +40,7 @@ impl Connection {
             tcp_writable: false,
             next_packet_id: NextPacketId::new(),
             outgoing_queue: VecDeque::new(),
+            partially_sent_packet: None,
         }
     }
 

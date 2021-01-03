@@ -444,21 +444,26 @@ fn attempt_send_next_tcp_packet(
         return Ok(());
     }
 
-    let packet = match outgoing_packet_queue.pop_front() {
+    let mut packet = match outgoing_packet_queue.pop_front() {
         Some(packet) => packet,
         None => {
             return Ok(());
         }
     };
 
-    *socket_writable = false;
-    match socket.write(&packet) {
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-            outgoing_packet_queue.push_front(packet);
-            Ok(())
+    loop {
+        match socket.write(&packet) {
+            Ok(count) if count < packet.len() => {
+                packet.drain(..count);
+            }
+            Ok(_) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                *socket_writable = false;
+                outgoing_packet_queue.push_front(packet);
+                return Ok(());
+            }
+            Err(e) => return Err(e),
         }
-        Err(e) => Err(e),
     }
 }
 

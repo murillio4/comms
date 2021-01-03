@@ -1,4 +1,4 @@
-use crate::client::{AnyClientRef, Clients, Connection};
+use crate::client::{AnyClientRef, Clients, Connection, PartiallySentPacket};
 use crate::task::{EndpointError, PacketFinish, PacketFuture, SyncUnsafeCell};
 use futures::future::join_all;
 use mio::net::UdpSocket;
@@ -119,35 +119,52 @@ impl OutgoingQueue {
         let packet_id = connection.next_packet_id();
         let builder = unsafe { &mut *packet.builder.get() };
         let kind = builder.kind;
-        let raw = builder.as_raw(packet_id).unwrap_or_else(|_| {
-            panic!(
-                "Serialization failed for packet id {} kind {}",
-                packet_id, kind
-            )
-        });
-        match connection.stream.internal.write(&raw) {
-            Ok(_) => {
-                // TODO if not all bytes written to buffer, try to re-send later
-                packet.finish.done();
+
+        let (mut bytes, finish) = match connection.partially_sent_packet.take() {
+            Some(partial) => (partial.bytes, partial.finish),
+            None => {
+                let bytes = builder
+                    .as_raw(packet_id)
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "Serialization failed for packet id {} kind {}",
+                            packet_id, kind
+                        )
+                    })
+                    .to_vec();
+                (bytes, packet.finish)
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                println!("WouldBlock on sending {}", kind);
-                connection.tcp_writable = false;
-                connection.outgoing_queue.push_front(packet)
-            }
-            Err(_) => {
-                // We say we're "done()" with this future, but it's not obvious to the calling
-                // future that this packet failed to reach its destination. This could cause
-                // issues if there's some back-and-forth between client and server, and the
-                // associated logic "waits" for a response, not knowing that a send failed here
-                // Perhaps we should be able to "packet.finish.failed()"? Hmm.
-                packet.finish.done();
-                if kind != Disconnect::KIND_ID {
-                    return Err(CommunicationFailure(packet.dest));
+        };
+
+        loop {
+            match connection.stream.internal.write(&bytes) {
+                Ok(count) if count < bytes.len() => {
+                    bytes.drain(..count);
+                }
+                Ok(_) => {
+                    finish.done();
+                    return Ok(());
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    connection.partially_sent_packet = Some(PartiallySentPacket { bytes, finish });
+                    connection.tcp_writable = false;
+                    return Ok(());
+                }
+                Err(_) => {
+                    // We say we're "done()" with this future, but it's not obvious to the calling
+                    // future that this packet failed to reach its destination. This could cause
+                    // issues if there's some back-and-forth between client and server, and the
+                    // associated logic "waits" for a response, not knowing that a send failed here
+                    // Perhaps we should be able to "packet.finish.failed()"? Hmm.
+                    finish.done();
+                    return if kind != Disconnect::KIND_ID {
+                        Err(CommunicationFailure(packet.dest))
+                    } else {
+                        Ok(())
+                    };
                 }
             }
         }
-        Ok(())
     }
 
     pub fn attempt_write_all(
