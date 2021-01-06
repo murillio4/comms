@@ -1,9 +1,9 @@
 use crate::client::{AnyClientRef, Clients, Connection, PartiallySentPacket};
-use crate::task::{EndpointError, PacketFinish, PacketFuture, SyncUnsafeCell};
+use crate::task::{EndpointError, PacketFinish, PacketFuture};
 use futures::future::join_all;
 use mio::net::UdpSocket;
 use mio::Waker;
-use std::cell::UnsafeCell;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::io;
@@ -17,7 +17,7 @@ use voice_lib::Serialize;
 
 pub struct OutgoingPacket {
     pub dest: ClientId,
-    pub builder: Arc<SyncUnsafeCell<WritePacketBuilder>>,
+    pub builder: Arc<RefCell<WritePacketBuilder>>,
     pub finish: PacketFinish,
 }
 
@@ -81,15 +81,20 @@ impl OutgoingQueue {
             };
 
             *socket_writable = false;
-            let builder = unsafe { &mut *packet.builder.get() };
-            let kind = builder.kind;
-
-            let raw = builder.as_raw(packet_id).unwrap_or_else(|_| {
-                panic!(
-                    "Serialization failed for packet id {} kind {}",
-                    packet_id, kind
-                )
-            });
+            let (kind, raw) = {
+                let mut builder = packet.builder.borrow_mut();
+                let kind = builder.kind;
+                let raw = builder
+                    .as_raw(packet_id)
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "Serialization failed for packet id {} kind {}",
+                            packet_id, kind
+                        )
+                    })
+                    .to_vec();
+                (kind, raw)
+            };
             match socket.send_to(&raw, addr) {
                 Ok(_) => packet.finish.done(),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -117,7 +122,7 @@ impl OutgoingQueue {
         };
 
         let packet_id = connection.next_packet_id();
-        let builder = unsafe { &mut *packet.builder.get() };
+        let mut builder = packet.builder.borrow_mut();
         let kind = builder.kind;
 
         let (mut bytes, finish) = match connection.partially_sent_packet.take() {
@@ -198,7 +203,7 @@ impl NetworkHandle {
         kind: PacketKind,
         protocol: Protocol,
         dest: ClientId,
-        builder: Arc<SyncUnsafeCell<WritePacketBuilder>>,
+        builder: Arc<RefCell<WritePacketBuilder>>,
     ) -> PacketFuture {
         let (future, finish) = PacketFuture::new(kind);
         self.sender
@@ -236,7 +241,7 @@ pub struct SendPacket {
     kind: PacketKind,
     destination: Target,
     protocol: Protocol,
-    builder: Arc<SyncUnsafeCell<WritePacketBuilder>>,
+    builder: Arc<RefCell<WritePacketBuilder>>,
 }
 
 impl SendPacket {
@@ -258,7 +263,7 @@ impl SendPacket {
             kind: B::KIND_ID,
             protocol: Protocol::Udp,
             destination,
-            builder: Arc::new(SyncUnsafeCell(UnsafeCell::new(builder))),
+            builder: Arc::new(RefCell::new(builder)),
         })
     }
 
@@ -280,7 +285,7 @@ impl SendPacket {
             kind: B::KIND_ID,
             destination,
             protocol: Protocol::Tcp,
-            builder: Arc::new(SyncUnsafeCell(UnsafeCell::new(builder))),
+            builder: Arc::new(RefCell::new(builder)),
         })
     }
 

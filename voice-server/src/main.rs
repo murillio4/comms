@@ -12,11 +12,11 @@ use crate::endpoints::{
     HandlePacketError, StreamStatus,
 };
 use crate::network::{NetworkHandle, SendPacket, Target};
-use crate::task::{EndpointResult, SyncUnsafeCell};
+use crate::task::EndpointResult;
 use mio::net::TcpListener;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token, Waker};
-use std::cell::UnsafeCell;
+use std::cell::RefCell;
 use std::io;
 use std::io::Error;
 use std::sync::Arc;
@@ -31,10 +31,7 @@ mod endpoints;
 mod network;
 mod task;
 
-pub async fn on_connect(
-    network_handle: NetworkHandle,
-    client_id: ClientId,
-) -> EndpointResult {
+pub async fn on_connect(network_handle: NetworkHandle, client_id: ClientId) -> EndpointResult {
     let outgoing = SendPacket::tcp(Target::One(client_id), None, packet::Hello { client_id })?;
     outgoing.send(&network_handle).await;
     Ok(())
@@ -75,7 +72,7 @@ fn main() -> Result<(), CommsServerError> {
     let mut events = Events::with_capacity(1024);
     let mut buffer = [0u8; 65535];
     let mut udp_socket_writable = false;
-    let clients = Arc::new(SyncUnsafeCell(UnsafeCell::new(Clients::new())));
+    let clients = Arc::new(RefCell::new(Clients::new()));
 
     loop {
         poll.poll(&mut events, None)?;
@@ -86,7 +83,7 @@ fn main() -> Result<(), CommsServerError> {
                 // or because there's new packets to send.
                 task_executor.run();
                 let failed_client_ids = {
-                    let mut clients = unsafe { &mut *clients.get() };
+                    let mut clients = clients.borrow_mut();
                     outgoing_queue.sort_from_handle(&mut clients);
                     outgoing_queue.attempt_write_all(
                         &udp_socket,
@@ -99,7 +96,7 @@ fn main() -> Result<(), CommsServerError> {
                         client_id,
                         CloseConnectionReason::MalformedData,
                         &network_handle,
-                        &clients,
+                        clients.clone(),
                         &spawner,
                     );
                 }
@@ -120,14 +117,14 @@ fn main() -> Result<(), CommsServerError> {
                                         )
                                     {
                                         if let Some(client_id) = {
-                                            let clients = unsafe { &mut *clients.get() };
+                                            let clients = clients.borrow();
                                             clients.id_by_socket_addr(&remote_addr)
                                         } {
                                             spawn_close_connection(
                                                 client_id,
                                                 CloseConnectionReason::MalformedData,
                                                 &network_handle,
-                                                &clients,
+                                                clients.clone(),
                                                 &spawner,
                                             );
                                         }
@@ -143,7 +140,7 @@ fn main() -> Result<(), CommsServerError> {
                 if event.is_writable() {
                     udp_socket_writable = true;
                     let failed_client_ids = {
-                        let mut clients = unsafe { &mut *clients.get() };
+                        let mut clients = clients.borrow_mut();
                         outgoing_queue.attempt_write_udp(
                             &udp_socket,
                             &mut udp_socket_writable,
@@ -155,7 +152,7 @@ fn main() -> Result<(), CommsServerError> {
                             client_id,
                             CloseConnectionReason::MalformedData,
                             &network_handle,
-                            &clients,
+                            clients.clone(),
                             &spawner,
                         );
                     }
@@ -177,7 +174,7 @@ fn main() -> Result<(), CommsServerError> {
                         Interest::READABLE | Interest::WRITABLE,
                     )?;
 
-                    let clients = unsafe { &mut *clients.get() };
+                    let mut clients = clients.borrow_mut();
                     clients.connecting.insert(
                         client_id,
                         ConnectingClient {
@@ -198,7 +195,7 @@ fn main() -> Result<(), CommsServerError> {
                                 client_id,
                                 CloseConnectionReason::SocketClosed,
                                 &network_handle,
-                                &clients,
+                                clients.clone(),
                                 &spawner,
                             );
                         }
@@ -207,7 +204,7 @@ fn main() -> Result<(), CommsServerError> {
                                 client_id,
                                 CloseConnectionReason::MalformedData,
                                 &network_handle,
-                                &clients,
+                                clients.clone(),
                                 &spawner,
                             );
                         }
@@ -216,7 +213,7 @@ fn main() -> Result<(), CommsServerError> {
                 }
                 if event.is_writable() {
                     let client_id = token.0 as ClientId;
-                    let clients = unsafe { &mut *clients.get() };
+                    let mut clients = clients.borrow_mut();
                     clients.connection_by_id(&client_id).map(|c| {
                         c.tcp_writable = true;
                         outgoing_queue.attempt_write_tcp_for_client(c)

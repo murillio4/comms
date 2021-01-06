@@ -1,7 +1,8 @@
 use crate::client::{AnyClient, Client, Clients};
 use crate::network::{NetworkHandle, SendPacket, Target};
-use crate::task::{EndpointResult, Spawner, SyncUnsafeCell};
+use crate::task::{EndpointResult, Spawner};
 use futures::future;
+use std::cell::RefCell;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,19 +15,19 @@ use voice_lib::packet::{
 use voice_lib::serialization::{DeserializeError, UdpHeaderParsedPacket};
 
 pub struct Context {
-    pub clients: Arc<SyncUnsafeCell<Clients>>,
+    pub clients: Arc<RefCell<Clients>>,
     pub client_id: ClientId,
     pub network_handle: NetworkHandle,
 }
 
 async fn associate_udp(
     udp_handle: NetworkHandle,
-    clients: Arc<SyncUnsafeCell<Clients>>,
+    clients: Arc<RefCell<Clients>>,
     addr: SocketAddr,
     packet: Packet<AssociateUdp>,
 ) -> EndpointResult {
     let outgoing = {
-        let clients = unsafe { &mut *clients.get() };
+        let mut clients = clients.borrow_mut();
         let mut client = match clients.connecting.get_mut(&packet.body.client_id) {
             Some(client) => client,
             None => return Ok(()),
@@ -42,12 +43,9 @@ async fn associate_udp(
     Ok(())
 }
 
-async fn audio_from_client(
-    context: Context,
-    packet: Packet<AudioFromClient>,
-) -> EndpointResult {
+async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) -> EndpointResult {
     let client_ids = {
-        let clients = unsafe { &*context.clients.get() };
+        let clients = context.clients.borrow();
         clients
             .established
             .iter()
@@ -67,12 +65,9 @@ async fn audio_from_client(
     Ok(())
 }
 
-async fn finish_connect(
-    context: Context,
-    packet: Packet<FinishConnect>,
-) -> EndpointResult {
+async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> EndpointResult {
     let packets = {
-        let clients = unsafe { &mut *context.clients.get() };
+        let mut clients = context.clients.borrow_mut();
         let mut client = match clients.connecting.remove(&context.client_id) {
             Some(c) => c,
             None => return Ok(()),
@@ -142,10 +137,7 @@ async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> EndpointRes
     Ok(())
 }
 
-async fn close_connection(
-    context: Context,
-    reason: CloseConnectionReason,
-) -> EndpointResult {
+async fn close_connection(context: Context, reason: CloseConnectionReason) -> EndpointResult {
     if reason == CloseConnectionReason::MalformedData {
         let outgoing = SendPacket::tcp(
             Target::One(context.client_id),
@@ -158,7 +150,7 @@ async fn close_connection(
     }
 
     let remaining_client_ids = {
-        let clients = unsafe { &mut *context.clients.get() };
+        let mut clients = context.clients.borrow_mut();
         if reason != CloseConnectionReason::SocketClosed {
             clients
                 .remove_client(&context.client_id)
@@ -219,13 +211,13 @@ pub fn spawn_close_connection(
     client_id: ClientId,
     reason: CloseConnectionReason,
     network_handle: &NetworkHandle,
-    clients: &Arc<SyncUnsafeCell<Clients>>,
+    clients: Arc<RefCell<Clients>>,
     spawner: &Spawner,
 ) {
     let context = Context {
         client_id,
         network_handle: network_handle.clone(),
-        clients: clients.clone(),
+        clients,
     };
 
     spawner.spawn(close_connection(context, reason));
@@ -251,7 +243,7 @@ impl From<io::Error> for HandlePacketError {
 pub fn handle_udp_packet(
     addr: SocketAddr,
     raw_packet: &[u8],
-    clients: Arc<SyncUnsafeCell<Clients>>,
+    clients: Arc<RefCell<Clients>>,
     spawner: &Spawner,
     network_handle: NetworkHandle,
 ) -> Result<(), HandlePacketError> {
@@ -269,7 +261,7 @@ pub fn handle_udp_packet(
     }
 
     let client_id = {
-        let clients = unsafe { &mut *clients.get() };
+        let clients = clients.borrow();
         match clients.id_by_socket_addr(&addr) {
             Some(client_id) => client_id,
             None => return Ok(()),
@@ -296,12 +288,12 @@ pub enum StreamStatus {
 
 pub fn handle_tcp_stream(
     client_id: ClientId,
-    clients: Arc<SyncUnsafeCell<Clients>>,
+    clients: Arc<RefCell<Clients>>,
     spawner: &Spawner,
     network_handle: &NetworkHandle,
 ) -> Result<StreamStatus, HandlePacketError> {
     let mut current_client = {
-        let clients = unsafe { &mut *clients.get() };
+        let mut clients = clients.borrow_mut();
         if let Some(client) = clients.remove_client(&client_id) {
             client
         } else {
@@ -336,7 +328,7 @@ pub fn handle_tcp_stream(
         }
     }
 
-    let clients = unsafe { &mut *clients.get() };
+    let mut clients = clients.borrow_mut();
     clients.insert_client(client_id, current_client);
     Ok(StreamStatus::Normal)
 }
