@@ -1,16 +1,17 @@
 use futures::channel::oneshot;
-use futures::future::BoxFuture;
 use futures::task::{waker_ref, ArcWake, Context, Poll};
-use futures::FutureExt;
-use std::cell::UnsafeCell;
+use std::cell::{UnsafeCell, RefCell};
 use std::fmt::Debug;
 use std::future::Future;
 use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
+use std::sync::mpsc::{Receiver, TryRecvError, SyncSender, sync_channel};
 use std::sync::Arc;
 use std::task::Waker;
 use voice_lib::packet::PacketKind;
+use std::rc::{Rc, Weak};
+
+type EndpointFuture = dyn Future<Output = EndpointResult> + 'static;
 
 pub struct PacketFuture {
     kind: PacketKind,
@@ -69,27 +70,103 @@ impl PacketFinish {
     }
 }
 
+#[derive(Debug)]
+pub enum EndpointError {
+    SerializeFailed {
+        kind: PacketKind,
+        packet: Box<dyn Debug>,
+    },
+}
+pub type EndpointResult = Result<(), EndpointError>;
+
+#[derive(Clone)]
+struct ArenaToken(usize);
+
+impl Deref for ArenaToken {
+    type Target = usize;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+struct FuturesArena {
+    max_token: ArenaToken,
+    futures: Vec<Option<Pin<Box<EndpointFuture>>>>,
+    tokens: Vec<ArenaToken>,
+}
+
+impl FuturesArena {
+    fn new_future(&mut self, future: impl Future<Output = EndpointResult> + 'static) -> ArenaToken {
+        let future = Box::pin(future);
+        match self.tokens.pop() {
+            Some(token) => {
+                *self.futures.get_mut(*token).expect("Expected future slot to exist for existing token") = Some(future);
+                token
+            },
+            None => {
+                let token = self.max_token.clone();
+                self.max_token.0 += 1;
+                self.futures.insert(token.0, Some(future));
+                token
+            }
+        }
+    }
+}
+
 pub struct TaskExecutor {
-    ready_queue: Receiver<Arc<Task>>,
+    scheduler: Scheduler,
+    waker_queue: Receiver<Arc<FutureWaker>>,
+    arena: Rc<RefCell<FuturesArena>>,
 }
 
 impl TaskExecutor {
+    pub fn new(mio_waker: Arc<mio::Waker>) -> Self {
+        let (waker_sender, waker_queue) = sync_channel(10_000);
+        let scheduler = Scheduler {
+            future_waker_sender: waker_sender,
+            mio_waker,
+        };
+        Self {
+            scheduler,
+            waker_queue,
+            arena: Rc::new(RefCell::new(FuturesArena {
+                max_token: ArenaToken(0),
+                futures: Vec::new(),
+                tokens: Vec::new(),
+            })),
+        }
+    }
+
+    pub fn spawner(&self) -> Spawner {
+        Spawner {
+            scheduler: self.scheduler.clone(),
+            arena: Rc::downgrade(&self.arena),
+        }
+    }
+
     pub fn run(&self) {
         loop {
-            match self.ready_queue.try_recv() {
+            match self.waker_queue.try_recv() {
                 Err(e) if e == TryRecvError::Empty => break,
                 Err(e) => panic!(e),
-                Ok(task) => {
-                    let future_slot = unsafe { &mut *task.future.0.get() };
-                    if let Some(mut future) = future_slot.take() {
-                        let waker = waker_ref(&task);
-                        let context = &mut Context::from_waker(&*waker);
-                        match future.as_mut().poll(context) {
-                            Poll::Pending => *future_slot = Some(future),
-                            Poll::Ready(result) => {
-                                if let Err(e) = result {
-                                    panic!(format!("Packet-handling function failed: {:?}", e));
-                                }
+                Ok(arena_waker) => {
+                    let mut future = {
+                        let mut arena = self.arena.borrow_mut();
+                        arena.futures.get_mut(*arena_waker.token).unwrap().take().expect("Requested obsolete future from arena")
+                    };
+                    let waker = waker_ref(&arena_waker);
+                    let context = &mut Context::from_waker(&*waker);
+                    match future.as_mut().poll(context) {
+                        Poll::Pending => {
+                            let mut arena = self.arena.borrow_mut();
+                            *arena.futures.get_mut(*arena_waker.token).unwrap() = Some(future);
+                        },
+                        Poll::Ready(result) => {
+                            let mut arena = self.arena.borrow_mut();
+                            arena.tokens.push(arena_waker.token.clone());
+                            if let Err(e) = result {
+                                panic!(format!("Packet-handling function failed: {:?}", e));
                             }
                         }
                     }
@@ -99,39 +176,51 @@ impl TaskExecutor {
     }
 }
 
-pub struct Spawner {
-    task_scheduler: Scheduler,
+struct FutureWaker {
+    scheduler: Scheduler,
+    token: ArenaToken,
 }
 
-#[derive(Debug)]
-pub enum EndpointError {
-    SerializeFailed {
-        kind: PacketKind,
-        packet: Box<dyn Debug>,
-    },
+impl FutureWaker {
+    fn new(token: ArenaToken, scheduler: Scheduler) -> Self {
+        Self {
+            token,
+            scheduler,
+        }
+    }
+}
+
+impl ArcWake for FutureWaker {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
+        arc_self.scheduler.schedule(arc_self.clone());
+    }
+}
+
+pub struct Spawner {
+    scheduler: Scheduler,
+    arena: Weak<RefCell<FuturesArena>>,
 }
 
 impl Spawner {
-    pub fn spawn(&self, future: impl Future<Output = Result<(), EndpointError>> + 'static + Send) {
-        let future = future.boxed();
-        let task = Arc::new(Task {
-            future: SyncUnsafeCell(UnsafeCell::new(Some(future))),
-            task_scheduler: self.task_scheduler.clone(),
-        });
-        self.task_scheduler.schedule(task);
+    pub fn spawn(&self, future: impl Future<Output = EndpointResult> + 'static) {
+        let future: Pin<_> = Box::pin(future);
+        let arena = self.arena.upgrade().expect("Future spawned after executor shut down");
+        let mut arena = arena.borrow_mut();
+        let token = arena.new_future(future);
+        self.scheduler.schedule(Arc::new(FutureWaker::new(token, self.scheduler.clone())));
     }
 }
 
 #[derive(Clone)]
 struct Scheduler {
-    task_sender: SyncSender<Arc<Task>>,
-    waker: Arc<mio::Waker>,
+    future_waker_sender: SyncSender<Arc<FutureWaker>>,
+    mio_waker: Arc<mio::Waker>,
 }
 
 impl Scheduler {
-    fn schedule(&self, task: Arc<Task>) {
-        self.task_sender.send(task).unwrap();
-        self.waker.wake().unwrap();
+    fn schedule(&self, future_waker: Arc<FutureWaker>) {
+        self.future_waker_sender.send(future_waker).unwrap();
+        self.mio_waker.wake().unwrap();
     }
 }
 
@@ -146,24 +235,11 @@ impl<T> Deref for SyncUnsafeCell<T> {
     }
 }
 
-struct Task {
-    future: SyncUnsafeCell<Option<BoxFuture<'static, Result<(), EndpointError>>>>,
-    task_scheduler: Scheduler,
-}
-
-impl ArcWake for Task {
-    fn wake_by_ref(arc_self: &Arc<Self>) {
-        let cloned = arc_self.clone();
-        arc_self.task_scheduler.schedule(cloned);
-    }
-}
-
-pub fn new(waker: Arc<mio::Waker>) -> (TaskExecutor, Spawner) {
-    let (task_sender, ready_queue) = sync_channel(10_000);
+pub fn new(mio_waker: Arc<mio::Waker>) -> (TaskExecutor, Spawner) {
+    let executor = TaskExecutor::new(mio_waker);
+    let spawner = executor.spawner();
     (
-        TaskExecutor { ready_queue },
-        Spawner {
-            task_scheduler: Scheduler { task_sender, waker },
-        },
+        executor,
+        spawner,
     )
 }

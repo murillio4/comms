@@ -1,6 +1,6 @@
 use crate::client::{AnyClient, Client, Clients};
 use crate::network::{NetworkHandle, SendPacket, Target};
-use crate::task::{EndpointError, Spawner, SyncUnsafeCell};
+use crate::task::{EndpointResult, Spawner, SyncUnsafeCell};
 use futures::future;
 use std::io;
 use std::net::SocketAddr;
@@ -24,7 +24,7 @@ async fn associate_udp(
     clients: Arc<SyncUnsafeCell<Clients>>,
     addr: SocketAddr,
     packet: Packet<AssociateUdp>,
-) -> Result<(), EndpointError> {
+) -> EndpointResult {
     let outgoing = {
         let clients = unsafe { &mut *clients.get() };
         let mut client = match clients.connecting.get_mut(&packet.body.client_id) {
@@ -45,7 +45,7 @@ async fn associate_udp(
 async fn audio_from_client(
     context: Context,
     packet: Packet<AudioFromClient>,
-) -> Result<(), EndpointError> {
+) -> EndpointResult {
     let client_ids = {
         let clients = unsafe { &*context.clients.get() };
         clients
@@ -70,7 +70,7 @@ async fn audio_from_client(
 async fn finish_connect(
     context: Context,
     packet: Packet<FinishConnect>,
-) -> Result<(), EndpointError> {
+) -> EndpointResult {
     let packets = {
         let clients = unsafe { &mut *context.clients.get() };
         let mut client = match clients.connecting.remove(&context.client_id) {
@@ -132,7 +132,7 @@ async fn finish_connect(
     Ok(())
 }
 
-async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> Result<(), EndpointError> {
+async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> EndpointResult {
     let outgoing = SendPacket::tcp(
         Target::One(context.client_id),
         Some(packet_id),
@@ -145,7 +145,7 @@ async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> Result<(), 
 async fn close_connection(
     context: Context,
     reason: CloseConnectionReason,
-) -> Result<(), EndpointError> {
+) -> EndpointResult {
     if reason == CloseConnectionReason::MalformedData {
         let outgoing = SendPacket::tcp(
             Target::One(context.client_id),

@@ -12,7 +12,7 @@ use crate::endpoints::{
     HandlePacketError, StreamStatus,
 };
 use crate::network::{NetworkHandle, SendPacket, Target};
-use crate::task::{EndpointError, SyncUnsafeCell};
+use crate::task::{EndpointResult, SyncUnsafeCell};
 use mio::net::TcpListener;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token, Waker};
@@ -34,7 +34,7 @@ mod task;
 pub async fn on_connect(
     network_handle: NetworkHandle,
     client_id: ClientId,
-) -> Result<(), EndpointError> {
+) -> EndpointResult {
     let outgoing = SendPacket::tcp(Target::One(client_id), None, packet::Hello { client_id })?;
     outgoing.send(&network_handle).await;
     Ok(())
