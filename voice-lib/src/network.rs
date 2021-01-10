@@ -5,7 +5,7 @@ use mio::net::TcpStream;
 use serde::de::DeserializeOwned;
 use slice_deque::SliceDeque;
 use std::io;
-use std::io::Read;
+use std::io::{Read, Write};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Protocol {
@@ -13,27 +13,64 @@ pub enum Protocol {
     Udp,
 }
 
-pub struct CommsTcpStream {
-    pub internal: TcpStream,
-    next_header: Option<PacketHeader>,
-    slice_deque: SliceDeque<u8>,
+pub struct TcpConnection {
+    pub stream: TcpStream,
+    is_writable: bool,
+    incoming_stream: SliceDeque<u8>,
+    outgoing_stream: SliceDeque<u8>,
+    next_incoming_header: Option<PacketHeader>,
 }
 
-impl CommsTcpStream {
-    pub fn new(tcp_stream: TcpStream) -> Self {
+impl TcpConnection {
+    pub fn new(stream: TcpStream) -> Self {
         Self {
-            internal: tcp_stream,
-            slice_deque: SliceDeque::with_capacity(48_000),
-            next_header: None,
+            stream,
+            is_writable: false,
+            incoming_stream: SliceDeque::with_capacity(48_000),
+            outgoing_stream: SliceDeque::with_capacity(48_000),
+            next_incoming_header: None,
         }
     }
 
-    pub fn update_from_stream(&mut self) -> Result<UpdateFromStream, io::Error> {
+    pub fn write_packets_until_blocked(&mut self) -> Result<(), io::Error> {
+        if !self.is_writable {
+            return Ok(())
+        }
+
+        while !self.outgoing_stream.is_empty() {
+            match self.stream.write(&self.outgoing_stream) {
+                Ok(count) => unsafe { self.outgoing_stream.move_head_unchecked(count as isize) },
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    self.is_writable = false;
+                    return Ok(())
+                },
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn push_outgoing(&mut self, bytes: &[u8]) -> Result<(), io::Error> {
+        self.outgoing_stream.extend_from_slice(bytes);
+        self.write_packets_until_blocked()
+    }
+
+    pub fn push_outgoing_without_send(&mut self, bytes: &[u8]) {
+        self.outgoing_stream.extend_from_slice(bytes);
+    }
+
+    pub fn notify_writable(&mut self) -> Result<(), io::Error> {
+        self.is_writable = true;
+        self.write_packets_until_blocked()?;
+        Ok(())
+    }
+
+    pub fn read_until_blocked(&mut self) -> Result<UpdateFromStream, io::Error> {
         loop {
-            let mut buf = [0; 256];
-            match self.internal.read(&mut buf) {
+            let mut buf = [0; 4096];
+            match self.stream.read(&mut buf) {
                 Ok(0) => return Ok(UpdateFromStream::ConnectionClosed),
-                Ok(amount) => self.slice_deque.extend_from_slice(&buf[0..amount]),
+                Ok(amount) => self.incoming_stream.extend_from_slice(&buf[0..amount]),
                 Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
                     return Ok(UpdateFromStream::Success)
                 }
@@ -46,21 +83,21 @@ impl CommsTcpStream {
         }
     }
 
-    pub fn next_packet(&mut self) -> Result<Option<TcpHeaderParsedPacket<'_>>, DeserializeError> {
-        let header = if let Some(header) = self.next_header.take() {
+    pub fn get_next_incoming(&mut self) -> Result<Option<TcpHeaderParsedPacket<'_>>, DeserializeError> {
+        let header = if let Some(header) = self.next_incoming_header.take() {
             header
         } else {
-            if self.slice_deque.len() < PACKET_HEADER_SIZE {
+            if self.incoming_stream.len() < PACKET_HEADER_SIZE {
                 return Ok(None);
             }
-            let bytes = &self.slice_deque.as_slice()[0..PACKET_HEADER_SIZE];
+            let bytes = &self.incoming_stream.as_slice()[0..PACKET_HEADER_SIZE];
             let header = bincode::deserialize(bytes).map_err(|_| DeserializeError)?;
-            unsafe { self.slice_deque.move_head(PACKET_HEADER_SIZE as isize) };
+            unsafe { self.incoming_stream.move_head(PACKET_HEADER_SIZE as isize) };
             header
         };
 
-        if self.slice_deque.len() < header.body_len as usize {
-            self.next_header = Some(header);
+        if self.incoming_stream.len() < header.body_len as usize {
+            self.next_incoming_header = Some(header);
             return Ok(None);
         }
         Ok(Some(TcpHeaderParsedPacket::new(header, self)))
@@ -70,25 +107,25 @@ impl CommsTcpStream {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        let slice = &self.slice_deque.as_slice()[0..body_len];
+        let slice = &self.incoming_stream.as_slice()[0..body_len];
         let return_value: R = parse(slice);
-        unsafe { self.slice_deque.move_head(body_len as isize) };
+        unsafe { self.incoming_stream.move_head(body_len as isize) };
         return_value
     }
 
     fn ignore_packet_body(&mut self, body_len: usize) {
-        unsafe { self.slice_deque.move_head(body_len as isize) };
+        unsafe { self.incoming_stream.move_head(body_len as isize) };
     }
 }
 
 pub struct TcpBodyInStream<'a> {
     len: usize,
-    stream: &'a mut CommsTcpStream,
+    stream: &'a mut TcpConnection,
     has_consumed_stream: bool,
 }
 
 impl<'a> TcpBodyInStream<'a> {
-    pub fn new(len: usize, stream: &'a mut CommsTcpStream) -> Self {
+    pub fn new(len: usize, stream: &'a mut TcpConnection) -> Self {
         Self {
             len,
             stream,
@@ -126,7 +163,8 @@ pub struct TcpHeaderParsedPacket<'a> {
 }
 
 impl<'a> TcpHeaderParsedPacket<'a> {
-    pub fn new(header: PacketHeader, stream: &'a mut CommsTcpStream) -> Self {
+    // TODO merge with Owned...Packet?
+    pub fn new(header: PacketHeader, stream: &'a mut TcpConnection) -> Self {
         TcpHeaderParsedPacket {
             stream_body: TcpBodyInStream::new(header.body_len as usize, stream),
             header,

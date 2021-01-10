@@ -1,4 +1,3 @@
-use futures::channel::oneshot;
 use futures::task::{waker_ref, ArcWake, Context, Poll};
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -8,66 +7,9 @@ use std::pin::Pin;
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::sync::Arc;
-use std::task::Waker;
 use voice_lib::packet::PacketKind;
 
 type EndpointFuture = dyn Future<Output = EndpointResult> + 'static;
-
-pub struct PacketFuture {
-    kind: PacketKind,
-    receiver: Arc<RefCell<oneshot::Receiver<()>>>,
-    waker: Arc<RefCell<Option<Waker>>>,
-}
-
-impl Future for PacketFuture {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut receiver = self.receiver.borrow_mut();
-        match receiver.try_recv() {
-            Ok(Some(())) => Poll::Ready(()),
-            Ok(None) => {
-                let mut waker = self.waker.borrow_mut();
-                *waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-            Err(e) => {
-                dbg!(self.kind);
-                panic!(e)
-            }
-        }
-    }
-}
-
-impl PacketFuture {
-    pub fn new(kind: PacketKind) -> (Self, PacketFinish) {
-        let (sender, receiver) = oneshot::channel();
-        let waker = Arc::new(RefCell::new(None));
-        (
-            PacketFuture {
-                kind,
-                receiver: Arc::new(RefCell::new(receiver)),
-                waker: waker.clone(),
-            },
-            PacketFinish { sender, waker },
-        )
-    }
-}
-
-pub struct PacketFinish {
-    sender: oneshot::Sender<()>,
-    waker: Arc<RefCell<Option<Waker>>>,
-}
-
-impl PacketFinish {
-    pub fn done(self) {
-        let _ = self.sender.send(());
-        let mut waker = self.waker.borrow_mut();
-        if let Some(waker) = waker.take() {
-            waker.wake();
-        }
-    }
-}
 
 #[derive(Debug)]
 pub enum EndpointError {

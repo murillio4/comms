@@ -214,10 +214,9 @@ fn main() -> Result<(), CommsServerError> {
                 if event.is_writable() {
                     let client_id = token.0 as ClientId;
                     let mut clients = clients.borrow_mut();
-                    clients.connection_by_id(&client_id).map(|c| {
-                        c.tcp_writable = true;
-                        outgoing_queue.attempt_write_tcp_for_client(c)
-                    });
+                    if let Some(c) = clients.connection_by_id(&client_id) {
+                        c.tcp.notify_writable().unwrap();
+                    };
                 }
             }
         }

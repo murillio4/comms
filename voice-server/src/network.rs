@@ -1,32 +1,27 @@
-use crate::client::{AnyClientRef, Clients, Connection, PartiallySentPacket};
-use crate::task::{EndpointError, PacketFinish, PacketFuture};
-use futures::future::join_all;
+use crate::client::{AnyClientRef, Clients};
+use crate::task::EndpointError;
 use mio::net::UdpSocket;
 use mio::Waker;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::io;
-use std::io::Write;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 use voice_lib::network::Protocol;
-use voice_lib::packet::{ClientId, Disconnect, PacketBody, PacketId, PacketKind};
+use voice_lib::packet::{ClientId, Disconnect, PacketBody, PacketId};
 use voice_lib::serialization::WritePacketBuilder;
 use voice_lib::Serialize;
 
 pub struct OutgoingPacket {
     pub dest: ClientId,
     pub builder: Arc<RefCell<WritePacketBuilder>>,
-    pub finish: PacketFinish,
 }
 
 pub struct OutgoingQueue {
     receiver: Receiver<(Protocol, OutgoingPacket)>,
     udp_queue: VecDeque<OutgoingPacket>,
 }
-
-pub struct CommunicationFailure(pub ClientId);
 
 impl OutgoingQueue {
     pub fn sort_from_handle(&mut self, clients: &mut Clients) {
@@ -36,11 +31,10 @@ impl OutgoingQueue {
                 Protocol::Udp => self.udp_queue.push_back(packet),
                 Protocol::Tcp => {
                     if let Some(connection) = clients.connection_by_id(&packet.dest) {
-                        connection.outgoing_queue.push_back(packet);
+                        let mut builder = packet.builder.borrow_mut();
+                        let bytes = builder.as_raw(connection.next_packet_id()).unwrap();
+                        connection.tcp.push_outgoing_without_send(bytes);
                     } else {
-                        // I wonder if this will cause issues in higher layers if they expect a
-                        // packet to be sent, then wait for a (never coming) response.
-                        packet.finish.done();
                         println!("connection could not be found :)");
                     }
                 }
@@ -67,10 +61,7 @@ impl OutgoingQueue {
             };
 
             let (packet_id, addr) = match clients.client_by_id(&packet.dest) {
-                None => {
-                    packet.finish.done();
-                    continue;
-                }
+                None => continue,
                 Some(AnyClientRef::Established(c)) => (c.connection.next_packet_id(), c.udp_addr),
                 Some(AnyClientRef::Connecting(c)) => (
                     c.connection.next_packet_id(),
@@ -96,13 +87,12 @@ impl OutgoingQueue {
                 (kind, raw)
             };
             match socket.send_to(&raw, addr) {
-                Ok(_) => packet.finish.done(),
+                Ok(_) => (),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     self.udp_queue.push_front(packet);
                     break;
                 }
                 Err(_) => {
-                    packet.finish.done();
                     if kind != Disconnect::KIND_ID {
                         failures.push(packet.dest)
                     }
@@ -112,66 +102,6 @@ impl OutgoingQueue {
         failures
     }
 
-    pub fn attempt_write_tcp_for_client(
-        &mut self,
-        connection: &mut Connection,
-    ) -> Result<(), CommunicationFailure> {
-        let packet = match connection.outgoing_queue.pop_front() {
-            None => return Ok(()),
-            Some(p) => p,
-        };
-
-        let packet_id = connection.next_packet_id();
-        let mut builder = packet.builder.borrow_mut();
-        let kind = builder.kind;
-
-        let (mut bytes, finish) = match connection.partially_sent_packet.take() {
-            Some(partial) => (partial.bytes, partial.finish),
-            None => {
-                let bytes = builder
-                    .as_raw(packet_id)
-                    .unwrap_or_else(|_| {
-                        panic!(
-                            "Serialization failed for packet id {} kind {}",
-                            packet_id, kind
-                        )
-                    })
-                    .to_vec();
-                (bytes, packet.finish)
-            }
-        };
-
-        loop {
-            match connection.stream.internal.write(&bytes) {
-                Ok(count) if count < bytes.len() => {
-                    bytes.drain(..count);
-                }
-                Ok(_) => {
-                    finish.done();
-                    return Ok(());
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    connection.partially_sent_packet = Some(PartiallySentPacket { bytes, finish });
-                    connection.tcp_writable = false;
-                    return Ok(());
-                }
-                Err(_) => {
-                    // We say we're "done()" with this future, but it's not obvious to the calling
-                    // future that this packet failed to reach its destination. This could cause
-                    // issues if there's some back-and-forth between client and server, and the
-                    // associated logic "waits" for a response, not knowing that a send failed here
-                    // Perhaps we should be able to "packet.finish.failed()"? Hmm.
-                    finish.done();
-                    return if kind != Disconnect::KIND_ID {
-                        Err(CommunicationFailure(packet.dest))
-                    } else {
-                        Ok(())
-                    };
-                }
-            }
-        }
-    }
-
     pub fn attempt_write_all(
         &mut self,
         socket: &UdpSocket,
@@ -179,11 +109,9 @@ impl OutgoingQueue {
         clients: &mut Clients,
     ) -> Vec<ClientId> {
         let mut failures = self.attempt_write_udp(socket, udp_socket_writable, clients);
-
-        let writable_connections = clients.writable_connections();
-        for connection in writable_connections.into_iter() {
-            if let Err(e) = self.attempt_write_tcp_for_client(connection) {
-                failures.push(e.0);
+        for (client_id, client) in clients.established.iter_mut() {
+            if client.connection.tcp.write_packets_until_blocked().is_err() {
+                failures.push(*client_id);
             }
         }
 
@@ -200,24 +128,14 @@ pub struct NetworkHandle {
 impl NetworkHandle {
     pub fn send(
         &self,
-        kind: PacketKind,
         protocol: Protocol,
         dest: ClientId,
         builder: Arc<RefCell<WritePacketBuilder>>,
-    ) -> PacketFuture {
-        let (future, finish) = PacketFuture::new(kind);
+    ) {
         self.sender
-            .send((
-                protocol,
-                OutgoingPacket {
-                    dest,
-                    builder,
-                    finish,
-                },
-            ))
+            .send((protocol, OutgoingPacket { dest, builder }))
             .unwrap();
         self.waker.wake().unwrap();
-        future
     }
 }
 
@@ -238,7 +156,6 @@ pub enum Target {
 }
 
 pub struct SendPacket {
-    kind: PacketKind,
     destination: Target,
     protocol: Protocol,
     builder: Arc<RefCell<WritePacketBuilder>>,
@@ -260,7 +177,6 @@ impl SendPacket {
             }
         })?;
         Ok(Self {
-            kind: B::KIND_ID,
             protocol: Protocol::Udp,
             destination,
             builder: Arc::new(RefCell::new(builder)),
@@ -282,7 +198,6 @@ impl SendPacket {
             }
         })?;
         Ok(Self {
-            kind: B::KIND_ID,
             destination,
             protocol: Protocol::Tcp,
             builder: Arc::new(RefCell::new(builder)),
@@ -292,15 +207,12 @@ impl SendPacket {
     pub async fn send(self, handle: &NetworkHandle) {
         let protocol = self.protocol;
         let builder = self.builder;
-        let kind = self.kind;
         match self.destination {
-            Target::One(dest) => handle.send(kind, protocol, dest, builder).await,
+            Target::One(dest) => handle.send(protocol, dest, builder),
             Target::Many(clients) => {
-                let futures: Vec<PacketFuture> = clients
-                    .into_iter()
-                    .map(|c| handle.send(kind, protocol.clone(), c, builder.clone()))
-                    .collect();
-                join_all(futures).await;
+                for client in clients {
+                    handle.send(protocol.clone(), client, builder.clone())
+                }
             }
         }
     }

@@ -1,6 +1,5 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::io::Write;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::sync::mpsc::{Receiver, RecvError, SendError};
@@ -9,7 +8,7 @@ use mio::net::TcpStream;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token};
 
-use voice_lib::network::{CommsTcpStream, Protocol, TcpHeaderParsedPacket, UpdateFromStream};
+use voice_lib::network::{TcpConnection, Protocol, TcpHeaderParsedPacket, UpdateFromStream};
 use voice_lib::packet;
 use voice_lib::packet::{AudioFromClient, AudioToClient, Hello, Packet, PacketBody, PacketKind};
 use voice_lib::serialization::{
@@ -28,17 +27,15 @@ pub struct Connection {
     udp_token: Token,
     udp_writable: bool,
     udp_packet_queue: VecDeque<Vec<u8>>,
-    tcp: CommsTcpStream,
+    tcp: TcpConnection,
     tcp_token: Token,
-    tcp_writable: bool,
     next_packet_id: NonZeroU64,
-    tcp_packet_queue: VecDeque<Vec<u8>>,
     reply_map: HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>,
     connect_response: Option<SendResponse<Result<Hello, ConnectError>>>,
 }
 
 impl Connection {
-    fn new(udp: UdpSocket, udp_token: Token, tcp: CommsTcpStream, tcp_token: Token) -> Self {
+    fn new(udp: UdpSocket, udp_token: Token, tcp: TcpConnection, tcp_token: Token) -> Self {
         Connection {
             udp,
             udp_token,
@@ -46,8 +43,6 @@ impl Connection {
             udp_packet_queue: VecDeque::new(),
             tcp,
             tcp_token,
-            tcp_writable: false,
-            tcp_packet_queue: VecDeque::new(),
             next_packet_id: NonZeroU64::new(1).unwrap(),
             reply_map: HashMap::new(),
             connect_response: None,
@@ -174,7 +169,7 @@ fn connect(
     *connection = Some(Connection::new(
         udp,
         udp_token,
-        CommsTcpStream::new(tcp),
+        TcpConnection::new(tcp),
         tcp_token,
     ));
     Ok(())
@@ -211,33 +206,23 @@ impl Worker {
                             } => {
                                 if let Some(connection) = &mut self.connection {
                                     let id = connection.next_packet_id();
-                                    if let Ok(raw) = outgoing.into_raw(id) {
+                                    if let Ok(raw) = outgoing.into_raw(id) { // TODO as_raw?
                                         if let Some(send_response) = send_response {
                                             connection.reply_map.insert(id, send_response);
                                         }
 
                                         match protocol {
                                             Protocol::Tcp => {
-                                                connection.tcp_packet_queue.push_back(raw);
-                                                match attempt_send_next_tcp_packet(
-                                                    &mut connection.tcp_packet_queue,
-                                                    &mut connection.tcp.internal,
-                                                    &mut connection.tcp_writable,
-                                                ) {
-                                                    Ok(_) => (),
-                                                    Err(e)
-                                                        if e.kind()
-                                                            == io::ErrorKind::ConnectionRefused =>
+                                                if let Err(e) = connection.tcp.push_outgoing(&raw) {
+                                                    println!("Failed to send TCP data: {:?}", e);
+                                                    if let Some(send_response) = connection.connect_response.take()
                                                     {
-                                                        if let Some(send_response) =
-                                                            connection.connect_response.take()
-                                                        {
-                                                            send_response.done(Err(
-                                                                ConnectError::NetworkError,
-                                                            ))
-                                                        }
+                                                        send_response.done(Err(
+                                                            ConnectError::NetworkError,
+                                                        ))
+                                                    } else {
+                                                        unimplemented!("Should gracefully disconnect");
                                                     }
-                                                    Err(e) => return Err(e.into()),
                                                 }
                                             }
                                             Protocol::Udp => {
@@ -353,7 +338,7 @@ impl Worker {
                         }
                     } else if token == connection.tcp_token {
                         if event.is_readable() {
-                            match connection.tcp.update_from_stream() {
+                            match connection.tcp.read_until_blocked() {
                                 Ok(UpdateFromStream::Success) => {}
                                 Ok(UpdateFromStream::ConnectionClosed) => {
                                     event_sender.try_send(NetworkEvent::SocketClosed).unwrap()
@@ -364,7 +349,7 @@ impl Worker {
                             }
 
                             loop {
-                                match connection.tcp.next_packet() {
+                                match connection.tcp.get_next_incoming() {
                                     Ok(Some(stream_packet)) => {
                                         match handle_tcp_packet(
                                             stream_packet,
@@ -394,12 +379,7 @@ impl Worker {
                             }
                         }
                         if event.is_writable() {
-                            connection.tcp_writable = true;
-                            attempt_send_next_tcp_packet(
-                                &mut connection.tcp_packet_queue,
-                                &mut connection.tcp.internal,
-                                &mut connection.tcp_writable,
-                            )?;
+                            connection.tcp.notify_writable().unwrap();
                         }
                     }
                 }
@@ -432,38 +412,6 @@ fn attempt_send_next_udp_packet(
             Ok(())
         }
         Err(e) => Err(e),
-    }
-}
-
-fn attempt_send_next_tcp_packet(
-    outgoing_packet_queue: &mut VecDeque<Vec<u8>>,
-    socket: &mut TcpStream,
-    socket_writable: &mut bool,
-) -> Result<(), io::Error> {
-    if !*socket_writable {
-        return Ok(());
-    }
-
-    let mut packet = match outgoing_packet_queue.pop_front() {
-        Some(packet) => packet,
-        None => {
-            return Ok(());
-        }
-    };
-
-    loop {
-        match socket.write(&packet) {
-            Ok(count) if count < packet.len() => {
-                packet.drain(..count);
-            }
-            Ok(_) => return Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                *socket_writable = false;
-                outgoing_packet_queue.push_front(packet);
-                return Ok(());
-            }
-            Err(e) => return Err(e),
-        }
     }
 }
 

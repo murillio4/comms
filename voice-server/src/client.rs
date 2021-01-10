@@ -1,9 +1,8 @@
 use crate::network::OutgoingPacket;
-use crate::task::PacketFinish;
 use mio::net::TcpStream;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
-use voice_lib::network::CommsTcpStream;
+use voice_lib::network::TcpConnection;
 use voice_lib::packet::{ClientId, PacketId};
 
 pub struct NextPacketId(PacketId);
@@ -20,23 +19,18 @@ impl NextPacketId {
     }
 }
 
-pub struct PartiallySentPacket {
-    pub bytes: Vec<u8>,
-    pub finish: PacketFinish,
-}
-
 pub struct Connection {
     next_packet_id: NextPacketId,
-    pub stream: CommsTcpStream,
+    pub tcp: TcpConnection,
     pub tcp_writable: bool,
     pub outgoing_queue: VecDeque<OutgoingPacket>,
-    pub partially_sent_packet: Option<PartiallySentPacket>,
+    pub partially_sent_packet: Option<Vec<u8>>,
 }
 
 impl Connection {
     pub fn new(stream: TcpStream) -> Self {
         Connection {
-            stream: CommsTcpStream::new(stream),
+            tcp: TcpConnection::new(stream),
             tcp_writable: false,
             next_packet_id: NextPacketId::new(),
             outgoing_queue: VecDeque::new(),
@@ -46,12 +40,6 @@ impl Connection {
 
     pub fn next_packet_id(&mut self) -> PacketId {
         self.next_packet_id.next()
-    }
-
-    pub fn clear_queue_for_disconnect(&mut self) {
-        for packet in self.outgoing_queue.drain(..) {
-            packet.finish.done();
-        }
     }
 }
 
@@ -87,16 +75,6 @@ impl Clients {
             established: HashMap::new(),
             connecting: HashMap::new(),
         }
-    }
-
-    pub fn writable_connections(&mut self) -> Vec<&mut Connection> {
-        let connecting = self.connecting.iter_mut().map(|(_, c)| &mut c.connection);
-        self.established
-            .iter_mut()
-            .map(|(_, c)| &mut c.connection)
-            .chain(connecting)
-            .filter(|c| c.tcp_writable)
-            .collect()
     }
 
     pub fn id_by_socket_addr(&self, addr: &SocketAddr) -> Option<ClientId> {

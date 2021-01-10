@@ -154,10 +154,6 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> En
         if reason != CloseConnectionReason::SocketClosed {
             clients
                 .remove_client(&context.client_id)
-                .map(|c| match c {
-                    AnyClient::Established(mut c) => c.connection.clear_queue_for_disconnect(),
-                    AnyClient::Connecting(mut c) => c.connection.clear_queue_for_disconnect(),
-                })
                 .expect("Tried to close connection with nonexistent client");
         }
         clients.established.keys().copied().collect()
@@ -306,12 +302,12 @@ pub fn handle_tcp_stream(
         AnyClient::Connecting(client) => &mut client.connection,
     };
 
-    if UpdateFromStream::ConnectionClosed == connection.stream.update_from_stream()? {
+    if UpdateFromStream::ConnectionClosed == connection.tcp.read_until_blocked()? {
         return Ok(StreamStatus::Closed);
     }
 
     loop {
-        match connection.stream.next_packet() {
+        match connection.tcp.get_next_incoming() {
             Ok(Some(stream_packet)) => {
                 let context = Context {
                     client_id,
