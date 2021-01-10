@@ -76,25 +76,37 @@ impl TcpConnection {
         }
     }
 
-    pub fn read_until_blocked(
-        &mut self,
-    ) -> Box<dyn Iterator<Item = Result<IncomingPacket, CommsNetworkError>> + '_> {
+    pub fn read_until_blocked(&mut self) -> TcpReadIter {
         let read_result = self.read_from_network();
-        let iter = TcpReadIter {
+        TcpReadIter {
+            read_error: read_result.err(),
             incoming_stream: &mut self.incoming_stream,
             next_incoming_header: &mut self.next_incoming_header,
-        };
-
-        match read_result {
-            Ok(_) => Box::new(iter),
-            Err(e) => Box::new(Some(Err(e)).into_iter().chain(iter)),
         }
     }
 }
 
 pub struct TcpReadIter<'a> {
+    read_error: Option<CommsNetworkError>,
     incoming_stream: &'a mut SliceDeque<u8>,
     next_incoming_header: &'a mut Option<PacketHeader>,
+}
+
+impl TcpReadIter<'_> {
+    pub fn try_process(
+        &mut self,
+        mut f: impl FnMut(IncomingPacket) -> Result<(), CommsNetworkError>,
+    ) -> Result<(), CommsNetworkError> {
+        if let Some(e) = self.read_error.take() {
+            return Err(e);
+        }
+        for result in self {
+            if let Err(e) = result.and_then(|packet| f(packet)) {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<'a> Iterator for TcpReadIter<'a> {

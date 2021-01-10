@@ -308,16 +308,14 @@ pub fn handle_tcp_stream(
         AnyClient::Connecting(client) => &mut client.connection,
     };
 
-    match connection.tcp.read_until_blocked().try_for_each(|result| {
-        result.and_then(|packet| {
-            let context = Context {
-                client_id,
-                clients: clients.clone(),
-                network_handle: network_handle.clone(),
-            };
+    match connection.tcp.read_until_blocked().try_process(|packet| {
+        let context = Context {
+            client_id,
+            clients: clients.clone(),
+            network_handle: network_handle.clone(),
+        };
 
-            tcp_packet_to_endpoint(&spawner, context, packet)
-        })
+        tcp_packet_to_endpoint(&spawner, context, packet)
     }) {
         Err(CommsNetworkError::Closed) => return Ok(StreamStatus::Closed),
         Err(_) => return Err(HandlePacketError::CommunicationFailure),

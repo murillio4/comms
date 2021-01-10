@@ -336,15 +336,13 @@ impl Worker {
                             let mut reply_map = &mut connection.reply_map;
                             let mut connect_response = &mut connection.connect_response;
 
-                            match connection.tcp.read_until_blocked().try_for_each(|result| {
-                                result.and_then(|packet| {
-                                    handle_tcp_packet(
-                                        packet,
-                                        &mut reply_map,
-                                        &mut connect_response,
-                                        &mut event_sender,
-                                    )
-                                })
+                            match connection.tcp.read_until_blocked().try_process(|packet| {
+                                handle_tcp_packet(
+                                    packet,
+                                    &mut reply_map,
+                                    &mut connect_response,
+                                    &mut event_sender,
+                                )
                             }) {
                                 Err(CommsNetworkError::Closed) => {
                                     event_sender.try_send(NetworkEvent::SocketClosed).unwrap();
