@@ -101,6 +101,7 @@ impl TcpConnection {
 
         let body_bytes: Vec<u8> =
             self.incoming_stream.as_slice()[..header.body_len as usize].to_vec();
+        unsafe { self.incoming_stream.move_head(header.body_len as isize) };
         Ok(Some(IncomingPacket::from_header_and_bytes(
             header, body_bytes,
         )))

@@ -343,9 +343,9 @@ impl Worker {
 
                             loop {
                                 match connection.tcp.get_next_incoming() {
-                                    Ok(Some(stream_packet)) => {
+                                    Ok(Some(incoming_packet)) => {
                                         match handle_tcp_packet(
-                                            stream_packet,
+                                            incoming_packet,
                                             &mut connection.reply_map,
                                             &mut connection.connect_response,
                                         ) {
