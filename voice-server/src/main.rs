@@ -20,11 +20,11 @@ use std::cell::RefCell;
 use std::io;
 use std::io::Error;
 use std::sync::Arc;
+use voice_lib::network::CommsNetworkError;
 use voice_lib::packet;
 use voice_lib::packet::ClientId;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
-use voice_lib::network::CommsNetworkError;
 
 mod client;
 mod endpoints;

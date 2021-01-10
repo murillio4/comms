@@ -6,13 +6,13 @@ use std::cell::RefCell;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use voice_lib::network::{UpdateFromStream, CommsNetworkError};
+use voice_lib::network::CommsNetworkError;
 use voice_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, ClientId, Disconnect,
     DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, Packet, PacketBody,
     PacketId, UserJoined, UserLeft,
 };
-use voice_lib::serialization::IncomingPacket;
+use voice_lib::serialization::{IncomingPacket, SerializeError};
 
 pub struct Context {
     pub clients: Arc<RefCell<Clients>>,
@@ -174,7 +174,7 @@ fn tcp_packet_to_endpoint(
     spawner: &Spawner,
     context: Context,
     packet: IncomingPacket,
-) -> Result<(), HandlePacketError> {
+) -> Result<(), CommsNetworkError> {
     let kind = packet.header.kind;
     match kind {
         FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, packet.finish_parse()?)),
@@ -226,6 +226,12 @@ pub enum HandlePacketError {
 
 impl From<CommsNetworkError> for HandlePacketError {
     fn from(_: CommsNetworkError) -> Self {
+        HandlePacketError::CommunicationFailure
+    }
+}
+
+impl From<SerializeError> for HandlePacketError {
+    fn from(_: SerializeError) -> Self {
         HandlePacketError::CommunicationFailure
     }
 }
@@ -302,26 +308,20 @@ pub fn handle_tcp_stream(
         AnyClient::Connecting(client) => &mut client.connection,
     };
 
-    if UpdateFromStream::ConnectionClosed == connection.tcp.read_until_blocked()? {
-        return Ok(StreamStatus::Closed);
-    }
+    match connection.tcp.read_until_blocked().try_for_each(|result| {
+        result.and_then(|packet| {
+            let context = Context {
+                client_id,
+                clients: clients.clone(),
+                network_handle: network_handle.clone(),
+            };
 
-    loop {
-        match connection.tcp.get_next_incoming() {
-            Ok(Some(stream_packet)) => {
-                let context = Context {
-                    client_id,
-                    clients: clients.clone(),
-                    network_handle: network_handle.clone(),
-                };
-
-                tcp_packet_to_endpoint(&spawner, context, stream_packet)?;
-            }
-            Ok(None) => break,
-            Err(_) => {
-                return Err(HandlePacketError::CommunicationFailure);
-            }
-        }
+            tcp_packet_to_endpoint(&spawner, context, packet)
+        })
+    }) {
+        Err(CommsNetworkError::Closed) => return Ok(StreamStatus::Closed),
+        Err(_) => return Err(HandlePacketError::CommunicationFailure),
+        _ => {}
     }
 
     let mut clients = clients.borrow_mut();

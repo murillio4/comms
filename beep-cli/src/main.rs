@@ -8,15 +8,15 @@ use voice_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, AudioFromClient, FinishConnect, FinishConnectAccepted,
     Hello, Packet, PacketBody,
 };
-use voice_lib::serialization::{serialize, DeserializeError, IncomingPacket, SerializeError};
+use voice_lib::serialization::{serialize, IncomingPacket, SerializeError};
 
-fn read_next_tcp(tcp: &mut TcpStream) -> Result<IncomingPacket, DeserializeError> {
+fn read_next_tcp(tcp: &mut TcpStream) -> Result<IncomingPacket, SerializeError> {
     let mut buffer = [0u8; 65535];
     let size = tcp.read(&mut buffer).unwrap();
     IncomingPacket::from_bytes(&buffer[..size])
 }
 
-fn read_next_udp(udp: &UdpSocket) -> Result<IncomingPacket, DeserializeError> {
+fn read_next_udp(udp: &UdpSocket) -> Result<IncomingPacket, SerializeError> {
     let mut buffer = [0u8; 65535];
     let size = udp.recv(&mut buffer).unwrap();
     IncomingPacket::from_bytes(&buffer[..size])
@@ -130,18 +130,11 @@ enum BeepClientErr {
     Usage,
     Io(io::Error),
     Serialize,
-    Deserialize,
 }
 
 impl From<io::Error> for BeepClientErr {
     fn from(e: io::Error) -> Self {
         BeepClientErr::Io(e)
-    }
-}
-
-impl From<DeserializeError> for BeepClientErr {
-    fn from(_: DeserializeError) -> Self {
-        BeepClientErr::Deserialize
     }
 }
 

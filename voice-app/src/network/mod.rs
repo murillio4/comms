@@ -8,7 +8,7 @@ use mio::net::TcpStream;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token};
 
-use voice_lib::network::{Protocol, TcpConnection, UpdateFromStream, CommsNetworkError};
+use voice_lib::network::{CommsNetworkError, Protocol, TcpConnection};
 use voice_lib::packet;
 use voice_lib::packet::{AudioFromClient, AudioToClient, Hello, Packet, PacketBody, PacketKind};
 use voice_lib::serialization::{IncomingPacket, WritePacketBuilder};
@@ -16,6 +16,7 @@ use voice_lib::serialization::{IncomingPacket, WritePacketBuilder};
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network::future::SendResponse;
 use crate::network::ipc::{CommandQueue, ConnectError, NetworkCommand, NetworkEvent};
+use futures::channel::mpsc::Sender;
 
 pub mod future;
 pub mod ipc;
@@ -115,7 +116,8 @@ fn handle_tcp_packet(
     stream_packet: IncomingPacket,
     reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacket>>,
     await_hello: &mut Option<SendResponse<Result<Hello, ConnectError>>>,
-) -> Result<(), HandlePacketError> {
+    event_sender: &mut Sender<NetworkEvent>,
+) -> Result<(), CommsNetworkError> {
     if let Some(reply_to) = stream_packet.header.reply_to {
         if let Some(sender) = reply_map.remove(&reply_to) {
             sender.done(stream_packet);
@@ -126,14 +128,14 @@ fn handle_tcp_packet(
     let kind = stream_packet.header.kind;
     if kind == Hello::KIND_ID && await_hello.is_some() {
         if let Some(send_response) = await_hello.take() {
-            send_response.done(Ok(stream_packet
-                .finish_parse()
-                .map_err(|_| HandlePacketError::FailedToParse(kind))?
-                .body));
-            return Ok(());
+            send_response.done(Ok(stream_packet.finish_parse()?.body));
         }
+    } else {
+        event_sender
+            .try_send(NetworkEvent::Packet(stream_packet))
+            .unwrap();
     }
-    Err(HandlePacketError::UnexpectedPacket(stream_packet))
+    Ok(())
 }
 
 fn connect(
@@ -311,7 +313,7 @@ impl Worker {
                                                 Ok(_) => {}
                                                 Err(HandlePacketError::UnexpectedPacket(packet)) => {
                                                     event_sender.try_send(NetworkEvent::Packet(packet)).unwrap();
-                                                },
+                                                }
                                                 Err(HandlePacketError::FailedToParse(kind)) => eprintln!("Failed to parse a UDP packet of kind {}, ignoring", kind),
                                             }
                                         }
@@ -331,44 +333,26 @@ impl Worker {
                         }
                     } else if token == connection.tcp_token {
                         if event.is_readable() {
-                            match connection.tcp.read_until_blocked() {
-                                Ok(UpdateFromStream::Success) => {}
-                                Ok(UpdateFromStream::ConnectionClosed) => {
-                                    event_sender.try_send(NetworkEvent::SocketClosed).unwrap()
+                            let mut reply_map = &mut connection.reply_map;
+                            let mut connect_response = &mut connection.connect_response;
+
+                            match connection.tcp.read_until_blocked().try_for_each(|result| {
+                                result.and_then(|packet| {
+                                    handle_tcp_packet(
+                                        packet,
+                                        &mut reply_map,
+                                        &mut connect_response,
+                                        &mut event_sender,
+                                    )
+                                })
+                            }) {
+                                Err(CommsNetworkError::Closed) => {
+                                    event_sender.try_send(NetworkEvent::SocketClosed).unwrap();
                                 }
                                 Err(_) => {
-                                    event_sender.try_send(NetworkEvent::NetworkError).unwrap()
+                                    event_sender.try_send(NetworkEvent::NetworkError).unwrap();
                                 }
-                            }
-
-                            loop {
-                                match connection.tcp.get_next_incoming() {
-                                    Ok(Some(incoming_packet)) => {
-                                        match handle_tcp_packet(
-                                            incoming_packet,
-                                            &mut connection.reply_map,
-                                            &mut connection.connect_response,
-                                        ) {
-                                            Ok(_) => {}
-                                            Err(HandlePacketError::UnexpectedPacket(packet)) => {
-                                                event_sender
-                                                    .try_send(NetworkEvent::Packet(packet))
-                                                    .unwrap();
-                                            }
-                                            Err(HandlePacketError::FailedToParse(kind)) => {
-                                                eprintln!(
-                                                "Failed to parse a TCP packet of kind {}, ignoring",
-                                                kind
-                                            )
-                                            }
-                                        }
-                                    }
-                                    Ok(None) => break,
-                                    Err(_) => {
-                                        // TODO do disconnect!
-                                        break;
-                                    }
-                                }
+                                _ => {}
                             }
                         }
                         if event.is_writable() {

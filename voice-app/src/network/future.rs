@@ -15,7 +15,7 @@ use futures_timer::Delay;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use voice_lib::network::{Protocol, CommsNetworkError};
+use voice_lib::network::{CommsNetworkError, Protocol};
 use voice_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted, Packet,
     PacketBody,

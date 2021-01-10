@@ -5,13 +5,12 @@ use serde::Serialize;
 use std::fmt::{Debug, Formatter};
 use std::io::Cursor;
 use std::{fmt, mem};
-use crate::network::CommsNetworkError;
 
 pub fn serialize<B>(
     id: PacketId,
     reply_to: Option<PacketId>,
     packet: B,
-) -> Result<Vec<u8>, CommsNetworkError>
+) -> Result<Vec<u8>, SerializeError>
 where
     B: PacketBody + Serialize,
 {
@@ -25,7 +24,7 @@ pub struct WritePacketBuilder {
 }
 
 impl WritePacketBuilder {
-    pub fn new<B>(reply_to: Option<PacketId>, body: &B) -> Result<Self, CommsNetworkError>
+    pub fn new<B>(reply_to: Option<PacketId>, body: &B) -> Result<Self, SerializeError>
     where
         B: PacketBody + Serialize,
     {
@@ -38,7 +37,7 @@ impl WritePacketBuilder {
         })
     }
 
-    pub fn as_raw(&mut self, id: PacketId) -> Result<&[u8], CommsNetworkError> {
+    pub fn as_raw(&mut self, id: PacketId) -> Result<&[u8], SerializeError> {
         let body_len = self.raw.len() as u16;
         let mut cursor = Cursor::new(&mut self.raw);
         cursor.set_position(0);
@@ -54,7 +53,7 @@ impl WritePacketBuilder {
         Ok(&self.raw)
     }
 
-    pub fn into_raw(mut self, id: PacketId) -> Result<Vec<u8>, CommsNetworkError> {
+    pub fn into_raw(mut self, id: PacketId) -> Result<Vec<u8>, SerializeError> {
         self.as_raw(id)?;
         Ok(self.raw)
     }
@@ -71,12 +70,13 @@ impl Debug for IncomingPacket {
     }
 }
 
+pub type SerializeError = bincode::Error;
 impl IncomingPacket {
     pub fn from_header_and_bytes(header: PacketHeader, body_bytes: Vec<u8>) -> Self {
         Self { header, body_bytes }
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, CommsNetworkError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SerializeError> {
         let raw_header_size = mem::size_of::<PacketHeader>();
         let header = PacketHeader::from_bytes(&bytes[..raw_header_size])?;
         Ok(Self {
@@ -89,7 +89,7 @@ impl IncomingPacket {
         self.header.kind
     }
 
-    pub fn finish_parse<B>(self) -> Result<Packet<B>, CommsNetworkError>
+    pub fn finish_parse<B>(self) -> Result<Packet<B>, SerializeError>
     where
         B: PacketBody + DeserializeOwned,
     {

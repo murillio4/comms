@@ -6,7 +6,7 @@ use std::{fmt, io};
 
 use mio::{Poll, Waker};
 
-use voice_lib::network::{Protocol, CommsNetworkError};
+use voice_lib::network::{CommsNetworkError, Protocol};
 use voice_lib::serialization::{IncomingPacket, WritePacketBuilder};
 
 use crate::audio::ipc::AudioHandle;

@@ -1,6 +1,6 @@
 use crate::serialization::IncomingPacket;
 use crate::{PacketHeader, PACKET_HEADER_SIZE};
-use mio::net::{TcpStream, UdpSocket};
+use mio::net::TcpStream;
 use slice_deque::SliceDeque;
 use std::io;
 use std::io::{Read, Write};
@@ -63,58 +63,71 @@ impl TcpConnection {
         Ok(())
     }
 
-    // pub fn read_until_blocked2(&mut self, handler: impl FnMut(IncomingPacket) -> ()) -> Result<(), NetworkErrorr> {
-    //
-    // }
-
-    pub fn read_until_blocked(&mut self) -> Result<UpdateFromStream, CommsNetworkError> {
+    fn read_from_network(&mut self) -> Result<(), CommsNetworkError> {
         loop {
             let mut buf = [0; 4096];
             match self.stream.read(&mut buf) {
-                Ok(0) => return Ok(UpdateFromStream::ConnectionClosed),
+                Ok(0) => return Err(CommsNetworkError::Closed),
                 Ok(amount) => self.incoming_stream.extend_from_slice(&buf[0..amount]),
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                    return Ok(UpdateFromStream::Success)
-                }
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                Err(err) if err.kind() == io::ErrorKind::ConnectionReset => {
-                    return Ok(UpdateFromStream::ConnectionClosed)
-                }
                 Err(err) => return Err(err.into()),
             }
         }
     }
 
-    pub fn get_next_incoming(&mut self) -> Result<Option<IncomingPacket>, CommsNetworkError> {
+    pub fn read_until_blocked(
+        &mut self,
+    ) -> Box<dyn Iterator<Item = Result<IncomingPacket, CommsNetworkError>> + '_> {
+        let read_result = self.read_from_network();
+        let iter = TcpReadIter {
+            incoming_stream: &mut self.incoming_stream,
+            next_incoming_header: &mut self.next_incoming_header,
+        };
+
+        match read_result {
+            Ok(_) => Box::new(iter),
+            Err(e) => Box::new(Some(Err(e)).into_iter().chain(iter)),
+        }
+    }
+}
+
+pub struct TcpReadIter<'a> {
+    incoming_stream: &'a mut SliceDeque<u8>,
+    next_incoming_header: &'a mut Option<PacketHeader>,
+}
+
+impl<'a> Iterator for TcpReadIter<'a> {
+    type Item = Result<IncomingPacket, CommsNetworkError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         let header = if let Some(header) = self.next_incoming_header.take() {
             header
         } else {
             if self.incoming_stream.len() < PACKET_HEADER_SIZE {
-                return Ok(None);
+                return None;
             }
             let bytes = &self.incoming_stream.as_slice()[0..PACKET_HEADER_SIZE];
-            let header = PacketHeader::from_bytes(bytes)?;
+            let header = match PacketHeader::from_bytes(bytes) {
+                Ok(header) => header,
+                Err(e) => return Some(Err(e.into())),
+            };
             unsafe { self.incoming_stream.move_head(PACKET_HEADER_SIZE as isize) };
             header
         };
 
         if self.incoming_stream.len() < header.body_len as usize {
-            self.next_incoming_header = Some(header);
-            return Ok(None);
+            *self.next_incoming_header = Some(header);
+            return None;
         }
 
         let body_bytes: Vec<u8> =
             self.incoming_stream.as_slice()[..header.body_len as usize].to_vec();
         unsafe { self.incoming_stream.move_head(header.body_len as isize) };
-        Ok(Some(IncomingPacket::from_header_and_bytes(
+        Some(Ok(IncomingPacket::from_header_and_bytes(
             header, body_bytes,
         )))
     }
-}
-
-pub struct UdpConnection {
-    socket: UdpSocket,
-    is_writable: bool,
 }
 
 #[derive(PartialEq)]
@@ -130,5 +143,5 @@ pub enum CommsNetworkError {
     #[error("IO error")]
     Io(#[from] io::Error),
     #[error("(De)serializeError")]
-    Deserialize(#[from] bincode::Error)
+    Deserialize(#[from] bincode::Error),
 }
