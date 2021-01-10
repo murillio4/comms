@@ -1,6 +1,6 @@
-use crate::serialization::{DeserializeError, IncomingPacket};
+use crate::serialization::IncomingPacket;
 use crate::{PacketHeader, PACKET_HEADER_SIZE};
-use mio::net::TcpStream;
+use mio::net::{TcpStream, UdpSocket};
 use slice_deque::SliceDeque;
 use std::io;
 use std::io::{Read, Write};
@@ -12,7 +12,7 @@ pub enum Protocol {
 }
 
 pub struct TcpConnection {
-    pub stream: TcpStream,
+    stream: TcpStream,
     is_writable: bool,
     incoming_stream: SliceDeque<u8>,
     outgoing_stream: SliceDeque<u8>,
@@ -63,25 +63,29 @@ impl TcpConnection {
         Ok(())
     }
 
-    pub fn read_until_blocked(&mut self) -> Result<UpdateFromStream, io::Error> {
+    // pub fn read_until_blocked2(&mut self, handler: impl FnMut(IncomingPacket) -> ()) -> Result<(), NetworkErrorr> {
+    //
+    // }
+
+    pub fn read_until_blocked(&mut self) -> Result<UpdateFromStream, CommsNetworkError> {
         loop {
             let mut buf = [0; 4096];
             match self.stream.read(&mut buf) {
                 Ok(0) => return Ok(UpdateFromStream::ConnectionClosed),
                 Ok(amount) => self.incoming_stream.extend_from_slice(&buf[0..amount]),
-                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                     return Ok(UpdateFromStream::Success)
                 }
-                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                Err(ref err) if err.kind() == io::ErrorKind::ConnectionReset => {
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) if err.kind() == io::ErrorKind::ConnectionReset => {
                     return Ok(UpdateFromStream::ConnectionClosed)
                 }
-                Err(err) => return Err(err),
+                Err(err) => return Err(err.into()),
             }
         }
     }
 
-    pub fn get_next_incoming(&mut self) -> Result<Option<IncomingPacket>, DeserializeError> {
+    pub fn get_next_incoming(&mut self) -> Result<Option<IncomingPacket>, CommsNetworkError> {
         let header = if let Some(header) = self.next_incoming_header.take() {
             header
         } else {
@@ -108,8 +112,23 @@ impl TcpConnection {
     }
 }
 
+pub struct UdpConnection {
+    socket: UdpSocket,
+    is_writable: bool,
+}
+
 #[derive(PartialEq)]
 pub enum UpdateFromStream {
     Success,
     ConnectionClosed,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum CommsNetworkError {
+    #[error("Connection is now closed")]
+    Closed,
+    #[error("IO error")]
+    Io(#[from] io::Error),
+    #[error("(De)serializeError")]
+    Deserialize(#[from] bincode::Error)
 }

@@ -8,13 +8,13 @@ use gtk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use voice_lib::packet::{Packet, PacketBody, UserJoined, UserLeft};
-use voice_lib::serialization::DeserializeError;
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network;
 use crate::network::ipc::{ConnectError, NetworkEvent, NetworkHandle};
 use crate::ui::ipc::UICommand;
 use glib::timeout_add_local;
+use voice_lib::network::CommsNetworkError;
 
 pub mod ipc;
 
@@ -205,10 +205,10 @@ async fn handle_network_events(
             }
             NetworkEvent::Packet(packet) => {
                 if let UiState::Main { user_list_model } = ui.borrow().state.clone() {
-                    let result: Result<(), DeserializeError> = {
+                    let result: Result<(), CommsNetworkError> = (|| {
                         match packet.kind() {
                             UserJoined::KIND_ID => {
-                                let packet: Packet<UserJoined> = packet.finish_parse().unwrap();
+                                let packet: Packet<UserJoined> = packet.finish_parse()?;
                                 audio_handle
                                     .send(AudioCommand::NewClient(packet.body.client_id))
                                     .unwrap();
@@ -221,7 +221,7 @@ async fn handle_network_events(
                                 );
                             }
                             UserLeft::KIND_ID => {
-                                let packet: Packet<UserLeft> = packet.finish_parse().unwrap();
+                                let packet: Packet<UserLeft> = packet.finish_parse()?;
                                 let id = packet.body.client_id as u32;
                                 let iter = user_list_model.get_iter_first().unwrap();
                                 loop {
@@ -243,7 +243,7 @@ async fn handle_network_events(
                         }
 
                         Ok(())
-                    };
+                    })();
                     if result.is_err() {
                         let builder = &ui.borrow().builder;
                         let connect_failure_status: gtk::Label =

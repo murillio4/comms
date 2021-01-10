@@ -6,8 +6,8 @@ use std::{fmt, io};
 
 use mio::{Poll, Waker};
 
-use voice_lib::network::Protocol;
-use voice_lib::serialization::{IncomingPacket, SerializeError, WritePacketBuilder};
+use voice_lib::network::{Protocol, CommsNetworkError};
+use voice_lib::serialization::{IncomingPacket, WritePacketBuilder};
 
 use crate::audio::ipc::AudioHandle;
 use crate::network::future::{RequestError, SendResponse};
@@ -116,7 +116,7 @@ impl NetworkHandle {
         self.waker.wake().unwrap();
     }
 
-    pub fn audio(&self, frame: Box<AudioFrame>) -> Result<(), SerializeError> {
+    pub fn audio(&self, frame: Box<AudioFrame>) -> Result<(), CommsNetworkError> {
         self.command(NetworkCommand::SendAudio(frame));
         Ok(())
     }

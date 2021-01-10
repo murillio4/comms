@@ -8,10 +8,10 @@ use mio::net::TcpStream;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token};
 
-use voice_lib::network::{Protocol, TcpConnection, UpdateFromStream};
+use voice_lib::network::{Protocol, TcpConnection, UpdateFromStream, CommsNetworkError};
 use voice_lib::packet;
 use voice_lib::packet::{AudioFromClient, AudioToClient, Hello, Packet, PacketBody, PacketKind};
-use voice_lib::serialization::{IncomingPacket, SerializeError, WritePacketBuilder};
+use voice_lib::serialization::{IncomingPacket, WritePacketBuilder};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network::future::SendResponse;
@@ -435,14 +435,14 @@ impl From<RecvError> for NetworkError {
 
 #[derive(Debug)]
 pub enum SendToNetworkThreadError {
-    SerializeFailed(SerializeError),
+    NetworkingFailed(CommsNetworkError),
     SendFailed,
     SetReadinessFailed(io::Error),
 }
 
-impl From<SerializeError> for SendToNetworkThreadError {
-    fn from(e: SerializeError) -> Self {
-        SendToNetworkThreadError::SerializeFailed(e)
+impl From<CommsNetworkError> for SendToNetworkThreadError {
+    fn from(e: CommsNetworkError) -> Self {
+        SendToNetworkThreadError::NetworkingFailed(e)
     }
 }
 

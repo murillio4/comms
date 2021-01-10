@@ -6,13 +6,13 @@ use std::cell::RefCell;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use voice_lib::network::UpdateFromStream;
+use voice_lib::network::{UpdateFromStream, CommsNetworkError};
 use voice_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, ClientId, Disconnect,
     DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, Packet, PacketBody,
     PacketId, UserJoined, UserLeft,
 };
-use voice_lib::serialization::{DeserializeError, IncomingPacket};
+use voice_lib::serialization::IncomingPacket;
 
 pub struct Context {
     pub clients: Arc<RefCell<Clients>>,
@@ -224,8 +224,8 @@ pub enum HandlePacketError {
     CommunicationFailure,
 }
 
-impl From<DeserializeError> for HandlePacketError {
-    fn from(_: DeserializeError) -> Self {
+impl From<CommsNetworkError> for HandlePacketError {
+    fn from(_: CommsNetworkError) -> Self {
         HandlePacketError::CommunicationFailure
     }
 }

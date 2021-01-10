@@ -10,14 +10,16 @@ use voice_lib::packet::{
 };
 use voice_lib::serialization::{serialize, DeserializeError, IncomingPacket, SerializeError};
 
-fn read_next_tcp<'a>(tcp: &mut TcpStream, buffer: &'a mut [u8]) -> &'a [u8] {
-    let size = tcp.read(buffer).unwrap();
-    &buffer[..size]
+fn read_next_tcp(tcp: &mut TcpStream) -> Result<IncomingPacket, DeserializeError> {
+    let mut buffer = [0u8; 65535];
+    let size = tcp.read(&mut buffer).unwrap();
+    IncomingPacket::from_bytes(&buffer[..size])
 }
 
-fn read_next_udp<'a>(udp: &UdpSocket, buffer: &'a mut [u8]) -> &'a [u8] {
-    let size = udp.recv(buffer).unwrap();
-    &buffer[..size]
+fn read_next_udp(udp: &UdpSocket) -> Result<IncomingPacket, DeserializeError> {
+    let mut buffer = [0u8; 65535];
+    let size = udp.recv(&mut buffer).unwrap();
+    IncomingPacket::from_bytes(&buffer[..size])
 }
 
 fn main() -> Result<(), BeepClientErr> {
@@ -51,10 +53,7 @@ fn main() -> Result<(), BeepClientErr> {
     let udp = UdpSocket::bind("0.0.0.0:0")?;
     udp.connect(server_address_with_port)?;
 
-    let mut buffer = [0u8; 65535];
-
-    let current_buffer = read_next_tcp(&mut tcp, &mut buffer);
-    let parsed_packet = IncomingPacket::from_bytes(&current_buffer)?;
+    let parsed_packet = read_next_tcp(&mut tcp)?;
     assert_eq!(parsed_packet.header.kind, Hello::KIND_ID);
     let hello: Packet<Hello> = parsed_packet.finish_parse()?;
     dbg!(&hello);
@@ -67,8 +66,7 @@ fn main() -> Result<(), BeepClientErr> {
         },
     )?)?;
 
-    let current_buffer = read_next_udp(&udp, &mut buffer);
-    let parsed_packet = IncomingPacket::from_bytes(&current_buffer)?;
+    let parsed_packet = read_next_udp(&udp)?;
     assert_eq!(parsed_packet.header.kind, AssociateUdpAccepted::KIND_ID);
     let accepted: Packet<AssociateUdpAccepted> = parsed_packet.finish_parse()?;
     dbg!(&accepted);
@@ -81,8 +79,7 @@ fn main() -> Result<(), BeepClientErr> {
         },
     )?)?;
 
-    let current_buffer = read_next_tcp(&mut tcp, &mut buffer);
-    let parsed_packet = IncomingPacket::from_bytes(&current_buffer)?;
+    let parsed_packet = read_next_tcp(&mut tcp)?;
     assert_eq!(parsed_packet.header.kind, FinishConnectAccepted::KIND_ID);
     let finish_connect_accepted: Packet<FinishConnectAccepted> = parsed_packet.finish_parse()?;
     dbg!(&finish_connect_accepted);

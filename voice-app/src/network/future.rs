@@ -15,12 +15,12 @@ use futures_timer::Delay;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use voice_lib::network::Protocol;
+use voice_lib::network::{Protocol, CommsNetworkError};
 use voice_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted, Packet,
     PacketBody,
 };
-use voice_lib::serialization::{IncomingPacket, SerializeError, WritePacketBuilder};
+use voice_lib::serialization::{IncomingPacket, WritePacketBuilder};
 
 use crate::network::ipc::{ConnectError, NetworkCommand, NetworkHandle};
 
@@ -100,7 +100,7 @@ pub async fn request_any<Req>(
     packet_type: Protocol,
     reply_to: Option<NonZeroU64>,
     request: Req,
-) -> Result<IncomingPacket, SerializeError>
+) -> Result<IncomingPacket, CommsNetworkError>
 where
     Req: PacketBody + Serialize,
 {
@@ -140,7 +140,7 @@ pub fn send<Req>(
     packet_type: Protocol,
     reply_to: Option<NonZeroU64>,
     request: Req,
-) -> Result<(), SerializeError>
+) -> Result<(), CommsNetworkError>
 where
     Req: PacketBody + Serialize,
 {

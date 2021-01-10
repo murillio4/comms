@@ -22,9 +22,9 @@ use std::io::Error;
 use std::sync::Arc;
 use voice_lib::packet;
 use voice_lib::packet::ClientId;
-use voice_lib::serialization::DeserializeError;
 #[cfg(windows)]
 use voice_lib::winlib::bump_priority;
+use voice_lib::network::CommsNetworkError;
 
 mod client;
 mod endpoints;
@@ -235,8 +235,8 @@ impl From<io::Error> for CommsServerError {
     }
 }
 
-impl From<DeserializeError> for CommsServerError {
-    fn from(_: DeserializeError) -> Self {
+impl From<CommsNetworkError> for CommsServerError {
+    fn from(_: CommsNetworkError) -> Self {
         CommsServerError::DeserializeError
     }
 }
