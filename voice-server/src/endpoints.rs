@@ -187,7 +187,7 @@ fn udp_packet_to_endpoint(
     spawner: &Spawner,
     packet: IncomingPacket,
     context: Context,
-) -> Result<(), HandlePacketError> {
+) -> Result<(), SerializeError> {
     match packet.kind() {
         AudioFromClient::KIND_ID => {
             spawner.spawn(audio_from_client(context, packet.finish_parse()?))
@@ -244,20 +244,19 @@ impl From<io::Error> for HandlePacketError {
 
 pub fn handle_udp_packet(
     addr: SocketAddr,
-    raw_packet: &[u8],
+    packet: IncomingPacket,
     clients: Arc<RefCell<Clients>>,
     spawner: &Spawner,
     network_handle: NetworkHandle,
-) -> Result<(), HandlePacketError> {
-    let parsed_packet = IncomingPacket::from_bytes(raw_packet)?;
-    let kind = parsed_packet.header.kind;
+) -> Result<(), SerializeError> {
+    let kind = packet.header.kind;
     if kind == AssociateUdp::KIND_ID {
         // This is the only packet that doesn't need to be sent from a client
         spawner.spawn(associate_udp(
             network_handle,
             clients,
             addr,
-            parsed_packet.finish_parse()?,
+            packet.finish_parse()?,
         ));
         return Ok(());
     }
@@ -272,7 +271,7 @@ pub fn handle_udp_packet(
 
     udp_packet_to_endpoint(
         spawner,
-        parsed_packet,
+        packet,
         Context {
             client_id,
             clients,

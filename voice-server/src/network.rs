@@ -1,15 +1,12 @@
 use crate::client::{AnyClientRef, Clients};
 use crate::task::EndpointError;
-use mio::net::UdpSocket;
 use mio::Waker;
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::io;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
-use voice_lib::network::Protocol;
-use voice_lib::packet::{ClientId, Disconnect, PacketBody, PacketId};
+use voice_lib::network::{Protocol, ServerUdpPacket, UdpConnection};
+use voice_lib::packet::{ClientId, PacketBody, PacketId};
 use voice_lib::serialization::WritePacketBuilder;
 use voice_lib::Serialize;
 
@@ -20,15 +17,34 @@ pub struct OutgoingPacket {
 
 pub struct OutgoingQueue {
     receiver: Receiver<(Protocol, OutgoingPacket)>,
-    udp_queue: VecDeque<OutgoingPacket>,
 }
 
 impl OutgoingQueue {
-    pub fn sort_from_handle(&mut self, clients: &mut Clients) {
+    pub fn sort_from_handle(
+        &mut self,
+        clients: &mut Clients,
+        udp: &mut UdpConnection<ServerUdpPacket>,
+    ) {
         // Sort the incoming queue of packets into their respective socket buckets
         for (protocol, packet) in self.receiver.try_iter() {
             match protocol {
-                Protocol::Udp => self.udp_queue.push_back(packet),
+                Protocol::Udp => {
+                    let (packet_id, addr) = match clients.client_by_id(&packet.dest) {
+                        Some(AnyClientRef::Established(c)) => {
+                            (c.connection.next_packet_id(), c.udp_addr)
+                        },
+                        Some(AnyClientRef::Connecting(c)) => (
+                            c.connection.next_packet_id(),
+                            c.udp_addr.expect("Attempting to send UDP packet to client that hasn't associated yet"),
+                        ),
+                        _ => continue,
+                    };
+                    let mut builder = packet.builder.borrow_mut();
+                    udp.push_outgoing_without_send(ServerUdpPacket::new(
+                        addr,
+                        builder.as_raw(packet_id).unwrap().to_vec(),
+                    ))
+                }
                 Protocol::Tcp => {
                     if let Some(connection) = clients.connection_by_id(&packet.dest) {
                         let mut builder = packet.builder.borrow_mut();
@@ -42,73 +58,14 @@ impl OutgoingQueue {
         }
     }
 
-    pub fn attempt_write_udp(
-        &mut self,
-        socket: &UdpSocket,
-        socket_writable: &mut bool,
-        clients: &mut Clients,
-    ) -> Vec<ClientId> {
-        let mut failures = Vec::new();
-
-        if !*socket_writable {
-            return failures;
-        }
-
-        loop {
-            let packet = match self.udp_queue.pop_front() {
-                None => break,
-                Some(p) => p,
-            };
-
-            let (packet_id, addr) = match clients.client_by_id(&packet.dest) {
-                None => continue,
-                Some(AnyClientRef::Established(c)) => (c.connection.next_packet_id(), c.udp_addr),
-                Some(AnyClientRef::Connecting(c)) => (
-                    c.connection.next_packet_id(),
-                    c.udp_addr.expect(
-                        "attempting to send UDP packet to client that hasn't associated yet",
-                    ),
-                ),
-            };
-
-            *socket_writable = false;
-            let (kind, raw) = {
-                let mut builder = packet.builder.borrow_mut();
-                let kind = builder.kind;
-                let raw = builder
-                    .as_raw(packet_id)
-                    .unwrap_or_else(|_| {
-                        panic!(
-                            "Serialization failed for packet id {} kind {}",
-                            packet_id, kind
-                        )
-                    })
-                    .to_vec();
-                (kind, raw)
-            };
-            match socket.send_to(&raw, addr) {
-                Ok(_) => (),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.udp_queue.push_front(packet);
-                    break;
-                }
-                Err(_) => {
-                    if kind != Disconnect::KIND_ID {
-                        failures.push(packet.dest)
-                    }
-                }
-            }
-        }
-        failures
-    }
-
     pub fn attempt_write_all(
         &mut self,
-        socket: &UdpSocket,
-        udp_socket_writable: &mut bool,
+        udp: &mut UdpConnection<ServerUdpPacket>,
         clients: &mut Clients,
     ) -> Vec<ClientId> {
-        let mut failures = self.attempt_write_udp(socket, udp_socket_writable, clients);
+        udp.write_until_blocked().unwrap();
+
+        let mut failures = Vec::new();
         for (client_id, client) in clients.established.iter_mut() {
             if client.connection.tcp.write_until_blocked().is_err() {
                 failures.push(*client_id);
@@ -141,13 +98,7 @@ impl NetworkHandle {
 
 pub fn queue_and_handle(waker: Arc<Waker>) -> (NetworkHandle, OutgoingQueue) {
     let (sender, receiver) = sync_channel(10_000);
-    (
-        NetworkHandle { sender, waker },
-        OutgoingQueue {
-            receiver,
-            udp_queue: VecDeque::new(),
-        },
-    )
+    (NetworkHandle { sender, waker }, OutgoingQueue { receiver })
 }
 
 pub enum Target {

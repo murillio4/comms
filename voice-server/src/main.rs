@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::io;
 use std::io::Error;
 use std::sync::Arc;
-use voice_lib::network::CommsNetworkError;
+use voice_lib::network::{CommsNetworkError, UdpConnection};
 use voice_lib::packet;
 use voice_lib::packet::ClientId;
 #[cfg(windows)]
@@ -70,8 +70,7 @@ fn main() -> Result<(), CommsServerError> {
         .register(&mut tcp_listener, tcp_listener_token, Interest::READABLE)?;
 
     let mut events = Events::with_capacity(1024);
-    let mut buffer = [0u8; 65535];
-    let mut udp_socket_writable = false;
+    let mut udp = UdpConnection::new(udp_socket);
     let clients = Arc::new(RefCell::new(Clients::new()));
 
     loop {
@@ -84,12 +83,8 @@ fn main() -> Result<(), CommsServerError> {
                 task_executor.run();
                 let failed_client_ids = {
                     let mut clients = clients.borrow_mut();
-                    outgoing_queue.sort_from_handle(&mut clients);
-                    outgoing_queue.attempt_write_all(
-                        &udp_socket,
-                        &mut udp_socket_writable,
-                        &mut clients,
-                    )
+                    outgoing_queue.sort_from_handle(&mut clients, &mut udp);
+                    outgoing_queue.attempt_write_all(&mut udp, &mut clients)
                 };
                 for client_id in failed_client_ids {
                     spawn_close_connection(
@@ -102,60 +97,21 @@ fn main() -> Result<(), CommsServerError> {
                 }
             } else if token == udp_token {
                 if event.is_readable() {
-                    loop {
-                        match udp_socket.recv_from(&mut buffer) {
-                            Ok((size, remote_addr)) => {
-                                if size != 0 {
-                                    let buffer = &buffer[0..size];
-                                    if let Err(HandlePacketError::CommunicationFailure) =
-                                        handle_udp_packet(
-                                            remote_addr,
-                                            buffer,
-                                            clients.clone(),
-                                            &spawner,
-                                            network_handle.clone(),
-                                        )
-                                    {
-                                        if let Some(client_id) = {
-                                            let clients = clients.borrow();
-                                            clients.id_by_socket_addr(&remote_addr)
-                                        } {
-                                            spawn_close_connection(
-                                                client_id,
-                                                CloseConnectionReason::MalformedData,
-                                                &network_handle,
-                                                clients.clone(),
-                                                &spawner,
-                                            );
-                                        }
-                                    };
-                                }
-                            }
-                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                            Err(e) if e.kind() == io::ErrorKind::ConnectionReset => (),
-                            Err(_) => return Err(CommsServerError::IoError),
-                        };
-                    }
+                    udp.read_new_packets()
+                        .try_process(|(addr, packet)| {
+                            handle_udp_packet(
+                                addr,
+                                packet,
+                                clients.clone(),
+                                &spawner,
+                                network_handle.clone(),
+                            )
+                            .map_err(|e| e.into())
+                        })
+                        .unwrap();
                 }
                 if event.is_writable() {
-                    udp_socket_writable = true;
-                    let failed_client_ids = {
-                        let mut clients = clients.borrow_mut();
-                        outgoing_queue.attempt_write_udp(
-                            &udp_socket,
-                            &mut udp_socket_writable,
-                            &mut clients,
-                        )
-                    };
-                    for client_id in failed_client_ids {
-                        spawn_close_connection(
-                            client_id,
-                            CloseConnectionReason::MalformedData,
-                            &network_handle,
-                            clients.clone(),
-                            &spawner,
-                        );
-                    }
+                    udp.notify_writable().unwrap();
                 }
             } else if token == tcp_listener_token {
                 loop {
