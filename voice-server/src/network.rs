@@ -110,7 +110,7 @@ impl OutgoingQueue {
     ) -> Vec<ClientId> {
         let mut failures = self.attempt_write_udp(socket, udp_socket_writable, clients);
         for (client_id, client) in clients.established.iter_mut() {
-            if client.connection.tcp.write_packets_until_blocked().is_err() {
+            if client.connection.tcp.write_until_blocked().is_err() {
                 failures.push(*client_id);
             }
         }

@@ -308,7 +308,7 @@ pub fn handle_tcp_stream(
         AnyClient::Connecting(client) => &mut client.connection,
     };
 
-    match connection.tcp.read_until_blocked().try_process(|packet| {
+    match connection.tcp.read_new_packets().try_process(|packet| {
         let context = Context {
             client_id,
             clients: clients.clone(),

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
@@ -8,9 +8,11 @@ use mio::net::TcpStream;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token};
 
-use voice_lib::network::{CommsNetworkError, Protocol, TcpConnection};
+use voice_lib::network::{
+    ClientUdpPacket, CommsNetworkError, Protocol, TcpConnection, UdpConnection,
+};
 use voice_lib::packet;
-use voice_lib::packet::{AudioFromClient, AudioToClient, Hello, Packet, PacketBody, PacketKind};
+use voice_lib::packet::{AudioFromClient, AudioToClient, Hello, Packet, PacketBody};
 use voice_lib::serialization::{IncomingPacket, WritePacketBuilder};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
@@ -22,10 +24,8 @@ pub mod future;
 pub mod ipc;
 
 pub struct Connection {
-    udp: UdpSocket,
+    udp: UdpConnection<ClientUdpPacket>,
     udp_token: Token,
-    udp_writable: bool,
-    udp_packet_queue: VecDeque<Vec<u8>>,
     tcp: TcpConnection,
     tcp_token: Token,
     next_packet_id: NonZeroU64,
@@ -34,12 +34,10 @@ pub struct Connection {
 }
 
 impl Connection {
-    fn new(udp: UdpSocket, udp_token: Token, tcp: TcpConnection, tcp_token: Token) -> Self {
+    fn new(socket: UdpSocket, udp_token: Token, tcp: TcpConnection, tcp_token: Token) -> Self {
         Connection {
-            udp,
+            udp: UdpConnection::new(socket),
             udp_token,
-            udp_writable: false,
-            udp_packet_queue: VecDeque::new(),
             tcp,
             tcp_token,
             next_packet_id: NonZeroU64::new(1).unwrap(),
@@ -82,16 +80,12 @@ pub struct Worker {
     connection: Option<Connection>,
 }
 
-enum HandlePacketError {
-    FailedToParse(PacketKind),
-    UnexpectedPacket(IncomingPacket),
-}
-
 fn handle_udp_packet(
     parsed_packet: IncomingPacket,
     reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacket>>,
     audio_handle: &mut AudioHandle,
-) -> Result<(), HandlePacketError> {
+    event_sender: &mut Sender<NetworkEvent>,
+) -> Result<(), CommsNetworkError> {
     if let Some(reply_to) = parsed_packet.header.reply_to {
         if let Some(sender) = reply_map.remove(&reply_to) {
             sender.done(parsed_packet);
@@ -102,12 +96,14 @@ fn handle_udp_packet(
     let kind = parsed_packet.header.kind;
     match kind {
         packet::AudioToClient::KIND_ID => {
-            let audio_to_client: Packet<AudioToClient> = parsed_packet
-                .finish_parse()
-                .map_err(|_| HandlePacketError::FailedToParse(kind))?;
+            let audio_to_client: Packet<AudioToClient> = parsed_packet.finish_parse()?;
             audio_handle.send_audio(audio_to_client.body.author, &audio_to_client.body.bytes);
         }
-        _ => return Err(HandlePacketError::UnexpectedPacket(parsed_packet)),
+        _ => {
+            event_sender
+                .try_send(NetworkEvent::Packet(parsed_packet))
+                .unwrap();
+        }
     }
     Ok(())
 }
@@ -183,7 +179,6 @@ impl Worker {
         let mut poll = worker_init.poll;
         let command_token = worker_init.command_token;
 
-        let mut buffer = [0; 65535];
         let mut events = Events::with_capacity(1024);
 
         loop {
@@ -200,6 +195,7 @@ impl Worker {
                             } => {
                                 if let Some(connection) = &mut self.connection {
                                     let id = connection.next_packet_id();
+
                                     if let Ok(raw) = outgoing.into_raw(id) {
                                         if let Some(send_response) = send_response {
                                             connection.reply_map.insert(id, send_response);
@@ -222,12 +218,10 @@ impl Worker {
                                                 }
                                             }
                                             Protocol::Udp => {
-                                                connection.udp_packet_queue.push_back(raw);
-                                                match attempt_send_next_udp_packet(
-                                                    &mut connection.udp_packet_queue,
-                                                    &connection.udp,
-                                                    &mut connection.udp_writable,
-                                                ) {
+                                                match connection
+                                                    .udp
+                                                    .push_outgoing(ClientUdpPacket::new(raw))
+                                                {
                                                     Ok(_) => (),
                                                     Err(e)
                                                         if e.kind()
@@ -238,7 +232,7 @@ impl Worker {
                                                         {
                                                             send_response.done(Err(
                                                                 ConnectError::NetworkError,
-                                                            ))
+                                                            ));
                                                         }
                                                     }
                                                     Err(e) => return Err(e.into()),
@@ -259,17 +253,10 @@ impl Worker {
                                             .unwrap();
                                     let id = connection.next_packet_id();
                                     if let Ok(raw) = outgoing.into_raw(id) {
-                                        connection.udp_packet_queue.push_back(raw);
-                                        match attempt_send_next_udp_packet(
-                                            &mut connection.udp_packet_queue,
-                                            &connection.udp,
-                                            &mut connection.udp_writable,
-                                        ) {
-                                            Ok(_) => (),
-                                            Err(e)
-                                                if e.kind() == io::ErrorKind::ConnectionRefused => {
-                                            }
-                                            Err(e) => return Err(e.into()),
+                                        if let Err(e) =
+                                            connection.udp.push_outgoing(ClientUdpPacket::new(raw))
+                                        {
+                                            return Err(e.into());
                                         }
                                     }
                                 }
@@ -299,48 +286,12 @@ impl Worker {
                 } else if let Some(connection) = &mut self.connection {
                     if token == connection.udp_token {
                         if event.is_readable() {
-                            loop {
-                                match connection.udp.recv(&mut buffer) {
-                                    Ok(size) => {
-                                        if size == 0 {
-                                            continue;
-                                        }
-
-                                        if let Ok(parsed_packet) =
-                                            IncomingPacket::from_bytes(&buffer[0..size])
-                                        {
-                                            match handle_udp_packet(parsed_packet, &mut connection.reply_map, &mut audio_handle) {
-                                                Ok(_) => {}
-                                                Err(HandlePacketError::UnexpectedPacket(packet)) => {
-                                                    event_sender.try_send(NetworkEvent::Packet(packet)).unwrap();
-                                                }
-                                                Err(HandlePacketError::FailedToParse(kind)) => eprintln!("Failed to parse a UDP packet of kind {}, ignoring", kind),
-                                            }
-                                        }
-                                    }
-                                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                                    Err(e) => return Err(e.into()),
-                                }
-                            }
-                        }
-                        if event.is_writable() {
-                            connection.udp_writable = true;
-                            attempt_send_next_udp_packet(
-                                &mut connection.udp_packet_queue,
-                                &connection.udp,
-                                &mut connection.udp_writable,
-                            )?;
-                        }
-                    } else if token == connection.tcp_token {
-                        if event.is_readable() {
-                            let mut reply_map = &mut connection.reply_map;
-                            let mut connect_response = &mut connection.connect_response;
-
-                            match connection.tcp.read_until_blocked().try_process(|packet| {
-                                handle_tcp_packet(
+                            let reply_map = &mut connection.reply_map;
+                            match connection.udp.read_new_packets().try_process(|packet| {
+                                handle_udp_packet(
                                     packet,
-                                    &mut reply_map,
-                                    &mut connect_response,
+                                    reply_map,
+                                    &mut audio_handle,
                                     &mut event_sender,
                                 )
                             }) {
@@ -353,40 +304,38 @@ impl Worker {
                                 _ => {}
                             }
                         }
-                        if event.is_writable() {
-                            connection.tcp.notify_writable().unwrap();
+                        if event.is_writable() && connection.udp.notify_writable().is_err() {
+                            event_sender.try_send(NetworkEvent::NetworkError).unwrap();
+                        }
+                    } else if token == connection.tcp_token {
+                        if event.is_readable() {
+                            let reply_map = &mut connection.reply_map;
+                            let connect_response = &mut connection.connect_response;
+
+                            match connection.tcp.read_new_packets().try_process(|packet| {
+                                handle_tcp_packet(
+                                    packet,
+                                    reply_map,
+                                    connect_response,
+                                    &mut event_sender,
+                                )
+                            }) {
+                                Err(CommsNetworkError::Closed) => {
+                                    event_sender.try_send(NetworkEvent::SocketClosed).unwrap();
+                                }
+                                Err(_) => {
+                                    event_sender.try_send(NetworkEvent::NetworkError).unwrap();
+                                }
+                                _ => {}
+                            }
+                        }
+                        if event.is_writable() && connection.tcp.notify_writable().is_err() {
+                            event_sender.try_send(NetworkEvent::NetworkError).unwrap();
                         }
                     }
                 }
             }
         }
-    }
-}
-
-fn attempt_send_next_udp_packet(
-    outgoing_packet_queue: &mut VecDeque<Vec<u8>>,
-    socket: &UdpSocket,
-    socket_writable: &mut bool,
-) -> Result<(), io::Error> {
-    if !*socket_writable {
-        return Ok(());
-    }
-
-    let packet = match outgoing_packet_queue.pop_front() {
-        Some(packet) => packet,
-        None => {
-            return Ok(());
-        }
-    };
-
-    match socket.send(&packet) {
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-            *socket_writable = false;
-            outgoing_packet_queue.push_front(packet);
-            Ok(())
-        }
-        Err(e) => Err(e),
     }
 }
 
