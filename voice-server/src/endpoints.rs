@@ -6,13 +6,13 @@ use std::cell::RefCell;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use voice_lib::network::{TcpHeaderParsedPacket, UpdateFromStream};
+use voice_lib::network::UpdateFromStream;
 use voice_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, ClientId, Disconnect,
     DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, Packet, PacketBody,
     PacketId, UserJoined, UserLeft,
 };
-use voice_lib::serialization::{DeserializeError, UdpHeaderParsedPacket};
+use voice_lib::serialization::{DeserializeError, IncomingPacket};
 
 pub struct Context {
     pub clients: Arc<RefCell<Clients>>,
@@ -173,7 +173,7 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> En
 fn tcp_packet_to_endpoint(
     spawner: &Spawner,
     context: Context,
-    packet: TcpHeaderParsedPacket,
+    packet: IncomingPacket,
 ) -> Result<(), HandlePacketError> {
     let kind = packet.header.kind;
     match kind {
@@ -185,7 +185,7 @@ fn tcp_packet_to_endpoint(
 
 fn udp_packet_to_endpoint(
     spawner: &Spawner,
-    packet: UdpHeaderParsedPacket,
+    packet: IncomingPacket,
     context: Context,
 ) -> Result<(), HandlePacketError> {
     match packet.kind() {
@@ -243,8 +243,8 @@ pub fn handle_udp_packet(
     spawner: &Spawner,
     network_handle: NetworkHandle,
 ) -> Result<(), HandlePacketError> {
-    let parsed_packet = UdpHeaderParsedPacket::from_raw(raw_packet)?;
-    let kind = parsed_packet.kind();
+    let parsed_packet = IncomingPacket::from_bytes(raw_packet)?;
+    let kind = parsed_packet.header.kind;
     if kind == AssociateUdp::KIND_ID {
         // This is the only packet that doesn't need to be sent from a client
         spawner.spawn(associate_udp(

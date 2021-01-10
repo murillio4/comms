@@ -20,7 +20,7 @@ use voice_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted, Packet,
     PacketBody,
 };
-use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
+use voice_lib::serialization::{IncomingPacket, SerializeError, WritePacketBuilder};
 
 use crate::network::ipc::{ConnectError, NetworkCommand, NetworkHandle};
 
@@ -100,7 +100,7 @@ pub async fn request_any<Req>(
     packet_type: Protocol,
     reply_to: Option<NonZeroU64>,
     request: Req,
-) -> Result<OwnedHeaderParsedPacket, SerializeError>
+) -> Result<IncomingPacket, SerializeError>
 where
     Req: PacketBody + Serialize,
 {

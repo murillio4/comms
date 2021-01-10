@@ -8,12 +8,10 @@ use mio::net::TcpStream;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token};
 
-use voice_lib::network::{TcpConnection, Protocol, TcpHeaderParsedPacket, UpdateFromStream};
+use voice_lib::network::{Protocol, TcpConnection, UpdateFromStream};
 use voice_lib::packet;
 use voice_lib::packet::{AudioFromClient, AudioToClient, Hello, Packet, PacketBody, PacketKind};
-use voice_lib::serialization::{
-    OwnedHeaderParsedPacket, SerializeError, UdpHeaderParsedPacket, WritePacketBuilder,
-};
+use voice_lib::serialization::{IncomingPacket, SerializeError, WritePacketBuilder};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network::future::SendResponse;
@@ -30,7 +28,7 @@ pub struct Connection {
     tcp: TcpConnection,
     tcp_token: Token,
     next_packet_id: NonZeroU64,
-    reply_map: HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>,
+    reply_map: HashMap<NonZeroU64, SendResponse<IncomingPacket>>,
     connect_response: Option<SendResponse<Result<Hello, ConnectError>>>,
 }
 
@@ -85,22 +83,22 @@ pub struct Worker {
 
 enum HandlePacketError {
     FailedToParse(PacketKind),
-    UnexpectedPacket(OwnedHeaderParsedPacket),
+    UnexpectedPacket(IncomingPacket),
 }
 
 fn handle_udp_packet(
-    parsed_packet: UdpHeaderParsedPacket,
-    reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>,
+    parsed_packet: IncomingPacket,
+    reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacket>>,
     audio_handle: &mut AudioHandle,
 ) -> Result<(), HandlePacketError> {
     if let Some(reply_to) = parsed_packet.header.reply_to {
         if let Some(sender) = reply_map.remove(&reply_to) {
-            sender.done(parsed_packet.into_owned());
+            sender.done(parsed_packet);
             return Ok(());
         }
     }
 
-    let kind = parsed_packet.kind();
+    let kind = parsed_packet.header.kind;
     match kind {
         packet::AudioToClient::KIND_ID => {
             let audio_to_client: Packet<AudioToClient> = parsed_packet
@@ -108,23 +106,19 @@ fn handle_udp_packet(
                 .map_err(|_| HandlePacketError::FailedToParse(kind))?;
             audio_handle.send_audio(audio_to_client.body.author, &audio_to_client.body.bytes);
         }
-        _ => {
-            return Err(HandlePacketError::UnexpectedPacket(
-                parsed_packet.into_owned(),
-            ))
-        }
+        _ => return Err(HandlePacketError::UnexpectedPacket(parsed_packet)),
     }
     Ok(())
 }
 
 fn handle_tcp_packet(
-    stream_packet: TcpHeaderParsedPacket,
-    reply_map: &mut HashMap<NonZeroU64, SendResponse<OwnedHeaderParsedPacket>>,
+    stream_packet: IncomingPacket,
+    reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacket>>,
     await_hello: &mut Option<SendResponse<Result<Hello, ConnectError>>>,
 ) -> Result<(), HandlePacketError> {
     if let Some(reply_to) = stream_packet.header.reply_to {
         if let Some(sender) = reply_map.remove(&reply_to) {
-            sender.done(stream_packet.into_owned());
+            sender.done(stream_packet);
             return Ok(());
         }
     }
@@ -139,9 +133,7 @@ fn handle_tcp_packet(
             return Ok(());
         }
     }
-    Err(HandlePacketError::UnexpectedPacket(
-        stream_packet.into_owned(),
-    ))
+    Err(HandlePacketError::UnexpectedPacket(stream_packet))
 }
 
 fn connect(
@@ -206,7 +198,7 @@ impl Worker {
                             } => {
                                 if let Some(connection) = &mut self.connection {
                                     let id = connection.next_packet_id();
-                                    if let Ok(raw) = outgoing.into_raw(id) { // TODO as_raw?
+                                    if let Ok(raw) = outgoing.into_raw(id) {
                                         if let Some(send_response) = send_response {
                                             connection.reply_map.insert(id, send_response);
                                         }
@@ -215,13 +207,15 @@ impl Worker {
                                             Protocol::Tcp => {
                                                 if let Err(e) = connection.tcp.push_outgoing(&raw) {
                                                     println!("Failed to send TCP data: {:?}", e);
-                                                    if let Some(send_response) = connection.connect_response.take()
+                                                    if let Some(send_response) =
+                                                        connection.connect_response.take()
                                                     {
-                                                        send_response.done(Err(
-                                                            ConnectError::NetworkError,
-                                                        ))
+                                                        send_response
+                                                            .done(Err(ConnectError::NetworkError))
                                                     } else {
-                                                        unimplemented!("Should gracefully disconnect");
+                                                        unimplemented!(
+                                                            "Should gracefully disconnect"
+                                                        );
                                                     }
                                                 }
                                             }
@@ -310,9 +304,8 @@ impl Worker {
                                             continue;
                                         }
 
-                                        let raw_packet = &buffer[0..size];
                                         if let Ok(parsed_packet) =
-                                            UdpHeaderParsedPacket::from_raw(raw_packet)
+                                            IncomingPacket::from_bytes(&buffer[0..size])
                                         {
                                             match handle_udp_packet(parsed_packet, &mut connection.reply_map, &mut audio_handle) {
                                                 Ok(_) => {}

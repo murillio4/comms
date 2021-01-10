@@ -7,7 +7,7 @@ use std::{fmt, io};
 use mio::{Poll, Waker};
 
 use voice_lib::network::Protocol;
-use voice_lib::serialization::{OwnedHeaderParsedPacket, SerializeError, WritePacketBuilder};
+use voice_lib::serialization::{IncomingPacket, SerializeError, WritePacketBuilder};
 
 use crate::audio::ipc::AudioHandle;
 use crate::network::future::{RequestError, SendResponse};
@@ -19,7 +19,7 @@ use voice_lib::AudioFrame;
 pub enum NetworkEvent {
     SocketClosed,
     NetworkError,
-    Packet(OwnedHeaderParsedPacket),
+    Packet(IncomingPacket),
 }
 
 #[derive(Debug)]
@@ -46,7 +46,7 @@ pub enum NetworkCommand {
     Packet {
         protocol: Protocol,
         outgoing: WritePacketBuilder,
-        send_response: Option<SendResponse<OwnedHeaderParsedPacket>>,
+        send_response: Option<SendResponse<IncomingPacket>>,
     },
     SendAudio(Box<AudioFrame>),
     Connect {

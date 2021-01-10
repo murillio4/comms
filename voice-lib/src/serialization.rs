@@ -1,7 +1,7 @@
 use crate::packet::{Packet, PacketBody, PacketId, PacketKind};
 use crate::{PacketHeader, PACKET_HEADER_SIZE};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fmt::{Debug, Formatter};
 use std::io::Cursor;
 use std::{fmt, mem};
@@ -60,60 +60,29 @@ impl WritePacketBuilder {
     }
 }
 
-pub struct UdpHeaderParsedPacket<'a> {
+pub struct IncomingPacket {
     pub header: PacketHeader,
-    raw_body: &'a [u8],
+    body_bytes: Vec<u8>,
 }
 
-impl<'a> UdpHeaderParsedPacket<'a> {
-    pub fn from_header(header: PacketHeader, raw_body: &'a [u8]) -> Self {
-        UdpHeaderParsedPacket { header, raw_body }
-    }
-
-    pub fn from_raw(raw: &'a [u8]) -> Result<Self, DeserializeError> {
-        let raw_header_size = mem::size_of::<PacketHeader>();
-        let header: PacketHeader =
-            bincode::deserialize(&raw[0..raw_header_size]).map_err(|_| DeserializeError)?;
-        Ok(Self {
-            raw_body: &raw[raw_header_size..],
-            header,
-        })
-    }
-
-    pub fn kind(&self) -> PacketKind {
-        self.header.kind
-    }
-
-    pub fn finish_parse<B>(self) -> Result<Packet<B>, DeserializeError>
-    where
-        B: PacketBody + Deserialize<'a>,
-    {
-        let body = bincode::deserialize(&self.raw_body).map_err(|_| DeserializeError)?;
-        Ok(Packet::new(self.header.id, self.header.reply_to, body))
-    }
-
-    pub fn into_owned(self) -> OwnedHeaderParsedPacket {
-        OwnedHeaderParsedPacket {
-            header: self.header,
-            raw_body: self.raw_body.to_vec(),
-        }
-    }
-}
-
-pub struct OwnedHeaderParsedPacket {
-    pub header: PacketHeader,
-    raw_body: Vec<u8>,
-}
-
-impl Debug for OwnedHeaderParsedPacket {
+impl Debug for IncomingPacket {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(&format!("{:?}", self.header))
     }
 }
 
-impl OwnedHeaderParsedPacket {
-    pub fn new(header: PacketHeader, raw_body: Vec<u8>) -> Self {
-        Self { header, raw_body }
+impl IncomingPacket {
+    pub fn from_header_and_bytes(header: PacketHeader, body_bytes: Vec<u8>) -> Self {
+        Self { header, body_bytes }
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, DeserializeError> {
+        let raw_header_size = mem::size_of::<PacketHeader>();
+        let header = PacketHeader::from_bytes(&bytes[..raw_header_size])?;
+        Ok(Self {
+            header,
+            body_bytes: bytes[raw_header_size..].to_vec(),
+        })
     }
 
     pub fn kind(&self) -> PacketKind {
@@ -124,7 +93,7 @@ impl OwnedHeaderParsedPacket {
     where
         B: PacketBody + DeserializeOwned,
     {
-        let body = bincode::deserialize(&self.raw_body).map_err(|_| DeserializeError)?;
+        let body = bincode::deserialize(&self.body_bytes).map_err(|_| DeserializeError)?;
         Ok(Packet::new(self.header.id, self.header.reply_to, body))
     }
 }

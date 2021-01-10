@@ -1,5 +1,6 @@
 use crate::packet::{PacketId, PacketKind};
 
+use crate::serialization::DeserializeError;
 pub use serde::{Deserialize, Serialize};
 use std::mem;
 
@@ -19,3 +20,9 @@ pub struct PacketHeader {
     pub body_len: u16,
 }
 pub const PACKET_HEADER_SIZE: usize = mem::size_of::<PacketHeader>();
+
+impl PacketHeader {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, DeserializeError> {
+        bincode::deserialize(bytes).map_err(|_| DeserializeError)
+    }
+}
