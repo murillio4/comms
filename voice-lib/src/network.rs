@@ -73,6 +73,9 @@ impl TcpConnection {
                 Ok(amount) => self.incoming_stream.extend_from_slice(&buf[0..amount]),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                    return Err(CommsNetworkError::Closed)
+                }
                 Err(e) => return Err(e.into()),
             }
         }

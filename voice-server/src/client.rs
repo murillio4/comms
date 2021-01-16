@@ -59,11 +59,6 @@ pub struct Clients {
     pub connecting: HashMap<ClientId, ConnectingClient>,
 }
 
-pub enum AnyClient {
-    Established(Client),
-    Connecting(ConnectingClient),
-}
-
 pub enum AnyClientRef<'a> {
     Established(&'a mut Client),
     Connecting(&'a mut ConnectingClient),
@@ -112,21 +107,11 @@ impl Clients {
         }
     }
 
-    pub fn remove_client(&mut self, client_id: &ClientId) -> Option<AnyClient> {
+    pub fn remove_client(&mut self, client_id: &ClientId) {
         self.established
             .remove(client_id)
-            .map(AnyClient::Established)
-            .or_else(|| self.connecting.remove(client_id).map(AnyClient::Connecting))
-    }
-
-    pub fn insert_client(&mut self, client_id: ClientId, client: AnyClient) {
-        match client {
-            AnyClient::Established(client) => {
-                self.established.insert(client_id, client);
-            }
-            AnyClient::Connecting(client) => {
-                self.connecting.insert(client_id, client);
-            }
-        };
+            .map(|_| ())
+            .or_else(|| self.connecting.remove(client_id).map(|_| ()))
+            .expect("Tried to close connection with nonexistent client");
     }
 }

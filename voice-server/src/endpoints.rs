@@ -1,4 +1,4 @@
-use crate::client::{AnyClient, Client, Clients};
+use crate::client::{Client, Clients};
 use crate::network::{NetworkHandle, SendPacket, Target};
 use crate::task::{EndpointResult, Spawner};
 use futures::future;
@@ -151,11 +151,7 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> En
 
     let remaining_client_ids = {
         let mut clients = context.clients.borrow_mut();
-        if reason != CloseConnectionReason::SocketClosed {
-            clients
-                .remove_client(&context.client_id)
-                .expect("Tried to close connection with nonexistent client");
-        }
+        clients.remove_client(&context.client_id);
         clients.established.keys().copied().collect()
     };
 
@@ -197,7 +193,7 @@ fn udp_packet_to_endpoint(
     Ok(())
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum CloseConnectionReason {
     SocketClosed,
     MalformedData,
@@ -293,35 +289,29 @@ pub fn handle_tcp_stream(
     spawner: &Spawner,
     network_handle: &NetworkHandle,
 ) -> Result<StreamStatus, HandlePacketError> {
-    let mut current_client = {
-        let mut clients = clients.borrow_mut();
-        if let Some(client) = clients.remove_client(&client_id) {
-            client
-        } else {
-            return Ok(StreamStatus::Nonexistent);
-        }
+    let clients_arc = clients.clone();
+    let mut clients = clients.borrow_mut();
+    let connection = match clients.connection_by_id(&client_id) {
+        Some(connection) => connection,
+        None => return Ok(StreamStatus::Nonexistent),
     };
 
-    let connection = match &mut current_client {
-        AnyClient::Established(client) => &mut client.connection,
-        AnyClient::Connecting(client) => &mut client.connection,
-    };
+    match connection
+        .tcp
+        .read_new_packets()
+        .try_process(move |packet| {
+            let context = Context {
+                client_id,
+                clients: clients_arc.clone(),
+                network_handle: network_handle.clone(),
+            };
 
-    match connection.tcp.read_new_packets().try_process(|packet| {
-        let context = Context {
-            client_id,
-            clients: clients.clone(),
-            network_handle: network_handle.clone(),
-        };
-
-        tcp_packet_to_endpoint(&spawner, context, packet)
-    }) {
+            tcp_packet_to_endpoint(&spawner, context, packet)
+        }) {
         Err(CommsNetworkError::Closed) => return Ok(StreamStatus::Closed),
         Err(_) => return Err(HandlePacketError::CommunicationFailure),
         _ => {}
     }
 
-    let mut clients = clients.borrow_mut();
-    clients.insert_client(client_id, current_client);
     Ok(StreamStatus::Normal)
 }
