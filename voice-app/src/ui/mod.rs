@@ -89,7 +89,7 @@ async fn try_connect(audio_handle: AudioHandle, network: NetworkHandle, ui: Rc<R
                     .map(|storage| (project_dirs, storage))
             })
         {
-            let _ = async_std::fs::create_dir(project_dirs.data_dir()).await;
+            let _ = async_std::fs::create_dir_all(project_dirs.data_dir()).await;
             let _ =
                 async_std::fs::write(project_dirs.data_dir().join("local_storage"), storage).await;
         }
