@@ -13,10 +13,7 @@ type EndpointFuture = dyn Future<Output = EndpointResult> + 'static;
 
 #[derive(Debug)]
 pub enum EndpointError {
-    SerializeFailed {
-        kind: PacketKind,
-        packet: Box<dyn Debug>,
-    },
+    SerializeFailed { kind: PacketKind },
 }
 pub type EndpointResult = Result<(), EndpointError>;
 

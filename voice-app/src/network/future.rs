@@ -20,7 +20,7 @@ use voice_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted, Packet,
     PacketBody,
 };
-use voice_lib::serialization::{IncomingPacket, WritePacketBuilder};
+use voice_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
 use crate::network::ipc::{ConnectError, NetworkCommand, NetworkHandle};
 
@@ -97,17 +97,17 @@ pub async fn disconnect(handle: &NetworkHandle) {
 
 pub async fn request_any<Req>(
     handle: &NetworkHandle,
-    packet_type: Protocol,
+    protocol: Protocol,
     reply_to: Option<NonZeroU64>,
     request: Req,
-) -> Result<IncomingPacket, CommsNetworkError>
+) -> Result<IncomingPacketFrame, CommsNetworkError>
 where
-    Req: PacketBody + Serialize,
+    Req: PacketBody,
 {
-    let outgoing = WritePacketBuilder::new(reply_to, &request)?;
+    let packet = OutgoingPacketFrame::from_packet(reply_to, &request)?;
     Ok(NetworkFuture::new(handle, |s| NetworkCommand::Packet {
-        protocol: packet_type,
-        outgoing,
+        protocol,
+        packet,
         send_response: Some(s),
     })
     .await)
@@ -144,9 +144,10 @@ pub fn send<Req>(
 where
     Req: PacketBody + Serialize,
 {
+    let packet = OutgoingPacketFrame::from_packet(reply_to, &request)?;
     handle.command(NetworkCommand::Packet {
         protocol: packet_type,
-        outgoing: WritePacketBuilder::new(reply_to, &request)?,
+        packet,
         send_response: None,
     });
     Ok(())

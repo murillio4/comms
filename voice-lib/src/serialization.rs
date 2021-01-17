@@ -1,45 +1,35 @@
 use crate::packet::{Packet, PacketBody, PacketId, PacketKind};
-use crate::{PacketHeader, PACKET_HEADER_SIZE};
+use crate::PacketHeader;
 use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::fmt::{Debug, Formatter};
 use std::io::Cursor;
 use std::{fmt, mem};
 
-pub fn serialize<B>(
-    id: PacketId,
-    reply_to: Option<PacketId>,
-    packet: B,
-) -> Result<Vec<u8>, SerializeError>
-where
-    B: PacketBody + Serialize,
-{
-    WritePacketBuilder::new(reply_to, &packet)?.into_raw(id)
-}
-
-pub struct WritePacketBuilder {
-    raw: Vec<u8>,
+#[derive(Clone)]
+pub struct OutgoingPacketFrame {
     pub kind: PacketKind,
     pub reply_to: Option<PacketId>,
+    pub bytes_with_empty_header: Vec<u8>,
 }
 
-impl WritePacketBuilder {
-    pub fn new<B>(reply_to: Option<PacketId>, body: &B) -> Result<Self, SerializeError>
+impl OutgoingPacketFrame {
+    pub fn from_packet<B>(reply_to: Option<PacketId>, body: &B) -> Result<Self, SerializeError>
     where
-        B: PacketBody + Serialize,
+        B: PacketBody,
     {
-        let mut raw = vec![0u8; mem::size_of::<PacketHeader>()];
-        bincode::serialize_into(&mut raw, body)?;
-        Ok(WritePacketBuilder {
-            raw,
+        let mut bytes_with_empty_header = vec![0u8; mem::size_of::<PacketHeader>()];
+        bincode::serialize_into(&mut bytes_with_empty_header, &body)?;
+        Ok(Self {
             kind: B::KIND_ID,
             reply_to,
+            bytes_with_empty_header,
         })
     }
 
-    pub fn as_raw(&mut self, id: PacketId) -> Result<&[u8], SerializeError> {
-        let body_len = self.raw.len() as u16;
-        let mut cursor = Cursor::new(&mut self.raw);
+    pub fn into_raw(self, id: PacketId) -> Result<Vec<u8>, SerializeError> {
+        let body_len = self.bytes_with_empty_header.len() - mem::size_of::<PacketHeader>();
+        let mut bytes = self.bytes_with_empty_header;
+        let mut cursor = Cursor::new(&mut bytes);
         cursor.set_position(0);
         bincode::serialize_into(
             cursor,
@@ -47,31 +37,26 @@ impl WritePacketBuilder {
                 id,
                 reply_to: self.reply_to,
                 kind: self.kind,
-                body_len: body_len - PACKET_HEADER_SIZE as u16,
+                body_len: body_len as u16,
             },
         )?;
-        Ok(&self.raw)
-    }
-
-    pub fn into_raw(mut self, id: PacketId) -> Result<Vec<u8>, SerializeError> {
-        self.as_raw(id)?;
-        Ok(self.raw)
+        Ok(bytes)
     }
 }
 
-pub struct IncomingPacket {
+pub struct IncomingPacketFrame {
     pub header: PacketHeader,
     body_bytes: Vec<u8>,
 }
 
-impl Debug for IncomingPacket {
+impl Debug for IncomingPacketFrame {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(&format!("{:?}", self.header))
     }
 }
 
 pub type SerializeError = bincode::Error;
-impl IncomingPacket {
+impl IncomingPacketFrame {
     pub fn from_header_and_bytes(header: PacketHeader, body_bytes: Vec<u8>) -> Self {
         Self { header, body_bytes }
     }

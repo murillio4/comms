@@ -1,9 +1,9 @@
-use crate::network::OutgoingPacket;
 use mio::net::TcpStream;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use voice_lib::network::TcpConnection;
 use voice_lib::packet::{ClientId, PacketId};
+use voice_lib::serialization::OutgoingPacketFrame;
 
 pub struct NextPacketId(PacketId);
 
@@ -23,7 +23,7 @@ pub struct Connection {
     next_packet_id: NextPacketId,
     pub tcp: TcpConnection,
     pub tcp_writable: bool,
-    pub outgoing_queue: VecDeque<OutgoingPacket>,
+    pub outgoing_queue: VecDeque<(ClientId, OutgoingPacketFrame)>,
     pub partially_sent_packet: Option<Vec<u8>>,
 }
 

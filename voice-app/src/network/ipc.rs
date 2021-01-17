@@ -7,7 +7,7 @@ use std::{fmt, io};
 use mio::{Poll, Waker};
 
 use voice_lib::network::{CommsNetworkError, Protocol};
-use voice_lib::serialization::{IncomingPacket, WritePacketBuilder};
+use voice_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
 use crate::audio::ipc::AudioHandle;
 use crate::network::future::{RequestError, SendResponse};
@@ -19,7 +19,7 @@ use voice_lib::AudioFrame;
 pub enum NetworkEvent {
     SocketClosed,
     NetworkError,
-    Packet(IncomingPacket),
+    Packet(IncomingPacketFrame),
 }
 
 #[derive(Debug)]
@@ -45,8 +45,8 @@ impl From<RequestError> for ConnectError {
 pub enum NetworkCommand {
     Packet {
         protocol: Protocol,
-        outgoing: WritePacketBuilder,
-        send_response: Option<SendResponse<IncomingPacket>>,
+        packet: OutgoingPacketFrame,
+        send_response: Option<SendResponse<IncomingPacketFrame>>,
     },
     SendAudio(Box<AudioFrame>),
     Connect {
@@ -62,7 +62,9 @@ impl Display for NetworkCommand {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
             Self::Packet {
-                protocol, outgoing, ..
+                protocol,
+                packet: outgoing,
+                ..
             } => f.write_str(&format!("{:?} Packet of kind {}", protocol, outgoing.kind)),
             Self::Connect { .. } => f.write_str("Connect"),
             Self::Disconnect { .. } => f.write_str("Disconnect"),

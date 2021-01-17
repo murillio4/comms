@@ -8,23 +8,48 @@ use voice_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, AudioFromClient, FinishConnect, FinishConnectAccepted,
     Hello, Packet, PacketBody,
 };
-use voice_lib::serialization::{serialize, IncomingPacket, SerializeError};
+use voice_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame, SerializeError};
 
-fn read_next_tcp(tcp: &mut TcpStream) -> Result<IncomingPacket, SerializeError> {
+fn read_next_tcp(tcp: &mut TcpStream) -> Result<IncomingPacketFrame, SerializeError> {
     let mut buffer = [0u8; 65535];
     let size = tcp.read(&mut buffer).unwrap();
-    IncomingPacket::from_bytes(&buffer[..size])
+    IncomingPacketFrame::from_bytes(&buffer[..size])
 }
 
-fn read_next_udp(udp: &UdpSocket) -> Result<IncomingPacket, SerializeError> {
+fn read_next_udp(udp: &UdpSocket) -> Result<IncomingPacketFrame, SerializeError> {
     let mut buffer = [0u8; 65535];
     let size = udp.recv(&mut buffer).unwrap();
-    IncomingPacket::from_bytes(&buffer[..size])
+    IncomingPacketFrame::from_bytes(&buffer[..size])
+}
+
+struct BeepPacketSerializer {
+    next_packet_id: u64,
+}
+
+impl BeepPacketSerializer {
+    fn new() -> Self {
+        Self { next_packet_id: 1 }
+    }
+
+    fn serialize<P>(&mut self, packet: &P) -> Result<Vec<u8>, BeepClientErr>
+    where
+        P: PacketBody,
+    {
+        let packet_id = self.next_packet_id;
+        self.next_packet_id += 1;
+        OutgoingPacketFrame::from_packet(None, packet)
+            .map_err(|e| e.into())
+            .and_then(|p| {
+                p.into_raw(NonZeroU64::new(packet_id).unwrap())
+                    .map_err(|e| e.into())
+            })
+    }
 }
 
 fn main() -> Result<(), BeepClientErr> {
     #[cfg(windows)]
     voice_lib::winlib::bump_priority();
+    let mut serializer = BeepPacketSerializer::new();
 
     let matches = App::new("Beep Client")
         .version("0.1")
@@ -58,26 +83,18 @@ fn main() -> Result<(), BeepClientErr> {
     let hello: Packet<Hello> = parsed_packet.finish_parse()?;
     dbg!(&hello);
 
-    udp.send(&serialize(
-        NonZeroU64::new(1).unwrap(),
-        None,
-        AssociateUdp {
-            client_id: hello.body.client_id,
-        },
-    )?)?;
+    udp.send(&serializer.serialize(&AssociateUdp {
+        client_id: hello.body.client_id,
+    })?)?;
 
     let parsed_packet = read_next_udp(&udp)?;
     assert_eq!(parsed_packet.header.kind, AssociateUdpAccepted::KIND_ID);
     let accepted: Packet<AssociateUdpAccepted> = parsed_packet.finish_parse()?;
     dbg!(&accepted);
 
-    tcp.write_all(&serialize(
-        NonZeroU64::new(2).unwrap(),
-        None,
-        FinishConnect {
-            name: client_name.to_string(),
-        },
-    )?)?;
+    tcp.write_all(&serializer.serialize(&FinishConnect {
+        name: client_name.to_string(),
+    })?)?;
 
     let parsed_packet = read_next_tcp(&mut tcp)?;
     assert_eq!(parsed_packet.header.kind, FinishConnectAccepted::KIND_ID);
@@ -95,7 +112,6 @@ fn main() -> Result<(), BeepClientErr> {
 
     let start = SystemTime::now();
     let mut sample_count: u128 = 0;
-    let mut next_packet_id = 3;
 
     loop {
         std::thread::sleep(Duration::from_millis(3));
@@ -115,12 +131,7 @@ fn main() -> Result<(), BeepClientErr> {
                 .iter()
                 .flat_map(|sample| sample.to_le_bytes().to_vec())
                 .collect();
-            udp.send(&serialize(
-                NonZeroU64::new(next_packet_id).unwrap(),
-                None,
-                AudioFromClient(bytes),
-            )?)?;
-            next_packet_id += 1;
+            udp.send(&serializer.serialize(&AudioFromClient(bytes))?)?;
         }
     }
 }

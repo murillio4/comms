@@ -12,7 +12,7 @@ use voice_lib::packet::{
     DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, Packet, PacketBody,
     PacketId, UserJoined, UserLeft,
 };
-use voice_lib::serialization::{IncomingPacket, SerializeError};
+use voice_lib::serialization::{IncomingPacketFrame, SerializeError};
 
 pub struct Context {
     pub clients: Arc<RefCell<Clients>>,
@@ -169,7 +169,7 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> En
 fn tcp_packet_to_endpoint(
     spawner: &Spawner,
     context: Context,
-    packet: IncomingPacket,
+    packet: IncomingPacketFrame,
 ) -> Result<(), CommsNetworkError> {
     let kind = packet.header.kind;
     match kind {
@@ -181,7 +181,7 @@ fn tcp_packet_to_endpoint(
 
 fn udp_packet_to_endpoint(
     spawner: &Spawner,
-    packet: IncomingPacket,
+    packet: IncomingPacketFrame,
     context: Context,
 ) -> Result<(), SerializeError> {
     match packet.kind() {
@@ -240,7 +240,7 @@ impl From<io::Error> for HandlePacketError {
 
 pub fn handle_udp_packet(
     addr: SocketAddr,
-    packet: IncomingPacket,
+    packet: IncomingPacketFrame,
     clients: Arc<RefCell<Clients>>,
     spawner: &Spawner,
     network_handle: NetworkHandle,

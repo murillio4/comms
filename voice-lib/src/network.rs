@@ -1,4 +1,4 @@
-use crate::serialization::{IncomingPacket, SerializeError};
+use crate::serialization::{IncomingPacketFrame, SerializeError};
 use crate::{PacketHeader, PACKET_HEADER_SIZE};
 use mio::net::{TcpStream, UdpSocket};
 use slice_deque::SliceDeque;
@@ -116,7 +116,7 @@ impl ServerUdpPacket {
 }
 
 impl UdpPacket for ServerUdpPacket {
-    type IncomingPacket = (SocketAddr, IncomingPacket);
+    type IncomingPacket = (SocketAddr, IncomingPacketFrame);
 
     fn send(&self, socket: &mut UdpSocket) -> io::Result<usize> {
         socket.send_to(&self.buffer, self.client_addr)
@@ -136,7 +136,7 @@ impl UdpPacket for ServerUdpPacket {
     }
 
     fn into_incoming_packet(self) -> Result<Self::IncomingPacket, SerializeError> {
-        let incoming_packet = IncomingPacket::from_bytes(&self.buffer)?;
+        let incoming_packet = IncomingPacketFrame::from_bytes(&self.buffer)?;
         Ok((self.client_addr, incoming_packet))
     }
 }
@@ -152,7 +152,7 @@ impl ClientUdpPacket {
 }
 
 impl UdpPacket for ClientUdpPacket {
-    type IncomingPacket = IncomingPacket;
+    type IncomingPacket = IncomingPacketFrame;
 
     fn send(&self, socket: &mut UdpSocket) -> io::Result<usize> {
         socket.send(&self.buffer)
@@ -171,7 +171,7 @@ impl UdpPacket for ClientUdpPacket {
     }
 
     fn into_incoming_packet(self) -> Result<Self::IncomingPacket, SerializeError> {
-        IncomingPacket::from_bytes(&self.buffer)
+        IncomingPacketFrame::from_bytes(&self.buffer)
     }
 }
 
@@ -255,7 +255,7 @@ pub struct TcpReadIter<'a> {
 impl TcpReadIter<'_> {
     pub fn try_process(
         &mut self,
-        mut f: impl FnMut(IncomingPacket) -> Result<(), CommsNetworkError>,
+        mut f: impl FnMut(IncomingPacketFrame) -> Result<(), CommsNetworkError>,
     ) -> Result<(), CommsNetworkError> {
         if let Some(e) = self.read_error.take() {
             return Err(e);
@@ -270,7 +270,7 @@ impl TcpReadIter<'_> {
 }
 
 impl<'a> Iterator for TcpReadIter<'a> {
-    type Item = Result<IncomingPacket, SerializeError>;
+    type Item = Result<IncomingPacketFrame, SerializeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let header = if let Some(header) = self.next_incoming_header.take() {
@@ -296,7 +296,7 @@ impl<'a> Iterator for TcpReadIter<'a> {
         let body_bytes: Vec<u8> =
             self.incoming_stream.as_slice()[..header.body_len as usize].to_vec();
         unsafe { self.incoming_stream.move_head(header.body_len as isize) };
-        Some(Ok(IncomingPacket::from_header_and_bytes(
+        Some(Ok(IncomingPacketFrame::from_header_and_bytes(
             header, body_bytes,
         )))
     }

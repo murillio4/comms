@@ -13,7 +13,7 @@ use voice_lib::network::{
 };
 use voice_lib::packet;
 use voice_lib::packet::{AudioFromClient, AudioToClient, Hello, Packet, PacketBody};
-use voice_lib::serialization::{IncomingPacket, WritePacketBuilder};
+use voice_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network::future::SendResponse;
@@ -29,7 +29,7 @@ pub struct Connection {
     tcp: TcpConnection,
     tcp_token: Token,
     next_packet_id: NonZeroU64,
-    reply_map: HashMap<NonZeroU64, SendResponse<IncomingPacket>>,
+    reply_map: HashMap<NonZeroU64, SendResponse<IncomingPacketFrame>>,
     connect_response: Option<SendResponse<Result<Hello, ConnectError>>>,
 }
 
@@ -81,8 +81,8 @@ pub struct Worker {
 }
 
 fn handle_udp_packet(
-    parsed_packet: IncomingPacket,
-    reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacket>>,
+    parsed_packet: IncomingPacketFrame,
+    reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacketFrame>>,
     audio_handle: &mut AudioHandle,
     event_sender: &mut Sender<NetworkEvent>,
 ) -> Result<(), CommsNetworkError> {
@@ -109,8 +109,8 @@ fn handle_udp_packet(
 }
 
 fn handle_tcp_packet(
-    stream_packet: IncomingPacket,
-    reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacket>>,
+    stream_packet: IncomingPacketFrame,
+    reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacketFrame>>,
     await_hello: &mut Option<SendResponse<Result<Hello, ConnectError>>>,
     event_sender: &mut Sender<NetworkEvent>,
 ) -> Result<(), CommsNetworkError> {
@@ -190,7 +190,7 @@ impl Worker {
                         match command {
                             NetworkCommand::Packet {
                                 protocol,
-                                outgoing,
+                                packet: outgoing,
                                 send_response,
                             } => {
                                 if let Some(connection) = &mut self.connection {
@@ -248,11 +248,13 @@ impl Worker {
                                         .iter()
                                         .flat_map(|sample| sample.to_le_bytes().to_vec())
                                         .collect();
-                                    let outgoing =
-                                        WritePacketBuilder::new(None, &AudioFromClient(bytes))
-                                            .unwrap();
+                                    let packet = OutgoingPacketFrame::from_packet(
+                                        None,
+                                        &AudioFromClient(bytes),
+                                    )
+                                    .unwrap();
                                     let id = connection.next_packet_id();
-                                    if let Ok(raw) = outgoing.into_raw(id) {
+                                    if let Ok(raw) = packet.into_raw(id) {
                                         if let Err(e) =
                                             connection.udp.push_outgoing(ClientUdpPacket::new(raw))
                                         {

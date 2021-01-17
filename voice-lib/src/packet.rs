@@ -18,7 +18,7 @@ impl<T: PacketBody> Packet<T> {
     }
 }
 
-pub trait PacketBody {
+pub trait PacketBody: Serialize {
     const KIND_ID: PacketKind;
     fn kind_id() -> PacketKind {
         Self::KIND_ID
