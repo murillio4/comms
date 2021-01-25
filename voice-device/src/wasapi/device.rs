@@ -244,9 +244,9 @@ impl IMMDeviceWrapper {
         Ok(name_string)
     }
 
-    fn id(&self) -> Result<String, ()> {
+    fn id(&self) -> String {
         // TODO: Return the actual ID --- more pointer work
-        Ok("LATER NERD".to_string())
+        "LATER NERD".to_string()
     }
 
     fn default(data_flow: mmdeviceapi::EDataFlow) -> Option<IMMDeviceWrapper> {
@@ -322,7 +322,7 @@ impl InputDevice {
         self.device.name()
     }
 
-    pub fn id(&self) -> Result<String, ()> {
+    pub fn id(&self) -> String {
         self.device.id()
     }
 
@@ -364,7 +364,7 @@ impl OutputDevice {
         self.device.name()
     }
 
-    pub fn id(&self) -> Result<String, ()> {
+    pub fn id(&self) -> String {
         self.device.id()
     }
 

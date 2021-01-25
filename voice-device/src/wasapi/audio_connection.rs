@@ -70,14 +70,14 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> AudioConne
                 .into_iter()
                 .map(|device| DeviceInfo {
                     label: device.name().unwrap(),
-                    id: device.id().unwrap(),
+                    id: device.id(),
                 })
                 .collect(),
             output_devices: OutputDevice::get_list()
                 .into_iter()
                 .map(|device| DeviceInfo {
                     label: device.name().unwrap(),
-                    id: device.id().unwrap(),
+                    id: device.id(),
                 })
                 .collect(),
         });

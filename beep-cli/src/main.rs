@@ -1,9 +1,8 @@
-use clap::{App, Arg};
-use std::io;
 use std::io::{Read, Write};
 use std::net::{TcpStream, UdpSocket};
 use std::num::NonZeroU64;
 use std::time::{Duration, SystemTime};
+use std::{env, io};
 use voice_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, AudioFromClient, FinishConnect, FinishConnectAccepted,
     Hello, Packet, PacketBody,
@@ -51,25 +50,19 @@ fn main() -> Result<(), BeepClientErr> {
     voice_lib::winlib::bump_priority();
     let mut serializer = BeepPacketSerializer::new();
 
-    let matches = App::new("Beep Client")
-        .version("0.1")
-        .arg(
-            Arg::with_name("server_address")
-                .takes_value(true)
-                .required(true),
-        )
-        .arg(Arg::with_name("client_name").takes_value(true))
-        .get_matches();
+    let mut args = env::args().take(3).skip(1);
+    let server_address = args.next();
+    let client_name = args.next();
 
-    let server_address = match matches.value_of("server_address") {
+    let server_address = match server_address {
         Some(server_address) => server_address,
         None => {
-            eprintln!("{}", matches.usage());
+            eprintln!("Usage: beep-cli server_address [client_name]");
             return Err(BeepClientErr::Usage);
         }
     };
 
-    let client_name = matches.value_of("client_name").unwrap_or("beep");
+    let client_name = client_name.unwrap_or_else(|| "beep".to_string());
 
     let server_address_with_port = format!("{}:18847", server_address);
     println!("Connecting to {}...", server_address_with_port);
@@ -92,9 +85,7 @@ fn main() -> Result<(), BeepClientErr> {
     let accepted: Packet<AssociateUdpAccepted> = parsed_packet.finish_parse()?;
     dbg!(&accepted);
 
-    tcp.write_all(&serializer.serialize(&FinishConnect {
-        name: client_name.to_string(),
-    })?)?;
+    tcp.write_all(&serializer.serialize(&FinishConnect { name: client_name })?)?;
 
     let parsed_packet = read_next_tcp(&mut tcp)?;
     assert_eq!(parsed_packet.header.kind, FinishConnectAccepted::KIND_ID);

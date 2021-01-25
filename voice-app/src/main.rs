@@ -12,7 +12,7 @@ mod ui;
 
 // const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 
-fn main() -> Result<(), CommsError> {
+fn main() {
     let orig_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
         orig_hook(panic_info);
@@ -71,7 +71,6 @@ fn main() -> Result<(), CommsError> {
         ui_receiver,
         audio_handle,
     );
-    Ok(())
 }
 
 #[derive(Debug)]

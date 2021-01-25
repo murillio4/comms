@@ -13,5 +13,4 @@ slice-deque = "0.3"
 thiserror = "1.0.23"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-lazy_static = "1.4"
 winapi = { version = "0.3", features = ["avrt", "errhandlingapi", "processthreadsapi"] }
