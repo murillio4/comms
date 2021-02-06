@@ -8,7 +8,7 @@ build_linux:
     - master
   script:
     - cargo fmt --all -- --check
-    - cargo clippy --all-targets --all-features -- -D warnings
+    - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo build --all
     - cargo test
   tags:
@@ -20,7 +20,7 @@ build_windows:
     - master
   script:
     - cargo fmt --all -- --check
-    - cargo clippy --all-targets --all-features -- -D warnings
+    - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo test
     - cargo build --all
   # There's no Windows worker at the moment
@@ -34,7 +34,7 @@ build_release_linux:
     - master
   script:
     - cargo fmt --all -- --check
-    - cargo clippy --all-targets --all-features -- -D warnings
+    - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo test
     - cargo build --all --release
   artifacts:
@@ -51,7 +51,7 @@ build_release_windows:
     - master
   script:
     - cargo fmt --all -- --check
-    - cargo clippy --all-targets --all-features -- -D warnings
+    - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo test
     - cargo build --all --release
   artifacts:
