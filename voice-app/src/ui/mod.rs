@@ -94,14 +94,14 @@ async fn try_connect(audio_handle: AudioHandle, network: NetworkHandle, ui: Rc<R
                 async_std::fs::write(project_dirs.data_dir().join("local_storage"), storage).await;
         }
 
-        let connect_result = network::future::connect(&network, server, username).await;
+        let connect_result = network::future::connect(&network, server, username.clone()).await;
 
         finished.replace(true);
         connect_progress_stack.set_visible_child_name("hidden_progress");
         connect_button.set_sensitive(true);
 
         match connect_result {
-            Ok(users) => {
+            Ok((client_id, users)) => {
                 for (client_id, _) in users.iter() {
                     audio_handle
                         .send(AudioCommand::NewClient(*client_id))
@@ -113,6 +113,9 @@ async fn try_connect(audio_handle: AudioHandle, network: NetworkHandle, ui: Rc<R
                 let mut ui = ui.borrow_mut();
                 let status_treeview = ui.builder.get_object("status_treeview").unwrap();
                 let user_list_model = initialize_user_list(&status_treeview);
+
+                let values: [&dyn ToValue; 2] = [&(client_id as u32), &username];
+                user_list_model.insert_with_values(None, &col_indices, &values);
                 for (id, user) in users.iter() {
                     let values: [&dyn ToValue; 2] = [&(*id as u32), &user];
                     user_list_model.insert_with_values(None, &col_indices, &values);
@@ -142,7 +145,11 @@ async fn try_connect(audio_handle: AudioHandle, network: NetworkHandle, ui: Rc<R
     }
 }
 
-async fn disconnect_from_server(ui: Rc<RefCell<UiModel>>, handle: NetworkHandle) {
+async fn disconnect_from_server(
+    ui: Rc<RefCell<UiModel>>,
+    handle: NetworkHandle,
+    audio: AudioHandle,
+) {
     let state = ui.borrow().state.clone();
     if let UiState::Main {
         user_list_model, ..
@@ -155,6 +162,7 @@ async fn disconnect_from_server(ui: Rc<RefCell<UiModel>>, handle: NetworkHandle)
             pane_stack.set_visible_child_name("connect");
         }
         user_list_model.clear();
+        audio.send(AudioCommand::ServerDisconnect).unwrap();
         ui.borrow_mut().state = UiState::ChooseServer;
     }
 }
@@ -174,7 +182,7 @@ struct UiModel {
 
 async fn handle_network_events(
     mut receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
-    audio_handle: AudioHandle,
+    audio: AudioHandle,
     network: NetworkHandle,
     ui: Rc<RefCell<UiModel>>,
 ) {
@@ -183,7 +191,7 @@ async fn handle_network_events(
         match event {
             NetworkEvent::SocketClosed => {
                 if let UiState::Main { .. } = state {
-                    disconnect_from_server(ui.clone(), network.clone()).await;
+                    disconnect_from_server(ui.clone(), network.clone(), audio.clone()).await;
 
                     let builder = &ui.borrow().builder;
                     let connect_failure_status: gtk::Label =
@@ -194,7 +202,7 @@ async fn handle_network_events(
             }
             NetworkEvent::NetworkError => {
                 if let UiState::Main { .. } = state {
-                    disconnect_from_server(ui.clone(), network.clone()).await;
+                    disconnect_from_server(ui.clone(), network.clone(), audio.clone()).await;
 
                     let builder = &ui.borrow().builder;
                     let connect_failure_status: gtk::Label =
@@ -209,7 +217,7 @@ async fn handle_network_events(
                         match packet.kind() {
                             UserJoined::KIND_ID => {
                                 let packet: Packet<UserJoined> = packet.finish_parse()?;
-                                audio_handle
+                                audio
                                     .send(AudioCommand::NewClient(packet.body.client_id))
                                     .unwrap();
                                 let col_indices: [u32; 2] =
@@ -222,6 +230,10 @@ async fn handle_network_events(
                             }
                             UserLeft::KIND_ID => {
                                 let packet: Packet<UserLeft> = packet.finish_parse()?;
+                                audio
+                                    .send(AudioCommand::DropClient(packet.body.client_id))
+                                    .unwrap();
+
                                 let id = packet.body.client_id as u32;
                                 let iter = user_list_model.get_iter_first().unwrap();
                                 loop {
@@ -276,14 +288,14 @@ pub fn run(
     network: NetworkHandle,
     network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
     ui_receiver: std::sync::mpsc::Receiver<UICommand>,
-    audio_handle: AudioHandle,
+    audio: AudioHandle,
 ) {
     let command = ui_receiver.recv().unwrap();
     match command {
         UICommand::AudioIPCReady => (),
         _ => panic!("Expected first UICommand to be 'AudioIPCReady'"),
     };
-    audio_handle.send(AudioCommand::ListDevices).unwrap();
+    audio.send(AudioCommand::ListDevices).unwrap();
     let ui_cmd_from_audio: UICommand = ui_receiver.recv().unwrap();
     let (input_devices, output_devices) = match ui_cmd_from_audio {
         UICommand::DevicesFound {
@@ -311,7 +323,7 @@ pub fn run(
         let glib_context = glib::MainContext::default();
         glib_context.spawn_local(handle_network_events(
             network_event_receiver,
-            audio_handle.clone(),
+            audio.clone(),
             network.clone(),
             ui.clone(),
         ));
@@ -338,16 +350,12 @@ pub fn run(
         }
 
         let submit_connection_form = {
-            // TODO use clone! macro?
             let glib_context = glib_context.clone();
             let network = network.clone();
+            let audio = audio.clone();
             let ui = ui.clone();
             Rc::new(RefCell::new(move || {
-                glib_context.spawn_local(try_connect(
-                    audio_handle.clone(),
-                    network.clone(),
-                    ui.clone(),
-                ));
+                glib_context.spawn_local(try_connect(audio.clone(), network.clone(), ui.clone()));
             }))
         };
 
@@ -390,7 +398,11 @@ pub fn run(
         let disconnect_menu_item: gtk::MenuItem =
             builder.get_object("disconnect_menu_item").unwrap();
         disconnect_menu_item.connect_activate(move |_| {
-            glib_context.spawn_local(disconnect_from_server(ui.clone(), network.clone()));
+            glib_context.spawn_local(disconnect_from_server(
+                ui.clone(),
+                network.clone(),
+                audio.clone(),
+            ));
         });
 
         let inputs_submenu: gtk::Menu = builder.get_object("inputs_submenu").unwrap();

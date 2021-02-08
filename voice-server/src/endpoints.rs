@@ -101,6 +101,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
                             users: clients
                                 .established
                                 .iter()
+                                .filter(|(id, _)| **id != context.client_id)
                                 .map(|(id, c)| (*id, c.username.clone()))
                                 .collect(),
                         },

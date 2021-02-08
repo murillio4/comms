@@ -35,7 +35,7 @@ pub fn run(
         receiver,
         ui_handle.clone(),
     );
-    let mic_buffer = MicBuffer::new(network_handle);
+    let mic_buffer = MicBuffer::new(network_handle)?;
     let event_loop =
         AudioPlatformImpl::create_event_loop(parameters, receiver, mic_buffer, multiplexer);
     ui_handle.send(UICommand::AudioIPCReady).unwrap();
@@ -46,10 +46,17 @@ pub fn run(
 #[derive(Debug)]
 pub enum AudioError {
     SendToNetworkThread(SendToNetworkThreadError),
+    Opus(audiopus::Error),
 }
 
 impl From<SendToNetworkThreadError> for AudioError {
     fn from(err: SendToNetworkThreadError) -> Self {
         AudioError::SendToNetworkThread(err)
+    }
+}
+
+impl From<audiopus::Error> for AudioError {
+    fn from(err: audiopus::Error) -> Self {
+        AudioError::Opus(err)
     }
 }

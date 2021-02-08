@@ -28,7 +28,7 @@ async fn connect_without_timeout(
     handle: &NetworkHandle,
     destination: String,
     username: String,
-) -> Result<Vec<(ClientId, String)>, ConnectError> {
+) -> Result<(ClientId, Vec<(ClientId, String)>), ConnectError> {
     let destination_with_port = format!("{}:18847", destination);
     let destination = match destination_with_port.to_socket_addrs().await {
         Ok(mut addresses) => {
@@ -66,14 +66,14 @@ async fn connect_without_timeout(
         FinishConnect { name: username },
     )
     .await?;
-    Ok(connect_accepted.body.users)
+    Ok((hello.client_id, connect_accepted.body.users))
 }
 
 pub async fn connect(
     handle: &NetworkHandle,
     destination: String,
     username: String,
-) -> Result<Vec<(ClientId, String)>, ConnectError> {
+) -> Result<(ClientId, Vec<(ClientId, String)>), ConnectError> {
     let timeout = Delay::new(Duration::from_secs(1));
     let connect_future = connect_without_timeout(&handle, destination, username);
     pin_mut!(connect_future);

@@ -176,6 +176,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "audiopus"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3743519567e9135cf6f9f1a509851cb0c8e4cb9d66feb286668afb1923bec458"
+dependencies = [
+ "audiopus_sys",
+]
+
+[[package]]
+name = "audiopus_sys"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "927791de46f70facea982dbfaf19719a41ce6064443403be631a85de6a58fff9"
+dependencies = [
+ "log",
+ "pkg-config",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -191,6 +210,7 @@ checksum = "904dfeac50f3cdaba28fc6f57fdcddb75f49ed61346676a78c4ffe55877802fd"
 name = "beep-cli"
 version = "0.1.0"
 dependencies = [
+ "audiopus",
  "voice-lib",
 ]
 
@@ -944,8 +964,11 @@ dependencies = [
 name = "loopback-cli"
 version = "0.1.0"
 dependencies = [
+ "audiopus",
  "dasp",
+ "slice-deque",
  "voice-device",
+ "voice-lib",
 ]
 
 [[package]]
@@ -1379,6 +1402,7 @@ name = "voice-app"
 version = "0.1.0"
 dependencies = [
  "async-std",
+ "audiopus",
  "dasp",
  "directories",
  "futures",
@@ -1393,6 +1417,7 @@ dependencies = [
  "mio",
  "serde",
  "serde_json",
+ "slice-deque",
  "voice-device",
  "voice-lib",
  "winapi",

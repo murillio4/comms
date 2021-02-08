@@ -1,3 +1,5 @@
+use audiopus::coder::Encoder;
+use audiopus::{Application, Channels, SampleRate};
 use std::io::{Read, Write};
 use std::net::{TcpStream, UdpSocket};
 use std::num::NonZeroU64;
@@ -104,6 +106,8 @@ fn main() -> Result<(), BeepClientErr> {
     let start = SystemTime::now();
     let mut sample_count: u128 = 0;
 
+    let encoder = Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::LowDelay)?;
+
     loop {
         std::thread::sleep(Duration::from_millis(3));
         let now = SystemTime::now();
@@ -118,11 +122,10 @@ fn main() -> Result<(), BeepClientErr> {
                 *sample = next_value()
             }
 
-            let bytes = chunk
-                .iter()
-                .flat_map(|sample| sample.to_le_bytes().to_vec())
-                .collect();
-            udp.send(&serializer.serialize(&AudioFromClient(bytes))?)?;
+            let mut opus_buffer = [0u8; 2048];
+            let size = encoder.encode_float(&chunk, &mut opus_buffer)?;
+            let opus_bytes = opus_buffer[..size].to_vec();
+            udp.send(&serializer.serialize(&AudioFromClient(opus_bytes))?)?;
         }
     }
 }
@@ -132,6 +135,7 @@ enum BeepClientErr {
     Usage,
     Io(io::Error),
     Serialize,
+    Opus,
 }
 
 impl From<io::Error> for BeepClientErr {
@@ -143,5 +147,11 @@ impl From<io::Error> for BeepClientErr {
 impl From<SerializeError> for BeepClientErr {
     fn from(_: SerializeError) -> Self {
         BeepClientErr::Serialize
+    }
+}
+
+impl From<audiopus::Error> for BeepClientErr {
+    fn from(_: audiopus::Error) -> Self {
+        BeepClientErr::Opus
     }
 }

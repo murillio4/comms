@@ -97,7 +97,7 @@ fn handle_udp_packet(
     match kind {
         packet::AudioToClient::KIND_ID => {
             let audio_to_client: Packet<AudioToClient> = parsed_packet.finish_parse()?;
-            audio_handle.send_audio(audio_to_client.body.author, &audio_to_client.body.bytes);
+            audio_handle.send_audio(audio_to_client.body.author, audio_to_client.body.bytes);
         }
         _ => {
             event_sender

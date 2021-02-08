@@ -13,7 +13,7 @@ use crate::audio::ipc::AudioHandle;
 use crate::network::future::{RequestError, SendResponse};
 use crate::network::{NextPollToken, WorkerInit};
 use voice_lib::packet::Hello;
-use voice_lib::AudioFrame;
+use voice_lib::OpusAudioFrame;
 
 #[derive(Debug)]
 pub enum NetworkEvent {
@@ -48,7 +48,7 @@ pub enum NetworkCommand {
         packet: OutgoingPacketFrame,
         send_response: Option<SendResponse<IncomingPacketFrame>>,
     },
-    SendAudio(Box<AudioFrame>),
+    SendAudio(OpusAudioFrame),
     Connect {
         destination: SocketAddr,
         send_response: SendResponse<Result<Hello, ConnectError>>,
@@ -118,7 +118,7 @@ impl NetworkHandle {
         self.waker.wake().unwrap();
     }
 
-    pub fn audio(&self, frame: Box<AudioFrame>) -> Result<(), CommsNetworkError> {
+    pub fn audio(&self, frame: OpusAudioFrame) -> Result<(), CommsNetworkError> {
         self.command(NetworkCommand::SendAudio(frame));
         Ok(())
     }
