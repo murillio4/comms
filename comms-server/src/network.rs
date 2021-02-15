@@ -1,11 +1,11 @@
 use crate::client::{AnyClientRef, Clients};
 use crate::task::EndpointError;
+use comms_lib::network::{Protocol, ServerUdpPacket, UdpConnection};
+use comms_lib::packet::{ClientId, PacketBody, PacketId};
+use comms_lib::serialization::OutgoingPacketFrame;
 use mio::Waker;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
-use voice_lib::network::{Protocol, ServerUdpPacket, UdpConnection};
-use voice_lib::packet::{ClientId, PacketBody, PacketId};
-use voice_lib::serialization::OutgoingPacketFrame;
 
 pub struct OutgoingQueue {
     receiver: Receiver<(Protocol, ClientId, OutgoingPacketFrame)>,

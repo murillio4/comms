@@ -1,11 +1,11 @@
 use crate::audio::buffer::{MicBuffer, Multiplexer, RcMultiplexer};
 use crate::audio::ipc::AudioReceiver;
 use crate::audio::platform::AudioPlatform;
-use std::ptr;
-use voice_device::wasapi::audio_connection::{WasapiAudioConnection, WasapiParameters};
-use voice_device::wasapi::event_loop::{
+use audio_device::wasapi::audio_connection::{WasapiAudioConnection, WasapiParameters};
+use audio_device::wasapi::event_loop::{
     WasapiEventLoop, WasapiEventLoopNotify, WasapiEventLoopRegistration,
 };
+use std::ptr;
 use winapi::um::synchapi;
 
 pub struct WasapiAudioPlatform;

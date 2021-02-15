@@ -1,18 +1,18 @@
 use crate::client::{Client, Clients};
 use crate::network::{NetworkHandle, SendPacket, Target};
 use crate::task::{EndpointResult, Spawner};
+use comms_lib::network::CommsNetworkError;
+use comms_lib::packet::{
+    AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, ClientId, Disconnect,
+    DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, Packet, PacketBody,
+    PacketId, UserJoined, UserLeft,
+};
+use comms_lib::serialization::{IncomingPacketFrame, SerializeError};
 use futures::future;
 use std::cell::RefCell;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use voice_lib::network::CommsNetworkError;
-use voice_lib::packet::{
-    AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, ClientId, Disconnect,
-    DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, Packet, PacketBody,
-    PacketId, UserJoined, UserLeft,
-};
-use voice_lib::serialization::{IncomingPacketFrame, SerializeError};
 
 pub struct Context {
     pub clients: Arc<RefCell<Clients>>,

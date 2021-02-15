@@ -1,9 +1,9 @@
+use comms_lib::network::TcpConnection;
+use comms_lib::packet::{ClientId, PacketId};
+use comms_lib::serialization::OutgoingPacketFrame;
 use mio::net::TcpStream;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
-use voice_lib::network::TcpConnection;
-use voice_lib::packet::{ClientId, PacketId};
-use voice_lib::serialization::OutgoingPacketFrame;
 
 pub struct NextPacketId(PacketId);
 

@@ -1,5 +1,5 @@
 [package]
-name = "voice-server"
+name = "comms-server"
 version = "0.1.0"
 authors = ["Mitchell Hentges <mitch9654@mozilla.com>"]
 edition = "2018"
@@ -8,5 +8,5 @@ edition = "2018"
 futures = "0.3"
 mio = { version = "0.7", features = ["tcp", "os-poll", "udp"] }
 
-[dependencies.voice-lib]
-path = "../voice-lib"
+[dependencies.comms-lib]
+path = "../comms-lib"

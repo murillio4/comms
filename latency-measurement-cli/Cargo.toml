@@ -7,5 +7,5 @@ edition = "2018"
 [dependencies]
 audio_thread_priority = "0.23.4"
 
-[dependencies.voice-device]
-path = "../voice-device"
+[dependencies.audio-device]
+path = "../audio-device"

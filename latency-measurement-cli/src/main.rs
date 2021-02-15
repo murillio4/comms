@@ -4,19 +4,19 @@ mod state;
 
 use crate::measurement::{create_measurement_pipeline, CalculateDelayMic, CalculateDelayPlayback};
 use crate::state::MeasureState;
+use audio_device::audio_connection::EventLoop;
+use audio_device::buffer::UnsharedPlaybackSource;
 use audio_thread_priority::promote_current_thread_to_real_time;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use voice_device::audio_connection::EventLoop;
-use voice_device::buffer::UnsharedPlaybackSource;
 
 #[cfg(unix)]
 fn create_event_loop(
     mic: CalculateDelayMic,
     playback: UnsharedPlaybackSource<CalculateDelayPlayback>,
 ) -> impl EventLoop {
-    use voice_device::pulseaudio::audio_connection::{PulseAudioConnection, PulseParameters};
+    use audio_device::pulseaudio::audio_connection::{PulseAudioConnection, PulseParameters};
     let parameters = PulseParameters {
         pulseaudio_server: Some("/run/user/1000/pulse/native".to_string()),
     };
@@ -28,8 +28,8 @@ fn create_event_loop(
     mic: CalculateDelayMic,
     playback: UnsharedPlaybackSource<CalculateDelayPlayback>,
 ) -> impl EventLoop {
-    use voice_device::wasapi::audio_connection::WasapiAudioConnection;
-    WasapiAudioConnection::create::<voice_device::buffer::NoopInterruptReceiver>(mic, playback)
+    use audio_device::wasapi::audio_connection::WasapiAudioConnection;
+    WasapiAudioConnection::create::<audio_device::buffer::NoopInterruptReceiver>(mic, playback)
         .create_event_loop()
 }
 

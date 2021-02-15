@@ -7,5 +7,5 @@ edition = "2018"
 [dependencies]
 audiopus = "0.2.0"
 
-[dependencies.voice-lib]
-path = "../voice-lib"
+[dependencies.comms-lib]
+path = "../comms-lib"

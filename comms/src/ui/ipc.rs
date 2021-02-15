@@ -1,4 +1,4 @@
-use voice_device::audio_connection::DeviceInfo;
+use audio_device::audio_connection::DeviceInfo;
 
 pub enum UICommand {
     AudioIPCReady,

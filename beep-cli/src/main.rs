@@ -1,15 +1,15 @@
 use audiopus::coder::Encoder;
 use audiopus::{Application, Channels, SampleRate};
+use comms_lib::packet::{
+    AssociateUdp, AssociateUdpAccepted, AudioFromClient, FinishConnect, FinishConnectAccepted,
+    Hello, Packet, PacketBody,
+};
+use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame, SerializeError};
 use std::io::{Read, Write};
 use std::net::{TcpStream, UdpSocket};
 use std::num::NonZeroU64;
 use std::time::{Duration, SystemTime};
 use std::{env, io};
-use voice_lib::packet::{
-    AssociateUdp, AssociateUdpAccepted, AudioFromClient, FinishConnect, FinishConnectAccepted,
-    Hello, Packet, PacketBody,
-};
-use voice_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame, SerializeError};
 
 fn read_next_tcp(tcp: &mut TcpStream) -> Result<IncomingPacketFrame, SerializeError> {
     let mut buffer = [0u8; 65535];
@@ -49,7 +49,7 @@ impl BeepPacketSerializer {
 
 fn main() -> Result<(), BeepClientErr> {
     #[cfg(windows)]
-    voice_lib::winlib::bump_priority();
+    comms_lib::winlib::bump_priority();
     let mut serializer = BeepPacketSerializer::new();
 
     let mut args = env::args().take(3).skip(1);

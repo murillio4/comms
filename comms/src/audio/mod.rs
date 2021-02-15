@@ -8,8 +8,8 @@ pub use crate::audio::platform::AudioPlatform;
 use crate::network::ipc::NetworkHandle;
 use crate::network::SendToNetworkThreadError;
 use crate::ui::ipc::UICommand;
+use audio_device::audio_connection::EventLoop;
 use std::sync::mpsc::{Receiver, Sender};
-use voice_device::audio_connection::EventLoop;
 
 #[cfg(windows)]
 mod wasapi;

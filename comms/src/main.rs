@@ -34,7 +34,7 @@ fn main() {
 
     std::thread::spawn(move || {
         #[cfg(windows)]
-        voice_lib::winlib::bump_priority();
+        comms_lib::winlib::bump_priority();
         if let Err(e) = Worker::new()
             .map_err(|e| NetworkError::Io(Some(e)))
             .and_then(|w| w.run(network_worker_init))
@@ -50,7 +50,7 @@ fn main() {
         let network_handle = network_handle.clone();
         std::thread::spawn(move || {
             #[cfg(windows)]
-            voice_lib::winlib::bump_priority();
+            comms_lib::winlib::bump_priority();
             if let Err(e) = audio::run(
                 parameters,
                 network_handle,

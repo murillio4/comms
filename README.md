@@ -3,7 +3,7 @@
 ## Linux Build Instructions
 
 1. Install `rust`, GTK3 libs, opus libs
-2. From `voice-app`, run `cargo run`
+2. From `comms`, run `cargo run`
 
 ## Windows Build Instructions
 
@@ -14,4 +14,4 @@
     * `GTK_LIB_DIR` should be `C:\msys64\mingw64\lib`
     * `PATH` should now include `C:\msys64\mingw64\bin`
 5. Tell Rust to use the `gnu` toolchain so it can find GTK and opus: `rustup default stable-x86_64-pc-windows-gnu`
-6. From `voice-app`, run `cargo run`
+6. From `comms`, run `cargo run`

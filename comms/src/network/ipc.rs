@@ -6,14 +6,14 @@ use std::{fmt, io};
 
 use mio::{Poll, Waker};
 
-use voice_lib::network::{CommsNetworkError, Protocol};
-use voice_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
+use comms_lib::network::{CommsNetworkError, Protocol};
+use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
 use crate::audio::ipc::AudioHandle;
 use crate::network::future::{RequestError, SendResponse};
 use crate::network::{NextPollToken, WorkerInit};
-use voice_lib::packet::Hello;
-use voice_lib::OpusAudioFrame;
+use comms_lib::packet::Hello;
+use comms_lib::OpusAudioFrame;
 
 #[derive(Debug)]
 pub enum NetworkEvent {

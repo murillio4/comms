@@ -4,8 +4,8 @@ members = [
     "beep-cli",
     "loopback-cli",
     "latency-measurement-cli",
-    "voice-app",
-    "voice-device",
-    "voice-lib",
-    "voice-server",
+    "comms",
+    "audio-device",
+    "comms-lib",
+    "comms-server",
 ]

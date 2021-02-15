@@ -1,14 +1,14 @@
 use crate::network::ipc::NetworkHandle;
+use audio_device::buffer::{MaybeSharedPlaybackSource, MicSink, PlaybackSource};
 use audiopus::coder::{Decoder, Encoder};
 use audiopus::{Application, Channels};
+use comms_lib::packet::ClientId;
+use comms_lib::OpusAudioFrame;
 use dasp::Sample;
 use glib::bitflags::_core::cell::RefCell;
 use slice_deque::SliceDeque;
 use std::collections::HashMap;
 use std::rc::Rc;
-use voice_device::buffer::{MaybeSharedPlaybackSource, MicSink, PlaybackSource};
-use voice_lib::packet::ClientId;
-use voice_lib::OpusAudioFrame;
 
 struct ClientQueue {
     decoder: Decoder,

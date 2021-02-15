@@ -1,15 +1,15 @@
 use std::sync::mpsc::{Receiver, SendError, Sender};
 
 use crate::ui::ipc::UICommand;
+use comms_lib::packet::ClientId;
 use std::fmt;
 use std::fmt::{Display, Formatter};
-use voice_lib::packet::ClientId;
 
 use crate::audio::buffer::RcMultiplexer;
 use crate::audio::{AudioPlatform, AudioPlatformImpl};
-use voice_device::audio_connection::{AudioConnection, EventLoopNotify};
-use voice_device::buffer::{InterruptReceiver, MaybeSharedPlaybackSource};
-use voice_lib::OpusAudioFrame;
+use audio_device::audio_connection::{AudioConnection, EventLoopNotify};
+use audio_device::buffer::{InterruptReceiver, MaybeSharedPlaybackSource};
+use comms_lib::OpusAudioFrame;
 
 pub enum AudioCommand {
     NewClient(ClientId),

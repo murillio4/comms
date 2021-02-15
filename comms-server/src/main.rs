@@ -13,6 +13,11 @@ use crate::endpoints::{
 };
 use crate::network::{NetworkHandle, SendPacket, Target};
 use crate::task::EndpointResult;
+use comms_lib::network::{CommsNetworkError, UdpConnection};
+use comms_lib::packet;
+use comms_lib::packet::ClientId;
+#[cfg(windows)]
+use comms_lib::winlib::bump_priority;
 use mio::net::TcpListener;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token, Waker};
@@ -20,11 +25,6 @@ use std::cell::RefCell;
 use std::io;
 use std::io::Error;
 use std::sync::Arc;
-use voice_lib::network::{CommsNetworkError, UdpConnection};
-use voice_lib::packet;
-use voice_lib::packet::ClientId;
-#[cfg(windows)]
-use voice_lib::winlib::bump_priority;
 
 mod client;
 mod endpoints;

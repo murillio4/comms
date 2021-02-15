@@ -7,14 +7,14 @@ use gio::prelude::*;
 use gtk::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use voice_lib::packet::{Packet, PacketBody, UserJoined, UserLeft};
+use comms_lib::packet::{Packet, PacketBody, UserJoined, UserLeft};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network;
 use crate::network::ipc::{ConnectError, NetworkEvent, NetworkHandle};
 use crate::ui::ipc::UICommand;
+use comms_lib::network::CommsNetworkError;
 use glib::timeout_add_local;
-use voice_lib::network::CommsNetworkError;
 
 pub mod ipc;
 

@@ -15,12 +15,12 @@ use futures_timer::Delay;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use voice_lib::network::{CommsNetworkError, Protocol};
-use voice_lib::packet::{
+use comms_lib::network::{CommsNetworkError, Protocol};
+use comms_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted, Packet,
     PacketBody,
 };
-use voice_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
+use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
 use crate::network::ipc::{ConnectError, NetworkCommand, NetworkHandle};
 

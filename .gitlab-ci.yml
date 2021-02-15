@@ -40,8 +40,8 @@ build_release_linux:
   artifacts:
     paths:
       - target/release/beep-cli
-      - target/release/voice-app
-      - target/release/voice-server
+      - target/release/comms
+      - target/release/comms-server
   tags:
     - linux
 
@@ -57,8 +57,8 @@ build_release_windows:
   artifacts:
     paths:
       - target/release/beep-cli.exe
-      - target/release/voice-app.exe
-      - target/release/voice-server.exe
+      - target/release/comms.exe
+      - target/release/comms-server.exe
   # There's no Windows worker at the moment
   when: manual
   tags:

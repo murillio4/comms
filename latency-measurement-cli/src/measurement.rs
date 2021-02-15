@@ -1,9 +1,9 @@
 use crate::state::MeasureState;
+use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use std::collections::VecDeque;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use voice_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 
 pub struct CalculateDelayMic {
     tx: Sender<Duration>,

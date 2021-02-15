@@ -1,8 +1,8 @@
 use crate::audio::buffer::{MicBuffer, RcMultiplexer};
 use crate::audio::ipc::AudioReceiver;
 use crate::audio::platform::AudioPlatform;
-use voice_device::pulseaudio::audio_connection::{PulseAudioConnection, PulseParameters};
-use voice_device::pulseaudio::event_loop::{
+use audio_device::pulseaudio::audio_connection::{PulseAudioConnection, PulseParameters};
+use audio_device::pulseaudio::event_loop::{
     PulseEventLoop, PulseEventLoopNotify, PulseEventLoopRegistration,
 };
 

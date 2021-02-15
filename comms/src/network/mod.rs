@@ -8,12 +8,12 @@ use mio::net::TcpStream;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token};
 
-use voice_lib::network::{
+use comms_lib::network::{
     ClientUdpPacket, CommsNetworkError, Protocol, TcpConnection, UdpConnection,
 };
-use voice_lib::packet;
-use voice_lib::packet::{AudioFromClient, AudioToClient, Hello, Packet, PacketBody};
-use voice_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
+use comms_lib::packet;
+use comms_lib::packet::{AudioFromClient, AudioToClient, Hello, Packet, PacketBody};
+use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network::future::SendResponse;

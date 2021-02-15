@@ -1,7 +1,7 @@
+use audio_device::audio_connection::EventLoop;
+use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use dasp::Sample;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use voice_device::audio_connection::EventLoop;
-use voice_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 
 pub struct MicForLoopback {
     sender: Sender<f32>,
@@ -38,7 +38,7 @@ fn create_event_loop(
     mic: MicForLoopback,
     playback: UnsharedPlaybackSource<PlaybackForLoopback>,
 ) -> impl EventLoop {
-    use voice_device::pulseaudio::audio_connection::{PulseAudioConnection, PulseParameters};
+    use audio_device::pulseaudio::audio_connection::{PulseAudioConnection, PulseParameters};
     let parameters = PulseParameters {
         pulseaudio_server: Some("/run/user/1000/pulse/native".to_string()),
     };
@@ -50,9 +50,9 @@ fn create_event_loop(
     mic: MicForLoopback,
     playback: UnsharedPlaybackSource<PlaybackForLoopback>,
 ) -> impl EventLoop {
-    voice_lib::winlib::bump_priority();
-    use voice_device::wasapi::audio_connection::WasapiAudioConnection;
-    WasapiAudioConnection::create::<voice_device::buffer::NoopInterruptReceiver>(mic, playback)
+    comms_lib::winlib::bump_priority();
+    use audio_device::wasapi::audio_connection::WasapiAudioConnection;
+    WasapiAudioConnection::create::<audio_device::buffer::NoopInterruptReceiver>(mic, playback)
         .create_event_loop()
 }
 

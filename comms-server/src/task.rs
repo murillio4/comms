@@ -1,3 +1,4 @@
+use comms_lib::packet::PacketKind;
 use futures::task::{waker_ref, ArcWake, Context, Poll};
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -7,7 +8,6 @@ use std::pin::Pin;
 use std::rc::{Rc, Weak};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::sync::Arc;
-use voice_lib::packet::PacketKind;
 
 type EndpointFuture = dyn Future<Output = EndpointResult> + 'static;
 
