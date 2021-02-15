@@ -284,6 +284,8 @@ fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
     application.run(&std::env::args().collect::<Vec<_>>());
 }
 
+static RESOURCES_DIR: include_dir::Dir = include_dir::include_dir!("resources");
+
 pub fn run(
     network: NetworkHandle,
     network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
@@ -313,7 +315,12 @@ pub fn run(
 
     gtk_start(move |app| {
         let stack = gtk::Stack::new();
-        let builder = gtk::Builder::from_file("resources/app.ui");
+        let raw_app_ui = RESOURCES_DIR
+            .get_file("app.ui")
+            .unwrap()
+            .contents_utf8()
+            .unwrap();
+        let builder = gtk::Builder::from_string(raw_app_ui);
         let ui = Rc::new(RefCell::new(UiModel {
             state: UiState::ChooseServer,
             pane_stack: stack.clone(),
@@ -328,16 +335,22 @@ pub fn run(
             ui.clone(),
         ));
 
-        let logo_16 = gdk_pixbuf::Pixbuf::from_file("resources/logo-16.png").unwrap();
-        let logo_32 = gdk_pixbuf::Pixbuf::from_file("resources/logo-32.png").unwrap();
-        let logo_48 = gdk_pixbuf::Pixbuf::from_file("resources/logo-48.png").unwrap();
-        let logo_256 = gdk_pixbuf::Pixbuf::from_file("resources/logo-256.png").unwrap();
+        let create_icon = |name| {
+            let stream =
+                gio::ReadInputStream::new(RESOURCES_DIR.get_file(name).unwrap().contents());
+            gdk_pixbuf::Pixbuf::from_stream::<_, gio::Cancellable>(&stream, None).unwrap()
+        };
 
         let window = gtk::ApplicationWindow::new(app);
         window.set_title("Comms");
         window.set_default_size(280, 250);
         window.set_position(gtk::WindowPosition::Center);
-        window.set_icon_list(&[logo_16, logo_32, logo_48, logo_256]);
+        window.set_icon_list(&[
+            create_icon("logo-16.png"),
+            create_icon("logo-32.png"),
+            create_icon("logo-48.png"),
+            create_icon("logo-256.png"),
+        ]);
 
         stack.set_transition_duration(300);
 
