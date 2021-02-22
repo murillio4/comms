@@ -56,8 +56,18 @@ impl OutgoingQueue {
         udp.write_until_blocked().unwrap();
 
         let mut failures = Vec::new();
-        for (client_id, client) in clients.established.iter_mut() {
-            if client.connection.tcp.write_until_blocked().is_err() {
+        for (client_id, connection) in clients
+            .established
+            .iter_mut()
+            .map(|(client_id, client)| (client_id, &mut client.connection))
+            .chain(
+                clients
+                    .connecting
+                    .iter_mut()
+                    .map(|(client_id, client)| (client_id, &mut client.connection)),
+            )
+        {
+            if connection.tcp.write_until_blocked().is_err() {
                 failures.push(*client_id);
             }
         }
