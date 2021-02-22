@@ -89,6 +89,10 @@ impl TcpConnection {
             next_incoming_header: &mut self.next_incoming_header,
         }
     }
+
+    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.stream.peer_addr()
+    }
 }
 
 pub trait UdpPacket {

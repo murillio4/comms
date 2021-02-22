@@ -83,6 +83,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
                 )?]
             }
             Some(addr) => {
+                println!("[{:?}] \"{}\" has connected", &addr, &packet.body.name);
                 let other_clients = clients.established.keys().copied().collect();
                 clients.established.insert(
                     context.client_id,
@@ -139,6 +140,23 @@ async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> EndpointRes
 }
 
 async fn close_connection(context: Context, reason: CloseConnectionReason) -> EndpointResult {
+    {
+        let clients = context.clients.borrow_mut();
+        if let Some((name, addr)) = clients
+            .connecting
+            .get(&context.client_id)
+            .map(|c| ("<unknown>".to_string(), c.connection.tcp.peer_addr()))
+            .or_else(|| {
+                clients
+                    .established
+                    .get(&context.client_id)
+                    .map(|c| (c.username.clone(), c.connection.tcp.peer_addr()))
+            })
+        {
+            println!("[{:?}] \"{}\" has disconnected", &addr, &name);
+        }
+    }
+
     if reason == CloseConnectionReason::MalformedData {
         let outgoing = SendPacket::tcp(
             Target::One(context.client_id),
