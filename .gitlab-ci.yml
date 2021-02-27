@@ -23,8 +23,6 @@ build_windows:
     - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo test
     - cargo build --all
-  # There's no Windows worker at the moment
-  when: manual
   tags:
     - windows
 
@@ -59,8 +57,6 @@ build_release_windows:
       - target/release/beep-cli.exe
       - target/release/comms.exe
       - target/release/comms-server.exe
-  # There's no Windows worker at the moment
-  when: manual
   tags:
     - windows
 
