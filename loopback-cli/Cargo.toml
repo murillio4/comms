@@ -12,9 +12,14 @@ path = "src/loopback.rs"
 name = "opus"
 path = "src/opus.rs"
 
+[[bin]]
+name = "nnnoiseless"
+path = "src/nnnoiseless.rs"
+
 [dependencies]
 audiopus = "0.2.0"
 dasp = "0.11.0"
+nnnoiseless = "0.3.2"
 slice-deque = "0.3.0"
 
 [dependencies.audio-device]
