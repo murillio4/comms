@@ -106,9 +106,9 @@ impl NetworkHandle {
                 audio_handle,
                 event_sender,
                 command_receiver,
+                poll,
                 command_token,
                 next_poll_token,
-                poll,
             },
         )
     }

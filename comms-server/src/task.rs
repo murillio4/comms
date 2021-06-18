@@ -91,7 +91,7 @@ impl TaskExecutor {
         loop {
             match self.waker_queue.try_recv() {
                 Err(e) if e == TryRecvError::Empty => break,
-                Err(e) => panic!(e),
+                Err(e) => panic!("{}", e),
                 Ok(futures_waker) => {
                     let mut future = {
                         let mut arena = self.arena.borrow_mut();
@@ -111,7 +111,7 @@ impl TaskExecutor {
                             let mut arena = self.arena.borrow_mut();
                             arena.tokens.push(futures_waker.token.clone());
                             if let Err(e) = result {
-                                panic!(format!("Packet-handling function failed: {:?}", e));
+                                panic!("Packet-handling function failed: {:?}", e);
                             }
                         }
                     }
@@ -128,7 +128,7 @@ struct FutureWaker {
 
 impl FutureWaker {
     fn new(token: ArenaToken, scheduler: Scheduler) -> Self {
-        Self { token, scheduler }
+        Self { scheduler, token }
     }
 }
 

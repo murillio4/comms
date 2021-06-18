@@ -288,8 +288,8 @@ pub fn handle_udp_packet(
         spawner,
         packet,
         Context {
-            client_id,
             clients,
+            client_id,
             network_handle,
         },
     )

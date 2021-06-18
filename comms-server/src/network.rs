@@ -118,8 +118,8 @@ impl SendPacket {
         let packet = OutgoingPacketFrame::from_packet(reply_to, &packet)
             .map_err(|_| EndpointError::SerializeFailed { kind: B::KIND_ID })?;
         Ok(Self {
-            protocol,
             destination,
+            protocol,
             packet,
         })
     }

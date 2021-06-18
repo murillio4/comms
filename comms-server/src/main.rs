@@ -120,7 +120,7 @@ fn main() -> Result<(), CommsServerError> {
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             break;
                         }
-                        Err(e) => panic!(e),
+                        Err(e) => panic!("{}", e),
                     };
                     let client_id = next_client_id() as ClientId;
                     let token = Token(client_id as usize);

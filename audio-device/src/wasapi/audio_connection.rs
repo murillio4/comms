@@ -53,10 +53,10 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>>
         );
         playback_stream.raw_stream.start();
         WasapiEventLoopBuilder::new(Self {
-            mic_sink,
             mic_stream,
             playback_stream,
             playback_source,
+            mic_sink,
         })
     }
 }

@@ -61,8 +61,8 @@ pub fn is_format_supported(
 
 pub fn format_to_waveformatextensible(format: &Format) -> Option<mmreg::WAVEFORMATEXTENSIBLE> {
     let format_tag = match format.data_type {
-        SampleFormat::I16 => MmregFormat::PCM,
-        SampleFormat::F32 => MmregFormat::EXTENSIBLE,
+        SampleFormat::I16 => MmregFormat::Pcm,
+        SampleFormat::F32 => MmregFormat::Extensible,
     };
     let channels = format.channels as WORD;
     let sample_rate = format.sample_rate.0 as DWORD;
@@ -71,8 +71,8 @@ pub fn format_to_waveformatextensible(format: &Format) -> Option<mmreg::WAVEFORM
     let block_align = channels * sample_bytes;
     let bits_per_sample = 8 * sample_bytes;
     let cb_size = match format_tag {
-        MmregFormat::PCM => 0,
-        MmregFormat::EXTENSIBLE => {
+        MmregFormat::Pcm => 0,
+        MmregFormat::Extensible => {
             let extensible_size = mem::size_of::<mmreg::WAVEFORMATEXTENSIBLE>();
             let ex_size = mem::size_of::<mmreg::WAVEFORMATEX>();
             (extensible_size - ex_size) as WORD
@@ -92,8 +92,8 @@ pub fn format_to_waveformatextensible(format: &Format) -> Option<mmreg::WAVEFORM
     let channel_mask = KSAUDIO_SPEAKER_DIRECTOUT;
 
     let sub_format = match format_tag {
-        MmregFormat::PCM => ksmedia::KSDATAFORMAT_SUBTYPE_PCM,
-        MmregFormat::EXTENSIBLE => ksmedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
+        MmregFormat::Pcm => ksmedia::KSDATAFORMAT_SUBTYPE_PCM,
+        MmregFormat::Extensible => ksmedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
     };
     let waveformatextensible = mmreg::WAVEFORMATEXTENSIBLE {
         Format: waveformatex,
@@ -148,15 +148,15 @@ impl Drop for WaveFormatExPtr {
 }
 
 enum MmregFormat {
-    PCM,
-    EXTENSIBLE,
+    Pcm,
+    Extensible,
 }
 
 impl MmregFormat {
     fn as_word(&self) -> WORD {
         match self {
-            MmregFormat::PCM => mmreg::WAVE_FORMAT_PCM,
-            MmregFormat::EXTENSIBLE => mmreg::WAVE_FORMAT_EXTENSIBLE,
+            MmregFormat::Pcm => mmreg::WAVE_FORMAT_PCM,
+            MmregFormat::Extensible => mmreg::WAVE_FORMAT_EXTENSIBLE,
         }
     }
 }

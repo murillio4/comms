@@ -333,10 +333,9 @@ impl<'a, U: UdpPacket> Iterator for UdpReadIter<'a, U> {
     type Item = Result<U::IncomingPacket, SerializeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.incoming_packets.pop_front() {
-            None => None,
-            Some(udp_packet) => Some(udp_packet.into_incoming_packet()),
-        }
+        self.incoming_packets
+            .pop_front()
+            .map(|udp_packet| udp_packet.into_incoming_packet())
     }
 }
 

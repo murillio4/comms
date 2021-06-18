@@ -266,7 +266,7 @@ impl IMMDeviceWrapper {
                 return None;
             }
             Err(e) => {
-                panic!(e) // hmm, should we bubble up the error instead?
+                panic!("{}", e) // hmm, should we bubble up the error instead?
             }
             Ok(()) => (),
         };
@@ -284,7 +284,7 @@ impl IMMDeviceWrapper {
         };
         match com::check_result(hres) {
             Err(e) => {
-                panic!(e)
+                panic!("{}", e)
             }
             Ok(()) => (),
         }
