@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use directories::ProjectDirs;
 use futures::stream::StreamExt;
@@ -26,7 +27,7 @@ enum Columns {
 }
 
 fn initialize_user_list(treeview: &gtk::TreeView) -> gtk::ListStore {
-    let col_types: [glib::Type; 2] = [glib::Type::U32, glib::Type::String];
+    let col_types: [glib::Type; 2] = [glib::Type::U32, glib::Type::STRING];
 
     let user_list_model = gtk::ListStore::new(&col_types);
     treeview.set_model(Some(&user_list_model));
@@ -43,17 +44,15 @@ async fn try_connect(audio_handle: AudioHandle, network: NetworkHandle, ui: Rc<R
     let old_state = ui.borrow().state.clone();
     if let UiState::ChooseServer = old_state {
         let builder = ui.borrow().builder.clone();
-        let username_entry: gtk::Entry = builder.get_object("username_entry").unwrap();
-        let server_entry: gtk::Entry = builder.get_object("server_entry").unwrap();
-        let connect_button: gtk::Button = builder.get_object("connect_button").unwrap();
-        let connect_progress_stack: gtk::Stack =
-            builder.get_object("connect_progress_stack").unwrap();
-        let connect_progress: gtk::ProgressBar = builder.get_object("connect_progress").unwrap();
-        let connect_failure_status: gtk::Label =
-            builder.get_object("connect_failure_status").unwrap();
+        let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
+        let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
+        let connect_button: gtk::Button = builder.object("connect_button").unwrap();
+        let connect_progress_stack: gtk::Stack = builder.object("connect_progress_stack").unwrap();
+        let connect_progress: gtk::ProgressBar = builder.object("connect_progress").unwrap();
+        let connect_failure_status: gtk::Label = builder.object("connect_failure_status").unwrap();
 
-        let username: String = username_entry.get_buffer().get_text();
-        let server: String = server_entry.get_buffer().get_text();
+        let username: String = username_entry.buffer().text();
+        let server: String = server_entry.buffer().text();
         if username.is_empty() || server.is_empty() {
             connect_failure_status.set_text("Set both username and server");
             return;
@@ -68,7 +67,7 @@ async fn try_connect(audio_handle: AudioHandle, network: NetworkHandle, ui: Rc<R
         let finished = Rc::new(Cell::new(false));
         {
             let finished = finished.clone();
-            timeout_add_local(80, move || {
+            timeout_add_local(Duration::from_millis(80), move || {
                 if !finished.get() {
                     connect_progress.pulse();
                     Continue(true)
@@ -108,17 +107,21 @@ async fn try_connect(audio_handle: AudioHandle, network: NetworkHandle, ui: Rc<R
                         .unwrap()
                 }
 
-                let col_indices: [u32; 2] = [Columns::Id as u32, Columns::Username as u32];
-
                 let mut ui = ui.borrow_mut();
-                let status_treeview = ui.builder.get_object("status_treeview").unwrap();
+                let status_treeview = ui.builder.object("status_treeview").unwrap();
                 let user_list_model = initialize_user_list(&status_treeview);
 
-                let values: [&dyn ToValue; 2] = [&(client_id as u32), &username];
-                user_list_model.insert_with_values(None, &col_indices, &values);
+                let values: [(u32, &dyn ToValue); 2] = [
+                    (Columns::Id as u32, &(client_id as u32)),
+                    (Columns::Username as u32, &username),
+                ];
+                user_list_model.insert_with_values(None, &values);
                 for (id, user) in users.iter() {
-                    let values: [&dyn ToValue; 2] = [&(*id as u32), &user];
-                    user_list_model.insert_with_values(None, &col_indices, &values);
+                    let values: [(u32, &dyn ToValue); 2] = [
+                        (Columns::Id as u32, &(*id as u32)),
+                        (Columns::Username as u32, &user),
+                    ];
+                    user_list_model.insert_with_values(None, &values);
                 }
 
                 ui.pane_stack
@@ -195,7 +198,7 @@ async fn handle_network_events(
 
                     let builder = &ui.borrow().builder;
                     let connect_failure_status: gtk::Label =
-                        builder.get_object("connect_failure_status").unwrap();
+                        builder.object("connect_failure_status").unwrap();
                     connect_failure_status
                         .set_text("Disconnecting from the server because the socket closed");
                 }
@@ -206,7 +209,7 @@ async fn handle_network_events(
 
                     let builder = &ui.borrow().builder;
                     let connect_failure_status: gtk::Label =
-                        builder.get_object("connect_failure_status").unwrap();
+                        builder.object("connect_failure_status").unwrap();
                     connect_failure_status
                         .set_text("Disconnecting from the server because of a network issue");
                 }
@@ -220,12 +223,12 @@ async fn handle_network_events(
                                 audio
                                     .send(AudioCommand::NewClient(packet.body.client_id))
                                     .unwrap();
-                                let col_indices: [u32; 2] =
-                                    [Columns::Id as u32, Columns::Username as u32];
                                 user_list_model.set(
                                     &user_list_model.append(),
-                                    &col_indices,
-                                    &[&(packet.body.client_id as u32), &packet.body.name],
+                                    &[
+                                        (Columns::Id as u32, &(packet.body.client_id as u32)),
+                                        (Columns::Username as u32, &packet.body.name),
+                                    ],
                                 );
                             }
                             UserLeft::KIND_ID => {
@@ -235,11 +238,11 @@ async fn handle_network_events(
                                     .unwrap();
 
                                 let id = packet.body.client_id as u32;
-                                let iter = user_list_model.get_iter_first().unwrap();
+                                let iter = user_list_model.iter_first().unwrap();
                                 loop {
                                     let value = user_list_model
-                                        .get_value(&iter, Columns::Id as i32)
-                                        .get_some::<u32>()
+                                        .value(&iter, Columns::Id as i32)
+                                        .get::<u32>()
                                         .unwrap();
                                     if value == id {
                                         user_list_model.remove(&iter);
@@ -259,7 +262,7 @@ async fn handle_network_events(
                     if result.is_err() {
                         let builder = &ui.borrow().builder;
                         let connect_failure_status: gtk::Label =
-                            builder.get_object("connect_failure_status").unwrap();
+                            builder.object("connect_failure_status").unwrap();
                         connect_failure_status
                             .set_text("Disconnecting from the server because of a network issue");
                     }
@@ -270,8 +273,7 @@ async fn handle_network_events(
 }
 
 fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
-    let application =
-        gtk::Application::new(Some("ca.mitchhentges.comms"), Default::default()).unwrap();
+    let application = gtk::Application::new(Some("ca.mitchhentges.comms"), Default::default());
 
     let o = RefCell::new(Some(f));
     application.connect_startup(move |a| {
@@ -281,7 +283,7 @@ fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
         }
     });
     application.connect_activate(|_| {});
-    application.run(&std::env::args().collect::<Vec<_>>());
+    application.run();
 }
 
 static RESOURCES_DIR: include_dir::Dir = include_dir::include_dir!("resources");
@@ -356,9 +358,9 @@ pub fn run(
 
         // --- Setup for connect-to-server state
         if let Some(initial_storage) = initial_local_storage {
-            let username_entry: gtk::Entry = builder.get_object("username_entry").unwrap();
+            let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
             username_entry.set_text(&initial_storage.username);
-            let server_entry: gtk::Entry = builder.get_object("server_entry").unwrap();
+            let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
             server_entry.set_text(&initial_storage.server);
         }
 
@@ -372,7 +374,7 @@ pub fn run(
             }))
         };
 
-        let connect_button: gtk::Button = builder.get_object("connect_button").unwrap();
+        let connect_button: gtk::Button = builder.object("connect_button").unwrap();
         {
             let submit_connection_form = submit_connection_form.clone();
             connect_button.connect_clicked(move |_| {
@@ -381,7 +383,7 @@ pub fn run(
             });
         }
 
-        let username_entry: gtk::Entry = builder.get_object("username_entry").unwrap();
+        let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
         {
             let submit_connection_form = submit_connection_form.clone();
             username_entry.connect_activate(move |_| {
@@ -390,17 +392,17 @@ pub fn run(
             });
         }
 
-        let server_entry: gtk::Entry = builder.get_object("server_entry").unwrap();
+        let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
         server_entry.connect_activate(move |_| {
             let submit_fn = &mut *submit_connection_form.borrow_mut();
             submit_fn();
         });
-        let connect_form: gtk::Box = builder.get_object("connect_form").unwrap();
+        let connect_form: gtk::Box = builder.object("connect_form").unwrap();
         stack.add_named(&connect_form, "connect");
 
         // --- Setup for main state
 
-        let treeview: gtk::TreeView = builder.get_object("status_treeview").unwrap();
+        let treeview: gtk::TreeView = builder.object("status_treeview").unwrap();
         let renderer = gtk::CellRendererText::new();
         let column = gtk::TreeViewColumn::new();
         column.pack_start(&renderer, true);
@@ -408,8 +410,7 @@ pub fn run(
         column.add_attribute(&renderer, "text", Columns::Username as i32);
         treeview.append_column(&column);
 
-        let disconnect_menu_item: gtk::MenuItem =
-            builder.get_object("disconnect_menu_item").unwrap();
+        let disconnect_menu_item: gtk::MenuItem = builder.object("disconnect_menu_item").unwrap();
         disconnect_menu_item.connect_activate(move |_| {
             glib_context.spawn_local(disconnect_from_server(
                 ui.clone(),
@@ -418,8 +419,8 @@ pub fn run(
             ));
         });
 
-        let inputs_submenu: gtk::Menu = builder.get_object("inputs_submenu").unwrap();
-        let outputs_submenu: gtk::Menu = builder.get_object("outputs_submenu").unwrap();
+        let inputs_submenu: gtk::Menu = builder.object("inputs_submenu").unwrap();
+        let outputs_submenu: gtk::Menu = builder.object("outputs_submenu").unwrap();
 
         for (device_count, device) in input_devices.into_iter().enumerate() {
             let input_menu_item: gtk::MenuItem =
@@ -441,7 +442,7 @@ pub fn run(
             outputs_submenu.attach(&output_menu_item, 0, 1, device_count, device_count + 1);
         }
 
-        let status_box: gtk::Box = builder.get_object("status_box").unwrap();
+        let status_box: gtk::Box = builder.object("status_box").unwrap();
         stack.add_named(&status_box, "status");
 
         window.add(&stack);
