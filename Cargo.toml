@@ -7,5 +7,6 @@ members = [
     "comms-lib",
     "comms-server",
     "latency-measurement-cli",
+    "live-noise-gate-ui",
     "loopback-cli",
 ]

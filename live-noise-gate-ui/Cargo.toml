@@ -1,0 +1,20 @@
+[package]
+name = "live-noise-gate-ui"
+version = "0.1.0"
+authors = ["Mitchell Hentges <mitch9654@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+dasp = "0.11.0"
+eframe = "0.15.0"
+ringbuffer = "0.8.2"
+slice-deque = "0.3.0"
+
+[dependencies.audio-device]
+path = "../audio-device"
+
+[dependencies.comms-lib]
+path = "../comms-lib"
+
+[dependencies.loopback-cli]
+path = "../loopback-cli"
