@@ -1,7 +1,10 @@
+use crate::event_loop::create_event_loop;
 use audio_device::audio_connection::EventLoop;
 use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use dasp::Sample;
 use std::sync::mpsc::{channel, Receiver, Sender};
+
+mod event_loop;
 
 pub struct MicForLoopback {
     sender: Sender<f32>,
@@ -31,29 +34,6 @@ pub fn create_pipeline() -> (MicForLoopback, UnsharedPlaybackSource<PlaybackForL
         MicForLoopback { sender: tx },
         UnsharedPlaybackSource(PlaybackForLoopback { receiver: rx }),
     )
-}
-
-#[cfg(unix)]
-fn create_event_loop(
-    mic: MicForLoopback,
-    playback: UnsharedPlaybackSource<PlaybackForLoopback>,
-) -> impl EventLoop {
-    use audio_device::pulseaudio::audio_connection::{PulseAudioConnection, PulseParameters};
-    let parameters = PulseParameters {
-        pulseaudio_server: Some("/run/user/1000/pulse/native".to_string()),
-    };
-    PulseAudioConnection::create(parameters, mic, playback).create_event_loop()
-}
-
-#[cfg(windows)]
-fn create_event_loop(
-    mic: MicForLoopback,
-    playback: UnsharedPlaybackSource<PlaybackForLoopback>,
-) -> impl EventLoop {
-    comms_lib::winlib::bump_priority();
-    use audio_device::wasapi::audio_connection::WasapiAudioConnection;
-    WasapiAudioConnection::create::<audio_device::buffer::NoopInterruptReceiver>(mic, playback)
-        .create_event_loop()
 }
 
 fn main() {

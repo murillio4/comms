@@ -9,17 +9,22 @@ name = "loopback"
 path = "src/loopback.rs"
 
 [[bin]]
-name = "opus"
-path = "src/opus.rs"
+name = "noise-gate"
+path = "src/noise_gate.rs"
 
 [[bin]]
 name = "nnnoiseless"
 path = "src/nnnoiseless.rs"
 
+[[bin]]
+name = "opus"
+path = "src/opus.rs"
+
 [dependencies]
 audiopus = "0.2.0"
 dasp = "0.11.0"
 nnnoiseless = "0.3.2"
+ringbuffer = "0.8.2"
 slice-deque = "0.3.0"
 
 [dependencies.audio-device]
