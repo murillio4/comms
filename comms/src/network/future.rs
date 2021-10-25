@@ -50,7 +50,7 @@ async fn connect_without_timeout(
     .await?;
 
     let _: Packet<AssociateUdpAccepted> = request_expect(
-        &handle,
+        handle,
         Protocol::Udp,
         None,
         AssociateUdp {
@@ -60,7 +60,7 @@ async fn connect_without_timeout(
     .await?;
 
     let connect_accepted: Packet<FinishConnectAccepted> = request_expect(
-        &handle,
+        handle,
         Protocol::Tcp,
         None,
         FinishConnect { name: username },
@@ -75,7 +75,7 @@ pub async fn connect(
     username: String,
 ) -> Result<(ClientId, Vec<(ClientId, String)>), ConnectError> {
     let timeout = Delay::new(Duration::from_secs(1));
-    let connect_future = connect_without_timeout(&handle, destination, username);
+    let connect_future = connect_without_timeout(handle, destination, username);
     pin_mut!(connect_future);
     match future::select(timeout, connect_future).await {
         Either::Left(_) => {

@@ -325,7 +325,7 @@ pub fn handle_tcp_stream(
                 network_handle: network_handle.clone(),
             };
 
-            tcp_packet_to_endpoint(&spawner, context, packet)
+            tcp_packet_to_endpoint(spawner, context, packet)
         }) {
         Err(CommsNetworkError::Closed) => return Ok(StreamStatus::Closed),
         Err(_) => return Err(HandlePacketError::CommunicationFailure),

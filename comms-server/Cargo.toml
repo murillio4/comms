@@ -2,7 +2,7 @@
 name = "comms-server"
 version = "0.1.0"
 authors = ["Mitchell Hentges <mitch9654@mozilla.com>"]
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 futures = "0.3"

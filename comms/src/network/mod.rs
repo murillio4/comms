@@ -368,25 +368,25 @@ impl From<RecvError> for NetworkError {
 
 #[derive(Debug)]
 pub enum SendToNetworkThreadError {
-    NetworkingFailed(CommsNetworkError),
-    SendFailed,
-    SetReadinessFailed(io::Error),
+    Network(CommsNetworkError),
+    ThreadSend,
+    SetReadiness(io::Error),
 }
 
 impl From<CommsNetworkError> for SendToNetworkThreadError {
     fn from(e: CommsNetworkError) -> Self {
-        SendToNetworkThreadError::NetworkingFailed(e)
+        SendToNetworkThreadError::Network(e)
     }
 }
 
 impl From<SendError<NetworkCommand>> for SendToNetworkThreadError {
     fn from(_: SendError<NetworkCommand>) -> Self {
-        SendToNetworkThreadError::SendFailed
+        SendToNetworkThreadError::ThreadSend
     }
 }
 
 impl From<io::Error> for SendToNetworkThreadError {
     fn from(e: io::Error) -> Self {
-        SendToNetworkThreadError::SetReadinessFailed(e)
+        SendToNetworkThreadError::SetReadiness(e)
     }
 }
