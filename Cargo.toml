@@ -1,11 +1,11 @@
 [workspace]
 
 members = [
-    "beep-cli",
-    "loopback-cli",
-    "latency-measurement-cli",
-    "comms",
     "audio-device",
+    "beep-cli",
+    "comms",
     "comms-lib",
     "comms-server",
+    "latency-measurement-cli",
+    "loopback-cli",
 ]
