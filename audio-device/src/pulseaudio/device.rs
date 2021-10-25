@@ -90,7 +90,7 @@ pub fn play<P: PlaybackSource>(
                 buffer[i * 2] = le_bytes[0];
                 buffer[i * 2 + 1] = le_bytes[1];
             }
-            stream.write_copy(&buffer, 0, SeekMode::Relative).unwrap();
+            stream.write_copy(buffer, 0, SeekMode::Relative).unwrap();
         });
     })));
 }
