@@ -15,6 +15,3 @@ path = "../audio-device"
 
 [dependencies.comms-lib]
 path = "../comms-lib"
-
-[dependencies.loopback-cli]
-path = "../loopback-cli"

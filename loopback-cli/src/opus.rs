@@ -1,13 +1,10 @@
-use crate::event_loop::create_event_loop;
-use audio_device::audio_connection::EventLoop;
+use audio_device::audio_connection::{create_minimal_event_loop, EventLoop};
 use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use audiopus::coder::{Decoder, Encoder};
 use audiopus::{Application, Channels, SampleRate};
 use dasp::Sample;
 use slice_deque::SliceDeque;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-
-mod event_loop;
 
 pub struct Mic {
     sender: Sender<Vec<u8>>,
@@ -81,6 +78,6 @@ pub fn create_pipeline() -> (Mic, UnsharedPlaybackSource<Playback>) {
 
 fn main() {
     let (mic, playback) = create_pipeline();
-    let event_loop = create_event_loop(mic, playback);
+    let event_loop = create_minimal_event_loop(mic, playback);
     event_loop.run();
 }

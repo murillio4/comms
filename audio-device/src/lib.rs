@@ -4,6 +4,7 @@ extern crate lazy_static;
 
 pub mod audio_connection;
 pub mod buffer;
+pub mod noise_gate;
 
 #[cfg(unix)]
 pub mod pulseaudio;

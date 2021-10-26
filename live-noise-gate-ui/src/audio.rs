@@ -1,9 +1,8 @@
 use crate::ui::{IncomingAudioPlotData, IncomingNoiseGatePlotData};
-use audio_device::audio_connection::EventLoop;
+use audio_device::audio_connection::{create_minimal_event_loop, EventLoop};
 use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
+use audio_device::noise_gate::{GateNoiseFilter, State};
 use dasp::Sample;
-use loopback_lib::event_loop::create_event_loop;
-use loopback_lib::noise_gate_internal::{GateNoiseFilter, State};
 use slice_deque::SliceDeque;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 
@@ -107,6 +106,6 @@ pub fn run(
     noise_gate_plot_sender: Sender<IncomingNoiseGatePlotData>,
 ) {
     let (mic, playback) = create_pipeline(audio_plot_sender, noise_gate_plot_sender);
-    let event_loop = create_event_loop(mic, playback);
+    let event_loop = create_minimal_event_loop(mic, playback);
     event_loop.run();
 }

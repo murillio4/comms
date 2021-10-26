@@ -6,6 +6,7 @@ edition = "2021"
 
 [dependencies]
 dasp = { version = "0.11.0", features = ["interpolate", "interpolate-linear"] }
+ringbuffer = "0.8.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 lazy_static = "1.4"
@@ -14,3 +15,6 @@ winapi = { version = "0.3", features = ["audioclient", "avrt", "basetsd", "coml2
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.69"
 libpulse-binding = { version = "2.13", default-features = false }
+
+[dependencies.comms-lib]
+path = "../comms-lib"

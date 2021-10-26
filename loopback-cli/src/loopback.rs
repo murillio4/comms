@@ -1,10 +1,7 @@
-use crate::event_loop::create_event_loop;
-use audio_device::audio_connection::EventLoop;
+use audio_device::audio_connection::{create_minimal_event_loop, EventLoop};
 use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use dasp::Sample;
 use std::sync::mpsc::{channel, Receiver, Sender};
-
-mod event_loop;
 
 pub struct MicForLoopback {
     sender: Sender<f32>,
@@ -38,6 +35,6 @@ pub fn create_pipeline() -> (MicForLoopback, UnsharedPlaybackSource<PlaybackForL
 
 fn main() {
     let (mic, playback) = create_pipeline();
-    let event_loop = create_event_loop(mic, playback);
+    let event_loop = create_minimal_event_loop(mic, playback);
     event_loop.run();
 }

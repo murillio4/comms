@@ -20,10 +20,6 @@ path = "src/nnnoiseless.rs"
 name = "opus"
 path = "src/opus.rs"
 
-[lib]
-name = "loopback_lib"
-path = "src/lib.rs"
-
 [dependencies]
 audiopus = "0.2.0"
 dasp = "0.11.0"

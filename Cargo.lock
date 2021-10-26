@@ -246,10 +246,12 @@ dependencies = [
 name = "audio-device"
 version = "0.1.0"
 dependencies = [
+ "comms-lib",
  "dasp",
  "lazy_static",
  "libc",
  "libpulse-binding",
+ "ringbuffer",
  "winapi",
 ]
 
@@ -1724,7 +1726,6 @@ dependencies = [
  "comms-lib",
  "dasp",
  "eframe",
- "loopback-cli",
  "ringbuffer",
  "slice-deque",
 ]
