@@ -69,7 +69,9 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> AudioConne
             input_devices: InputDevice::get_list()
                 .into_iter()
                 .map(|device| DeviceInfo {
-                    label: device.name().unwrap(),
+                    label: device
+                        .name()
+                        .unwrap_or_else(|e| panic!("{}", e.description)),
                     id: device.id(),
                 })
                 .collect(),

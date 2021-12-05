@@ -14,8 +14,8 @@ gdk-pixbuf = "0.14"
 gio = "0.14"
 glib = "0.14"
 gtk = "0.14"
-include_dir = "0.6.0"
-mio = { version = "0.7", features = ["tcp", "os-poll", "udp"] }
+include_dir = "0.7"
+mio = { version = "0.8", features = ["net", "os-poll"] }
 dasp = "0.11.0"
 serde = "1.0"
 serde_json = "1.0"

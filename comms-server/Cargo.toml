@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3"
-mio = { version = "0.7", features = ["tcp", "os-poll", "udp"] }
+mio = { version = "0.8", features = ["net", "os-poll"] }
 
 [dependencies.comms-lib]
 path = "../comms-lib"

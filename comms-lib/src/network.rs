@@ -265,7 +265,7 @@ impl TcpReadIter<'_> {
             return Err(e);
         }
         for result in self {
-            if let Err(e) = result.map_err(|e| e.into()).and_then(|packet| f(packet)) {
+            if let Err(e) = result.map_err(|e| e.into()).and_then(&mut f) {
                 return Err(e);
             }
         }
@@ -321,7 +321,7 @@ impl<U: UdpPacket> UdpReadIter<'_, U> {
             return Err(e);
         }
         for result in self {
-            if let Err(e) = result.map_err(|e| e.into()).and_then(|packet| f(packet)) {
+            if let Err(e) = result.map_err(|e| e.into()).and_then(&mut f) {
                 return Err(e);
             }
         }

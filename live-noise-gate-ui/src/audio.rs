@@ -49,9 +49,9 @@ impl PlaybackSource for PlaybackForLoopback {
                 };
                 let samples_f64: Vec<f64> = samples.iter().map(|s| s.to_sample::<f64>()).collect();
                 self.noise_gate_plot_sender
-                    .send(IncomingNoiseGatePlotData::RecentRms(
+                    .send(IncomingNoiseGatePlotData::RecentRms(Box::new(
                         self.gate.update_window(&samples_f64),
-                    ))
+                    )))
                     .unwrap();
                 self.noise_gate_plot_sender
                     .send(IncomingNoiseGatePlotData::Threshold(self.gate.threshold))

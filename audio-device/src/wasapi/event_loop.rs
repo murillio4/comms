@@ -151,8 +151,8 @@ impl<
                 Ok(WasapiHandle::PlaybackStream(_)) => {
                     let source = &mut self.connection.playback_source;
                     let stream = &mut self.connection.playback_stream;
-                    source.with(|mut playback| {
-                        if stream.invoke(&mut playback).is_err() {
+                    source.with(|playback| {
+                        if stream.invoke(playback).is_err() {
                             unimplemented!("playback error - change device?");
                         }
                     });

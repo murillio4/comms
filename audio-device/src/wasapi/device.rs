@@ -201,7 +201,7 @@ struct IMMDeviceWrapper(*mut mmdeviceapi::IMMDevice);
 
 #[derive(Debug)]
 pub struct DeviceNameError {
-    description: String,
+    pub description: String,
 }
 
 impl IMMDeviceWrapper {

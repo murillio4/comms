@@ -139,7 +139,7 @@ impl Widget for &mut AudioPlot {
 }
 
 pub enum IncomingNoiseGatePlotData {
-    RecentRms(ConstGenericRingBuffer<f64, 128>),
+    RecentRms(Box<ConstGenericRingBuffer<f64, 128>>),
     Threshold(f64),
     StateChange(u8),
 }
@@ -167,7 +167,7 @@ impl NoiseGatePlot {
         for incoming_data in self.receiver.try_iter() {
             match incoming_data {
                 IncomingNoiseGatePlotData::RecentRms(recent_rms) => {
-                    self.recent_rms = Some(recent_rms)
+                    self.recent_rms = Some(*recent_rms)
                 }
                 IncomingNoiseGatePlotData::Threshold(threshold) => self.threshold = threshold,
                 IncomingNoiseGatePlotData::StateChange(state) => self.state = state,

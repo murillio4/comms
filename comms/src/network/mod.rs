@@ -268,12 +268,9 @@ impl Worker {
                                 send_response,
                             } => {
                                 let mut connection = &mut self.connection;
-                                if let Err(e) = connect(
-                                    &mut connection,
-                                    &poll,
-                                    destination,
-                                    &mut next_poll_token,
-                                ) {
+                                if let Err(e) =
+                                    connect(connection, &poll, destination, &mut next_poll_token)
+                                {
                                     send_response.done(Err(e));
                                 } else if let Some(connection) = &mut connection {
                                     connection.connect_response = Some(send_response);
