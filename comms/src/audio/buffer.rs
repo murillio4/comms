@@ -1,5 +1,6 @@
 use crate::network::ipc::NetworkHandle;
 use audio_device::buffer::{MaybeSharedPlaybackSource, MicSink, PlaybackSource};
+use audio_device::noise_gate::GateNoiseFilter;
 use audiopus::coder::{Decoder, Encoder};
 use audiopus::{Application, Channels};
 use comms_lib::packet::ClientId;
@@ -129,6 +130,7 @@ pub struct MicBuffer {
     network_handle: NetworkHandle,
     sample_buffer: SliceDeque<f32>,
     encoder: Encoder,
+    noise_gate: GateNoiseFilter,
 }
 
 impl MicBuffer {
@@ -141,6 +143,7 @@ impl MicBuffer {
                 Channels::Mono,
                 Application::LowDelay,
             )?,
+            noise_gate: GateNoiseFilter::new(2048),
         })
     }
 }
@@ -152,10 +155,17 @@ impl MicSink for MicBuffer {
 
     fn publish_chunks(&mut self) {
         while self.sample_buffer.len() >= 480 {
+            let next_samples = &mut self.sample_buffer[..480];
+            self.noise_gate.update_window(next_samples);
+
+            for sample in next_samples.iter_mut() {
+                *sample = self.noise_gate.process(*sample);
+            }
+
             let mut encode_buffer = [0u8; 480];
             let size = self
                 .encoder
-                .encode_float(&self.sample_buffer[..480], &mut encode_buffer)
+                .encode_float(next_samples, &mut encode_buffer)
                 .expect("Unsure how to handle opus encoding failure yet");
             self.network_handle
                 .audio(encode_buffer[..size].to_vec())

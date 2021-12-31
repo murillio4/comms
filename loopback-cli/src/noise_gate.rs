@@ -40,14 +40,13 @@ impl PlaybackSource for PlaybackForLoopback {
                     Err(TryRecvError::Empty) => return Sample::EQUILIBRIUM,
                     Err(TryRecvError::Disconnected) => unimplemented!("channel failed"),
                 };
-                let samples_f64: Vec<f64> = samples.iter().map(|s| s.to_sample::<f64>()).collect();
-                self.gate.update_window(&samples_f64);
+                self.gate.update_window(&samples);
                 self.pcm_samples.extend_from_slice(&samples[1..]);
                 samples[0]
             }
         };
 
-        self.gate.process(sample.to_sample()).to_sample()
+        self.gate.process(sample)
     }
 }
 
@@ -60,7 +59,7 @@ pub fn create_pipeline() -> (MicForLoopback, UnsharedPlaybackSource<PlaybackForL
         },
         UnsharedPlaybackSource(PlaybackForLoopback {
             receiver: rx,
-            gate: GateNoiseFilter::default(),
+            gate: GateNoiseFilter::new(128),
             pcm_samples: SliceDeque::new(),
         }),
     )

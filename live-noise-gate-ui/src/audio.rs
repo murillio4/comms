@@ -47,11 +47,12 @@ impl PlaybackSource for PlaybackForLoopback {
                     Err(TryRecvError::Empty) => return Sample::EQUILIBRIUM,
                     Err(TryRecvError::Disconnected) => unimplemented!("channel failed"),
                 };
-                let samples_f64: Vec<f64> = samples.iter().map(|s| s.to_sample::<f64>()).collect();
+                let samples_f32: Vec<f32> = samples.iter().map(|s| s.to_sample::<f32>()).collect();
+                self.gate.update_window(&samples_f32);
                 self.noise_gate_plot_sender
-                    .send(IncomingNoiseGatePlotData::RecentRms(Box::new(
-                        self.gate.update_window(&samples_f64),
-                    )))
+                    .send(IncomingNoiseGatePlotData::RecentRms(
+                        self.gate.recent_rms.clone(),
+                    ))
                     .unwrap();
                 self.noise_gate_plot_sender
                     .send(IncomingNoiseGatePlotData::Threshold(self.gate.threshold))
@@ -61,8 +62,9 @@ impl PlaybackSource for PlaybackForLoopback {
                         match self.gate.state {
                             State::Off => 0,
                             State::Attack(_) => 1,
-                            State::Hold(_) => 2,
-                            State::Release(_) => 3,
+                            State::Active => 2,
+                            State::Hold(_) => 3,
+                            State::Release(_) => 4,
                         },
                     ))
                     .unwrap();
@@ -96,7 +98,7 @@ pub fn create_pipeline(
             audio_plot_sender,
             noise_gate_plot_sender,
             pcm_samples: SliceDeque::new(),
-            gate: GateNoiseFilter::default(),
+            gate: GateNoiseFilter::new(128),
         }),
     )
 }

@@ -8,7 +8,7 @@ use eframe::epi::Frame;
 use eframe::{egui, epi};
 use egui::plot::{HLine, Line, Plot};
 use egui::*;
-use ringbuffer::{ConstGenericRingBuffer, RingBuffer, RingBufferExt};
+use ringbuffer::{AllocRingBuffer, RingBuffer, RingBufferExt};
 
 const SAMPLE_BUCKETS: usize = 32;
 const PLOT_NUMBER_OF_CHUNKS: u64 = 128;
@@ -25,7 +25,6 @@ pub struct AudioPlot {
     aggregate: Vec<f32>,
     threshold: f32,
     samples: VecDeque<(Instant, f32)>,
-    rms_values: VecDeque<(Instant, f32)>,
 }
 
 impl AudioPlot {
@@ -35,7 +34,6 @@ impl AudioPlot {
             aggregate: Vec::new(),
             threshold: 0f32,
             samples: VecDeque::new(),
-            rms_values: VecDeque::new(),
         }
     }
 }
@@ -46,7 +44,6 @@ impl AudioPlot {
             receiver,
             aggregate,
             samples,
-            rms_values,
             ..
         } = self;
 
@@ -68,7 +65,6 @@ impl AudioPlot {
         }
 
         samples.retain(|(instant, _)| instant.elapsed() < GRAPH_DURATION);
-        rms_values.retain(|(instant, _)| instant.elapsed() < GRAPH_DURATION);
     }
 
     fn samples(&mut self) -> Line {
@@ -92,28 +88,6 @@ impl AudioPlot {
         .color(Color32::from_rgb(100, 220, 100))
         .name("Samples")
     }
-
-    fn rms_values(&mut self) -> Line {
-        let rms_values = &self.rms_values;
-
-        if rms_values.is_empty() {
-            return Line::new(Values::default());
-        }
-
-        Line::new(Values::from_parametric_callback(
-            move |t| {
-                let (instant, rms) = rms_values.get(t as usize).copied().unwrap();
-                (
-                    (GRAPH_DURATION.as_millis() - instant.elapsed().as_millis()) as f64,
-                    rms as f64,
-                )
-            },
-            0f64..=rms_values.len() as f64 - 1f64,
-            rms_values.len(),
-        ))
-        .color(Color32::from_rgb(255, 50, 50))
-        .name("RMS")
-    }
 }
 
 impl Widget for &mut AudioPlot {
@@ -123,7 +97,6 @@ impl Widget for &mut AudioPlot {
 
         let plot = Plot::new("Demo Plot")
             .line(self.samples())
-            .line(self.rms_values())
             .hline(
                 HLine::new(self.threshold)
                     .color(Color32::from_rgb(50, 50, 255))
@@ -139,15 +112,15 @@ impl Widget for &mut AudioPlot {
 }
 
 pub enum IncomingNoiseGatePlotData {
-    RecentRms(Box<ConstGenericRingBuffer<f64, 128>>),
-    Threshold(f64),
+    RecentRms(AllocRingBuffer<f32>),
+    Threshold(f32),
     StateChange(u8),
 }
 
 pub struct NoiseGatePlot {
     receiver: Receiver<IncomingNoiseGatePlotData>,
-    recent_rms: Option<ConstGenericRingBuffer<f64, 128>>,
-    threshold: f64,
+    recent_rms: Option<AllocRingBuffer<f32>>,
+    threshold: f32,
     state: u8,
 }
 
@@ -156,7 +129,7 @@ impl NoiseGatePlot {
         Self {
             receiver,
             recent_rms: None,
-            threshold: 0f64,
+            threshold: 0f32,
             state: 0u8,
         }
     }
@@ -167,7 +140,7 @@ impl NoiseGatePlot {
         for incoming_data in self.receiver.try_iter() {
             match incoming_data {
                 IncomingNoiseGatePlotData::RecentRms(recent_rms) => {
-                    self.recent_rms = Some(*recent_rms)
+                    self.recent_rms = Some(recent_rms)
                 }
                 IncomingNoiseGatePlotData::Threshold(threshold) => self.threshold = threshold,
                 IncomingNoiseGatePlotData::StateChange(state) => self.state = state,
@@ -185,7 +158,7 @@ impl NoiseGatePlot {
                 move |t| {
                     (
                         offset + t,
-                        recent_rms.get(t as isize).copied().unwrap_or(0f64) as f64,
+                        recent_rms.get(t as isize).copied().unwrap_or(0f32) as f64,
                     )
                 },
                 0f64..=recent_rms.len() as f64 - 1f64,
@@ -206,7 +179,8 @@ impl Widget for &mut NoiseGatePlot {
             0 => Color32::from_rgb(255, 50, 255),
             1 => Color32::from_rgb(255, 50, 50),
             2 => Color32::from_rgb(50, 50, 255),
-            3 => Color32::from_rgb(50, 255, 50),
+            3 => Color32::from_rgb(50, 50, 255),
+            4 => Color32::from_rgb(50, 255, 50),
             _ => Color32::from_rgb(50, 50, 50),
         };
 
