@@ -100,19 +100,21 @@ impl Widget for &mut AudioPlot {
         ui.ctx().request_repaint();
         self.update();
 
-        let plot = Plot::new("Demo Plot")
-            .line(self.samples())
-            .hline(
-                HLine::new(self.threshold)
-                    .color(Color32::from_rgb(50, 50, 255))
-                    .name("Threshold"),
-            )
+        Plot::new("Demo Plot")
             .include_x(0f64)
             .include_x(GRAPH_DURATION.as_millis() as f64)
             .include_y(0f64)
             .include_y(0.05f64)
-            .legend(Legend::default());
-        ui.add(plot)
+            .legend(Legend::default())
+            .show(ui, |plot| {
+                plot.line(self.samples());
+                plot.hline(
+                    HLine::new(self.threshold)
+                        .color(Color32::from_rgb(50, 50, 255))
+                        .name("Threshold"),
+                )
+            })
+            .response
     }
 }
 
@@ -189,19 +191,21 @@ impl Widget for &mut NoiseGatePlot {
             _ => Color32::from_rgb(50, 50, 50),
         };
 
-        let plot = Plot::new("Noise Gate Plot")
-            .line(self.recent_rms())
-            .hline(
-                HLine::new(self.threshold)
-                    .color(threshold_color)
-                    .name("Threshold"),
-            )
+        Plot::new("Noise Gate Plot")
             .include_x(0f64)
             .include_x(PLOT_NUMBER_OF_CHUNKS as f64)
             .include_y(0f64)
             .include_y(0.05f64)
-            .legend(Legend::default());
-        ui.add(plot)
+            .legend(Legend::default())
+            .show(ui, |plot| {
+                plot.line(self.recent_rms());
+                plot.hline(
+                    HLine::new(self.threshold)
+                        .color(threshold_color)
+                        .name("Threshold"),
+                )
+            })
+            .response
     }
 }
 
@@ -211,13 +215,13 @@ struct App {
 }
 
 impl epi::App for App {
-    fn update(&mut self, ctx: &CtxRef, frame: &mut Frame<'_>) {
+    fn update(&mut self, ctx: &CtxRef, frame: &Frame) {
         let Self { time, noise_gate } = self;
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
             egui::menu::bar(ui, |ui| {
-                egui::menu::menu(ui, "File", |ui| {
+                egui::menu::menu_button(ui, "File", |ui| {
                     if ui.button("Quit").clicked() {
                         frame.quit();
                     }
