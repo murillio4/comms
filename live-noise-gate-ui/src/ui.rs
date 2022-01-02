@@ -77,8 +77,13 @@ impl AudioPlot {
         Line::new(Values::from_parametric_callback(
             move |t| {
                 let (instant, sample) = samples.get(t as usize).copied().unwrap();
+                if instant.elapsed().as_millis() > GRAPH_DURATION.as_millis() {}
                 (
-                    (GRAPH_DURATION.as_millis() - instant.elapsed().as_millis()) as f64,
+                    (GRAPH_DURATION.as_millis()
+                        - instant
+                            .elapsed()
+                            .as_millis()
+                            .min(GRAPH_DURATION.as_millis())) as f64,
                     sample as f64,
                 )
             },
