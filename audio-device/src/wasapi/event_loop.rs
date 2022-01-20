@@ -2,18 +2,19 @@ use crate::audio_connection::{EventLoop, EventLoopNotify};
 use crate::buffer::{InterruptReceiver, MaybeSharedPlaybackSource, MicSink, PlaybackSource};
 use crate::wasapi::audio_connection::WasapiAudioConnection;
 use std::ptr;
-use winapi::shared::minwindef;
-use winapi::um::{synchapi, winbase, winnt};
+use windows::Win32::Foundation;
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::{SystemServices, Threading};
 
 pub struct WasapiEventLoopRegistration {
-    pub win_handle: winnt::HANDLE,
+    pub win_handle: HANDLE,
 }
 
 unsafe impl Send for WasapiEventLoopRegistration {}
 
 #[derive(Clone)]
 pub struct WasapiEventLoopNotify {
-    pub win_handle: winnt::HANDLE,
+    pub win_handle: HANDLE,
 }
 
 unsafe impl Send for WasapiEventLoopNotify {}
@@ -21,14 +22,13 @@ unsafe impl Send for WasapiEventLoopNotify {}
 impl EventLoopNotify for WasapiEventLoopNotify {
     fn set_ready(&self) {
         unsafe {
-            let result = synchapi::SetEvent(self.win_handle);
-            assert_ne!(result, 0);
+            Threading::SetEvent(self.win_handle).ok().unwrap();
         }
     }
 }
 
 pub fn event_loop_channel() -> (WasapiEventLoopRegistration, WasapiEventLoopNotify) {
-    let win_handle = unsafe { synchapi::CreateEventA(ptr::null_mut(), 0, 0, ptr::null()) };
+    let win_handle = unsafe { Threading::CreateEventA(ptr::null(), false, false, None) };
     (
         WasapiEventLoopRegistration { win_handle },
         WasapiEventLoopNotify { win_handle },
@@ -37,13 +37,13 @@ pub fn event_loop_channel() -> (WasapiEventLoopRegistration, WasapiEventLoopNoti
 
 #[derive(Clone)]
 enum WasapiHandle {
-    MicStream(winnt::HANDLE),
-    PlaybackStream(winnt::HANDLE),
-    Receiver(winnt::HANDLE),
+    MicStream(HANDLE),
+    PlaybackStream(HANDLE),
+    Receiver(HANDLE),
 }
 
 impl WasapiHandle {
-    fn get_winnt_handle(&self) -> winnt::HANDLE {
+    fn get_win_handle(&self) -> HANDLE {
         match self {
             WasapiHandle::MicStream(handle) => *handle,
             WasapiHandle::PlaybackStream(handle) => *handle,
@@ -58,8 +58,8 @@ trait SelectWasapiHandle {
 
 impl SelectWasapiHandle for Vec<WasapiHandle> {
     fn select(&mut self) -> Result<WasapiHandle, String> {
-        let winnt_handles: Vec<winnt::HANDLE> = self.iter().map(|h| h.get_winnt_handle()).collect();
-        let handle_index = match wait_for_handle_signal(&winnt_handles) {
+        let win_handles: Vec<HANDLE> = self.iter().map(|h| h.get_win_handle()).collect();
+        let handle_index = match wait_for_handle_signal(&win_handles) {
             Ok(index) => index,
             Err(description) => return Err(description),
         };
@@ -167,23 +167,23 @@ impl<
     }
 }
 
-fn wait_for_handle_signal(handles: &[winnt::HANDLE]) -> Result<usize, String> {
-    debug_assert!(handles.len() <= winnt::MAXIMUM_WAIT_OBJECTS as usize);
+fn wait_for_handle_signal(handles: &[HANDLE]) -> Result<usize, String> {
+    debug_assert!(handles.len() <= SystemServices::MAXIMUM_WAIT_OBJECTS as usize);
     let result = unsafe {
-        synchapi::WaitForMultipleObjectsEx(
+        Threading::WaitForMultipleObjectsEx(
             handles.len() as u32,
             handles.as_ptr(),
-            minwindef::FALSE,
-            winbase::INFINITE,
-            minwindef::FALSE,
+            false,
+            u32::MAX,
+            false,
         )
     };
-    if result == winbase::WAIT_FAILED {
-        let err = unsafe { winapi::um::errhandlingapi::GetLastError() };
+    if result == Foundation::WAIT_FAILED {
+        let err = unsafe { Foundation::GetLastError() };
         let description = format!("WaitForMultipleObjectsEx failed: {}", err);
         return Err(description);
     }
 
-    let handle_idx = (result - winbase::WAIT_OBJECT_0) as usize;
+    let handle_idx = (result - Threading::WAIT_OBJECT_0) as usize;
     Ok(handle_idx)
 }

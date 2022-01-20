@@ -27,9 +27,13 @@ path = "../audio-device"
 [dependencies.comms-lib]
 path = "../comms-lib"
 
-[target.'cfg(target_os = "windows")'.dependencies]
-lazy_static = "1.4"
-winapi = { version = "0.3", features = ["audioclient", "avrt", "basetsd", "coml2api", "combaseapi", "devpkey", "errhandlingapi", "ksmedia", "mmdeviceapi", "mmreg", "objbase", "synchapi", "winbase", "winnt", "wtypes"] }
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.30.0"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.69"

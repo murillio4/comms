@@ -1,84 +1,48 @@
-use crate::wasapi::com::check_result;
 use crate::wasapi::stream::{Format, SampleFormat, SampleRate};
 use std::mem;
-use winapi::shared::minwindef::{DWORD, WORD};
-use winapi::shared::{guiddef, ksmedia, mmreg, winerror};
-use winapi::um::{audioclient, audiosessiontypes, combaseapi};
+use windows::Win32::Media::{Audio, KernelStreaming, Multimedia};
+use windows::Win32::System::Com;
 
 #[derive(Debug)]
 pub enum MmregSupportedFormatsError {
     DeviceNotAvailable,
+    Other,
 }
 
 pub fn is_format_supported(
-    client: *const audioclient::IAudioClient,
-    waveformatex_ptr: *const mmreg::WAVEFORMATEX,
-) -> Result<bool, MmregSupportedFormatsError> {
-    let is_supported = |waveformatex_ptr, mut closest_waveformatex_ptr| {
-        let result = unsafe {
-            (*client).IsFormatSupported(
-                audiosessiontypes::AUDCLNT_SHAREMODE_SHARED,
-                waveformatex_ptr,
-                &mut closest_waveformatex_ptr,
-            )
-        };
-
-        if result == winerror::S_FALSE {
-            Ok(false)
-        } else {
-            match check_result(result) {
-                Err(ref e)
-                    if e.raw_os_error() == Some(audioclient::AUDCLNT_E_DEVICE_INVALIDATED) =>
-                {
-                    Err(MmregSupportedFormatsError::DeviceNotAvailable)
-                }
-                Err(_) => Ok(false),
-                Ok(()) => Ok(true),
-            }
+    client: &Audio::IAudioClient,
+    waveformatex: &Audio::WAVEFORMATEX,
+) -> Result<Option<*const Audio::WAVEFORMATEX>, MmregSupportedFormatsError> {
+    match unsafe { client.IsFormatSupported(Audio::AUDCLNT_SHAREMODE_SHARED, waveformatex) } {
+        Ok(closest_waveformatex_ptr) if closest_waveformatex_ptr.is_null() => Ok(None),
+        Ok(closest_waveformatex_ptr) => Ok(Some(closest_waveformatex_ptr)),
+        Err(ref e) if e.code() == Audio::AUDCLNT_E_DEVICE_INVALIDATED => {
+            Err(MmregSupportedFormatsError::DeviceNotAvailable)
         }
-    };
-
-    unsafe {
-        match (*waveformatex_ptr).wFormatTag {
-            mmreg::WAVE_FORMAT_PCM | mmreg::WAVE_FORMAT_IEEE_FLOAT => {
-                let mut closest_waveformatex = *waveformatex_ptr;
-                let closest_waveformatex_ptr = &mut closest_waveformatex as *mut _;
-                is_supported(waveformatex_ptr, closest_waveformatex_ptr)
-            }
-            mmreg::WAVE_FORMAT_EXTENSIBLE => {
-                let waveformatextensible_ptr =
-                    waveformatex_ptr as *const mmreg::WAVEFORMATEXTENSIBLE;
-                let mut closest_waveformatextensible = *waveformatextensible_ptr;
-                let closest_waveformatextensible_ptr = &mut closest_waveformatextensible as *mut _;
-                let closest_waveformatex_ptr =
-                    closest_waveformatextensible_ptr as *mut mmreg::WAVEFORMATEX;
-                is_supported(waveformatex_ptr, closest_waveformatex_ptr)
-            }
-            _ => Ok(false),
-        }
+        Err(_) => Err(MmregSupportedFormatsError::Other),
     }
 }
 
-pub fn format_to_waveformatextensible(format: &Format) -> Option<mmreg::WAVEFORMATEXTENSIBLE> {
+pub fn format_to_waveformatextensible(format: &Format) -> Audio::WAVEFORMATEXTENSIBLE {
     let format_tag = match format.data_type {
         SampleFormat::I16 => MmregFormat::Pcm,
         SampleFormat::F32 => MmregFormat::Extensible,
     };
-    let channels = format.channels as WORD;
-    let sample_rate = format.sample_rate.0 as DWORD;
-    let sample_bytes = format.data_type.sample_size() as WORD;
-    let avg_bytes_per_sec = channels as DWORD * sample_rate * sample_bytes as DWORD;
+    let channels = format.channels as u16;
+    let sample_rate = format.sample_rate.0 as u32;
+    let sample_bytes = format.data_type.sample_size() as u16;
+    let avg_bytes_per_sec = channels as u32 * sample_rate * sample_bytes as u32;
     let block_align = channels * sample_bytes;
     let bits_per_sample = 8 * sample_bytes;
     let cb_size = match format_tag {
         MmregFormat::Pcm => 0,
         MmregFormat::Extensible => {
-            let extensible_size = mem::size_of::<mmreg::WAVEFORMATEXTENSIBLE>();
-            let ex_size = mem::size_of::<mmreg::WAVEFORMATEX>();
-            (extensible_size - ex_size) as WORD
+            let extensible_size = mem::size_of::<Audio::WAVEFORMATEXTENSIBLE>();
+            let ex_size = mem::size_of::<Audio::WAVEFORMATEX>();
+            (extensible_size - ex_size) as u16
         }
     };
-    let waveformatex = mmreg::WAVEFORMATEX {
+    let waveformatex = Audio::WAVEFORMATEX {
         wFormatTag: format_tag.as_word(),
         nChannels: channels,
         nSamplesPerSec: sample_rate,
@@ -88,40 +52,38 @@ pub fn format_to_waveformatextensible(format: &Format) -> Option<mmreg::WAVEFORM
         cbSize: cb_size,
     };
 
-    const KSAUDIO_SPEAKER_DIRECTOUT: DWORD = 0;
+    const KSAUDIO_SPEAKER_DIRECTOUT: u32 = 0;
     let channel_mask = KSAUDIO_SPEAKER_DIRECTOUT;
 
     let sub_format = match format_tag {
-        MmregFormat::Pcm => ksmedia::KSDATAFORMAT_SUBTYPE_PCM,
-        MmregFormat::Extensible => ksmedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
+        MmregFormat::Pcm => KernelStreaming::KSDATAFORMAT_SUBTYPE_PCM,
+        MmregFormat::Extensible => Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
     };
-    let waveformatextensible = mmreg::WAVEFORMATEXTENSIBLE {
+    Audio::WAVEFORMATEXTENSIBLE {
         Format: waveformatex,
-        Samples: bits_per_sample as WORD,
+        Samples: Audio::WAVEFORMATEXTENSIBLE_0 {
+            wValidBitsPerSample: bits_per_sample,
+        },
         dwChannelMask: channel_mask,
         SubFormat: sub_format,
-    };
-    Some(waveformatextensible)
+    }
 }
 
 pub unsafe fn format_from_waveformatex_ptr(
-    waveformatex_ptr: *const mmreg::WAVEFORMATEX,
+    waveformatex_ptr: *const Audio::WAVEFORMATEX,
 ) -> Option<Format> {
-    fn cmp_guid(a: &guiddef::GUID, b: &guiddef::GUID) -> bool {
-        a.Data1 == b.Data1 && a.Data2 == b.Data2 && a.Data3 == b.Data3 && a.Data4 == b.Data4
-    }
     let data_type = match (
         (*waveformatex_ptr).wBitsPerSample,
-        (*waveformatex_ptr).wFormatTag,
+        (*waveformatex_ptr).wFormatTag as u32,
     ) {
-        (16, mmreg::WAVE_FORMAT_PCM) => SampleFormat::I16,
-        (32, mmreg::WAVE_FORMAT_IEEE_FLOAT) => SampleFormat::F32,
-        (n_bits, mmreg::WAVE_FORMAT_EXTENSIBLE) => {
-            let waveformatextensible_ptr = waveformatex_ptr as *const mmreg::WAVEFORMATEXTENSIBLE;
+        (16, Audio::WAVE_FORMAT_PCM) => SampleFormat::I16,
+        (32, Multimedia::WAVE_FORMAT_IEEE_FLOAT) => SampleFormat::F32,
+        (n_bits, KernelStreaming::WAVE_FORMAT_EXTENSIBLE) => {
+            let waveformatextensible_ptr = waveformatex_ptr as *const Audio::WAVEFORMATEXTENSIBLE;
             let sub = (*waveformatextensible_ptr).SubFormat;
-            if n_bits == 16 && cmp_guid(&sub, &ksmedia::KSDATAFORMAT_SUBTYPE_PCM) {
+            if n_bits == 16 && sub == KernelStreaming::KSDATAFORMAT_SUBTYPE_PCM {
                 SampleFormat::I16
-            } else if n_bits == 32 && cmp_guid(&sub, &ksmedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) {
+            } else if n_bits == 32 && sub == Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
                 SampleFormat::F32
             } else {
                 return None;
@@ -137,12 +99,12 @@ pub unsafe fn format_from_waveformatex_ptr(
     Some(format)
 }
 
-pub struct WaveFormatExPtr(pub *mut mmreg::WAVEFORMATEX);
+pub struct WaveFormatExPtr(pub *mut Audio::WAVEFORMATEX);
 
 impl Drop for WaveFormatExPtr {
     fn drop(&mut self) {
         unsafe {
-            combaseapi::CoTaskMemFree(self.0 as *mut _);
+            Com::CoTaskMemFree(self.0 as *mut _);
         }
     }
 }
@@ -153,10 +115,10 @@ enum MmregFormat {
 }
 
 impl MmregFormat {
-    fn as_word(&self) -> WORD {
+    fn as_word(&self) -> u16 {
         match self {
-            MmregFormat::Pcm => mmreg::WAVE_FORMAT_PCM,
-            MmregFormat::Extensible => mmreg::WAVE_FORMAT_EXTENSIBLE,
+            MmregFormat::Pcm => Audio::WAVE_FORMAT_PCM as u16,
+            MmregFormat::Extensible => KernelStreaming::WAVE_FORMAT_EXTENSIBLE as u16,
         }
     }
 }

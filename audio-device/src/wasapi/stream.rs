@@ -1,13 +1,11 @@
 use crate::buffer::{MicSink, PlaybackSource};
-use crate::wasapi::com::check_result;
 use crate::wasapi::device::IAudioClientWrapper;
 use crate::wasapi::event_loop::WasapiEventLoopRegistration;
 use crate::wasapi::sample_rate_conversion::{MicSampleRateConverter, PlaybackSampleRateConverter};
 use dasp::Sample;
 use std::mem::MaybeUninit;
 use std::{mem, ptr, slice};
-use winapi::shared::{basetsd, minwindef, mmreg};
-use winapi::um::{audioclient, winnt};
+use windows::Win32::Media::Audio;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SampleFormat {
@@ -41,23 +39,23 @@ pub enum StreamError {
 }
 
 pub struct RawWasapiStream {
-    audio_client: *mut audioclient::IAudioClient,
-    max_frames_in_buffer: basetsd::UINT32,
-    bytes_per_frame: minwindef::WORD,
+    audio_client: IAudioClientWrapper,
+    max_frames_in_buffer: u32,
+    bytes_per_frame: u16,
     sample_format: SampleFormat,
     channel_count: usize,
 }
 
 impl RawWasapiStream {
     pub fn new(
-        waveformatex: mmreg::WAVEFORMATEX,
+        waveformatex: Audio::WAVEFORMATEX,
         audio_client: IAudioClientWrapper,
         format: Format,
     ) -> Self {
         let max_buffer_frames = audio_client.get_buffer_max_frames().unwrap();
 
         Self {
-            audio_client: *audio_client,
+            audio_client,
             bytes_per_frame: waveformatex.nBlockAlign,
             channel_count: format.channels as usize,
             max_frames_in_buffer: max_buffer_frames,
@@ -66,8 +64,7 @@ impl RawWasapiStream {
     }
 
     pub fn start(&self) {
-        let hresult = unsafe { (*self.audio_client).Start() };
-        if let Err(err) = stream_error_from_hresult(hresult) {
+        if let Err(err) = unsafe { (*self.audio_client).Start() } {
             eprintln!("An error occurred when playing stream: {:?}", err);
         }
     }
@@ -75,7 +72,7 @@ impl RawWasapiStream {
 
 pub struct WasapiMicStream<M: MicSink> {
     pub raw_stream: RawWasapiStream,
-    capture_client: *mut audioclient::IAudioCaptureClient,
+    capture_client: Audio::IAudioCaptureClient,
     pub notify: WasapiEventLoopRegistration,
     sample_rate_converter: Box<dyn MicSampleRateConverter<M>>,
 }
@@ -83,7 +80,7 @@ pub struct WasapiMicStream<M: MicSink> {
 impl<M: MicSink> WasapiMicStream<M> {
     pub fn new(
         sample_rate_converter: Box<dyn MicSampleRateConverter<M>>,
-        capture_client: *mut audioclient::IAudioCaptureClient,
+        capture_client: Audio::IAudioCaptureClient,
         notify: WasapiEventLoopRegistration,
         raw_stream: RawWasapiStream,
     ) -> Self {
@@ -96,36 +93,32 @@ impl<M: MicSink> WasapiMicStream<M> {
     }
 
     pub fn invoke(&mut self, mic_buffer: &mut M) -> Result<(), StreamError> {
-        let mut frames_available = 0;
-        let mut buffer = MaybeUninit::<*mut minwindef::BYTE>::uninit();
+        let mut buffer = MaybeUninit::<*mut u8>::uninit();
         // TODO remove flags? Maybe ptr::null_mut instead?
         let mut flags = MaybeUninit::<_>::uninit();
 
         loop {
-            let hresult =
-                unsafe { (*self.capture_client).GetNextPacketSize(&mut frames_available) };
-            if let Err(err) = stream_error_from_hresult(hresult) {
-                return Err(err);
-            }
+            let mut frames_available = match unsafe { self.capture_client.GetNextPacketSize() } {
+                Ok(frames_available) => frames_available,
+                Err(e) => return Err(stream_error_from_win_error(e)),
+            };
 
             if frames_available == 0 {
                 return Ok(());
             }
 
-            let hresult = unsafe {
-                (*self.capture_client).GetBuffer(
+            match unsafe {
+                self.capture_client.GetBuffer(
                     buffer.as_mut_ptr(),
                     &mut frames_available,
                     flags.as_mut_ptr(),
                     ptr::null_mut(),
                     ptr::null_mut(),
                 )
-            };
-
-            if hresult == audioclient::AUDCLNT_S_BUFFER_EMPTY {
-                return Ok(());
-            } else if let Err(err) = stream_error_from_hresult(hresult) {
-                return Err(err);
+            } {
+                Ok(()) => {}
+                Err(ref e) if e.code() == Audio::AUDCLNT_S_BUFFER_EMPTY => return Ok(()),
+                Err(e) => return Err(stream_error_from_win_error(e)),
             }
 
             let raw_buffer = unsafe { buffer.assume_init() };
@@ -165,9 +158,9 @@ impl<M: MicSink> WasapiMicStream<M> {
                             .feed_next(next_sample, mic_buffer)
                     }
 
-                    let hresult = unsafe { (*self.capture_client).ReleaseBuffer(frames_available) };
-                    if let Err(err) = stream_error_from_hresult(hresult) {
-                        return Err(err);
+                    if let Err(err) = unsafe { self.capture_client.ReleaseBuffer(frames_available) }
+                    {
+                        return Err(stream_error_from_win_error(err));
                     }
                 }
                 SampleFormat::I16 => {
@@ -201,9 +194,9 @@ impl<M: MicSink> WasapiMicStream<M> {
                             .feed_next(next_sample, mic_buffer)
                     }
 
-                    let hresult = unsafe { (*self.capture_client).ReleaseBuffer(frames_available) };
-                    if let Err(err) = stream_error_from_hresult(hresult) {
-                        return Err(err);
+                    if let Err(err) = unsafe { self.capture_client.ReleaseBuffer(frames_available) }
+                    {
+                        return Err(stream_error_from_win_error(err));
                     }
                 }
             }
@@ -214,7 +207,7 @@ impl<M: MicSink> WasapiMicStream<M> {
 
 pub struct WasapiPlaybackStream<P: PlaybackSource> {
     pub raw_stream: RawWasapiStream,
-    render_client: *mut audioclient::IAudioRenderClient,
+    render_client: Audio::IAudioRenderClient,
     pub notify: WasapiEventLoopRegistration,
     sample_rate_converter: Box<dyn PlaybackSampleRateConverter<P>>,
 }
@@ -222,7 +215,7 @@ pub struct WasapiPlaybackStream<P: PlaybackSource> {
 impl<P: PlaybackSource> WasapiPlaybackStream<P> {
     pub fn new(
         sample_rate_converter: Box<dyn PlaybackSampleRateConverter<P>>,
-        render_client: *mut audioclient::IAudioRenderClient,
+        render_client: Audio::IAudioRenderClient,
         notify: WasapiEventLoopRegistration,
         raw_stream: RawWasapiStream,
     ) -> Self {
@@ -236,26 +229,17 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
 
     pub fn invoke(&mut self, playback_source: &mut P) -> Result<(), StreamError> {
         loop {
-            let mut padding = MaybeUninit::<u32>::uninit();
-            let hresult =
-                unsafe { (*self.raw_stream.audio_client).GetCurrentPadding(padding.as_mut_ptr()) };
-            stream_error_from_hresult(hresult)?;
-            let frames_available =
-                self.raw_stream.max_frames_in_buffer - unsafe { padding.assume_init() };
+            let padding = unsafe { (*self.raw_stream.audio_client).GetCurrentPadding() }
+                .map_err(|e| stream_error_from_win_error(e))?;
+            let frames_available = self.raw_stream.max_frames_in_buffer - padding;
 
             if frames_available == 0 {
                 return Ok(());
             }
 
-            let mut buffer = MaybeUninit::<*mut minwindef::BYTE>::uninit();
-            let hresult =
-                unsafe { (*self.render_client).GetBuffer(frames_available, buffer.as_mut_ptr()) };
+            let raw_buffer = unsafe { self.render_client.GetBuffer(frames_available) }
+                .map_err(|e| stream_error_from_win_error(e))?;
 
-            if let Err(err) = stream_error_from_hresult(hresult) {
-                return Err(err);
-            }
-
-            let raw_buffer = unsafe { buffer.assume_init() };
             let sample_size = self.raw_stream.sample_format.sample_size();
             let buffer_len =
                 frames_available as usize * self.raw_stream.bytes_per_frame as usize / sample_size;
@@ -281,11 +265,8 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                         }
                     }
 
-                    let hresult =
-                        unsafe { (*self.render_client).ReleaseBuffer(frames_available as u32, 0) };
-                    if let Err(err) = stream_error_from_hresult(hresult) {
-                        return Err(err);
-                    }
+                    unsafe { self.render_client.ReleaseBuffer(frames_available as u32, 0) }
+                        .map_err(|e| stream_error_from_win_error(e))?;
                 }
                 SampleFormat::I16 => {
                     // When the AudioClient is initialized, it is configured to align its buffer
@@ -307,11 +288,8 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                         }
                     }
 
-                    let hresult =
-                        unsafe { (*self.render_client).ReleaseBuffer(frames_available as u32, 0) };
-                    if let Err(err) = stream_error_from_hresult(hresult) {
-                        return Err(err);
-                    }
+                    unsafe { self.render_client.ReleaseBuffer(frames_available as u32, 0) }
+                        .map_err(|e| stream_error_from_win_error(e))?;
                 }
             }
         }
@@ -319,13 +297,11 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
 }
 
 // TODO refactor into useful abstraction around unsafe calls with results
-fn stream_error_from_hresult(hresult: winnt::HRESULT) -> Result<(), StreamError> {
-    if hresult == audioclient::AUDCLNT_E_DEVICE_INVALIDATED {
-        Err(StreamError::DeviceNotAvailable)
-    } else if let Err(err) = check_result(hresult) {
-        let description = format!("{}", err);
-        Err(StreamError::BackendSpecific(description))
+fn stream_error_from_win_error(error: windows::core::Error) -> StreamError {
+    if error.code() == Audio::AUDCLNT_E_DEVICE_INVALIDATED {
+        StreamError::DeviceNotAvailable
     } else {
-        Ok(())
+        let description = format!("{}", error);
+        StreamError::BackendSpecific(description)
     }
 }
