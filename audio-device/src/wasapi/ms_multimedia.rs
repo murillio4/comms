@@ -10,7 +10,7 @@ pub enum MmregSupportedFormatsError {
 }
 
 pub fn is_format_supported(
-    client: &Audio::IAudioClient,
+    client: &Audio::IAudioClient3,
     waveformatex: &Audio::WAVEFORMATEX,
 ) -> Result<Option<*const Audio::WAVEFORMATEX>, MmregSupportedFormatsError> {
     match unsafe { client.IsFormatSupported(Audio::AUDCLNT_SHAREMODE_SHARED, waveformatex) } {

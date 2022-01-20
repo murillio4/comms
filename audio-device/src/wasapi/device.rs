@@ -27,7 +27,7 @@ pub struct OutputDevice {
     pub audio_client: IAudioClientWrapper,
 }
 
-pub struct IAudioClientWrapper(Audio::IAudioClient);
+pub struct IAudioClientWrapper(Audio::IAudioClient3);
 
 impl IAudioClientWrapper {
     pub fn initialize(&self, format: &Format) -> Result<Audio::WAVEFORMATEX, BuildStreamError> {
@@ -54,12 +54,26 @@ impl IAudioClientWrapper {
             }
         }
 
+        let mut default_period = 0u32;
+        let mut fundamental_period = 0u32;
+        let mut min_period = 0u32;
+        let mut max_period = 0u32;
+        unsafe {
+            audio_client
+                .GetSharedModeEnginePeriod(
+                    &format_attempt.Format,
+                    &mut default_period,
+                    &mut fundamental_period,
+                    &mut min_period,
+                    &mut max_period,
+                )
+                .unwrap();
+        }
+
         match unsafe {
-            audio_client.Initialize(
-                Audio::AUDCLNT_SHAREMODE_SHARED,
+            audio_client.InitializeSharedAudioStream(
                 Audio::AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                0,
-                0,
+                min_period,
                 &format_attempt.Format,
                 ptr::null(),
             )
@@ -127,7 +141,7 @@ impl IAudioClientWrapper {
 }
 
 impl Deref for IAudioClientWrapper {
-    type Target = Audio::IAudioClient;
+    type Target = Audio::IAudioClient3;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -164,10 +178,10 @@ impl IAudioClientWrapper {
     fn from_immdevice(
         immdevice: &Audio::IMMDevice,
     ) -> Result<IAudioClientWrapper, windows::core::Error> {
-        let mut audio_client: Option<Audio::IAudioClient> = None;
+        let mut audio_client: Option<Audio::IAudioClient3> = None;
         unsafe {
             immdevice.Activate(
-                &Audio::IAudioClient::IID,
+                &Audio::IAudioClient3::IID,
                 Com::CLSCTX_ALL,
                 ptr::null(),
                 &mut audio_client as *mut _ as _,
