@@ -1544,6 +1544,7 @@ version = "0.1.0"
 dependencies = [
  "audio-device",
  "audio_thread_priority",
+ "eframe",
 ]
 
 [[package]]
