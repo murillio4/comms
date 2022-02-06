@@ -230,7 +230,7 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
     pub fn invoke(&mut self, playback_source: &mut P) -> Result<(), StreamError> {
         loop {
             let padding = unsafe { (*self.raw_stream.audio_client).GetCurrentPadding() }
-                .map_err(|e| stream_error_from_win_error(e))?;
+                .map_err(stream_error_from_win_error)?;
             let frames_available = self.raw_stream.max_frames_in_buffer - padding;
 
             if frames_available == 0 {
@@ -238,7 +238,7 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
             }
 
             let raw_buffer = unsafe { self.render_client.GetBuffer(frames_available) }
-                .map_err(|e| stream_error_from_win_error(e))?;
+                .map_err(stream_error_from_win_error)?;
 
             let sample_size = self.raw_stream.sample_format.sample_size();
             let buffer_len =
@@ -266,7 +266,7 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                     }
 
                     unsafe { self.render_client.ReleaseBuffer(frames_available as u32, 0) }
-                        .map_err(|e| stream_error_from_win_error(e))?;
+                        .map_err(stream_error_from_win_error)?;
                 }
                 SampleFormat::I16 => {
                     // When the AudioClient is initialized, it is configured to align its buffer
@@ -289,7 +289,7 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                     }
 
                     unsafe { self.render_client.ReleaseBuffer(frames_available as u32, 0) }
-                        .map_err(|e| stream_error_from_win_error(e))?;
+                        .map_err(stream_error_from_win_error)?;
                 }
             }
         }
