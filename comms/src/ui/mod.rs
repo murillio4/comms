@@ -340,7 +340,7 @@ pub fn run(
         let create_icon = |name| {
             let stream =
                 gio::ReadInputStream::new(RESOURCES_DIR.get_file(name).unwrap().contents());
-            gdk_pixbuf::Pixbuf::from_stream::<_, gio::Cancellable>(&stream, None).unwrap()
+            gdk_pixbuf::Pixbuf::from_stream(&stream, None as Option<&gio::Cancellable>).unwrap()
         };
 
         let window = gtk::ApplicationWindow::new(app);
@@ -423,8 +423,9 @@ pub fn run(
         let outputs_submenu: gtk::Menu = builder.object("outputs_submenu").unwrap();
 
         for (device_count, device) in input_devices.into_iter().enumerate() {
-            let input_menu_item: gtk::MenuItem =
-                gtk::MenuItemBuilder::new().label(&device.label).build();
+            let input_menu_item: gtk::MenuItem = gtk::builders::MenuItemBuilder::new()
+                .label(&device.label)
+                .build();
             input_menu_item.connect_activate(|_| {
                 //send command switch device
             });
@@ -433,8 +434,9 @@ pub fn run(
         }
 
         for (device_count, device) in output_devices.into_iter().enumerate() {
-            let output_menu_item: gtk::MenuItem =
-                gtk::MenuItemBuilder::new().label(&device.label).build();
+            let output_menu_item: gtk::MenuItem = gtk::builders::MenuItemBuilder::new()
+                .label(&device.label)
+                .build();
             output_menu_item.connect_activate(|_| {
                 println!("Clicked output menu item button.");
             });
