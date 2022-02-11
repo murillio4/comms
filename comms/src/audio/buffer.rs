@@ -162,14 +162,16 @@ impl MicSink for MicBuffer {
                 *sample = self.noise_gate.process(*sample);
             }
 
-            let mut encode_buffer = [0u8; 480];
-            let size = self
-                .encoder
-                .encode_float(next_samples, &mut encode_buffer)
-                .expect("Unsure how to handle opus encoding failure yet");
-            self.network_handle
-                .audio(encode_buffer[..size].to_vec())
-                .unwrap();
+            if next_samples.iter().any(|s| *s != f32::EQUILIBRIUM) {
+                let mut encode_buffer = [0u8; 480];
+                let size = self
+                    .encoder
+                    .encode_float(next_samples, &mut encode_buffer)
+                    .expect("Unsure how to handle opus encoding failure yet");
+                self.network_handle
+                    .audio(encode_buffer[..size].to_vec())
+                    .unwrap();
+            }
             unsafe { self.sample_buffer.move_head(480) };
         }
     }
