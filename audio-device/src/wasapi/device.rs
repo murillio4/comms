@@ -213,7 +213,7 @@ impl IMMDeviceWrapper {
             }
         };
 
-        if unsafe { property_value.Anonymous.Anonymous.vt } != Ole::VT_LPWSTR as u16 {
+        if unsafe { property_value.Anonymous.Anonymous.vt } != Ole::VT_LPWSTR.0 as u16 {
             let description = format!("property store produced invalid data: {:?}", unsafe {
                 property_value.Anonymous.Anonymous.vt
             });
