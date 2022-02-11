@@ -1,4 +1,5 @@
 use crate::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
+use crate::priority;
 
 #[derive(Clone)]
 pub struct DeviceInfo {
@@ -34,6 +35,7 @@ pub fn create_minimal_event_loop(
     mic: impl MicSink + 'static,
     playback: UnsharedPlaybackSource<impl PlaybackSource + 'static>,
 ) -> impl EventLoop {
+    priority::bump_priority().unwrap();
     use crate::pulseaudio::audio_connection::{PulseAudioConnection, PulseParameters};
     let parameters = PulseParameters {
         pulseaudio_server: Some("/run/user/1000/pulse/native".to_string()),
@@ -46,7 +48,7 @@ pub fn create_minimal_event_loop(
     mic: impl MicSink,
     playback: UnsharedPlaybackSource<impl PlaybackSource>,
 ) -> impl EventLoop {
-    comms_lib::winlib::bump_priority();
+    priority::bump_priority().unwrap();
     use crate::wasapi::audio_connection::WasapiAudioConnection;
     WasapiAudioConnection::create::<crate::buffer::NoopInterruptReceiver>(mic, playback)
         .create_event_loop()

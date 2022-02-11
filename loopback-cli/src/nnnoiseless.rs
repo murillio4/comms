@@ -88,13 +88,13 @@ fn create_event_loop(mic: Mic, playback: UnsharedPlaybackSource<Playback>) -> im
 
 #[cfg(windows)]
 fn create_event_loop(mic: Mic, playback: UnsharedPlaybackSource<Playback>) -> impl EventLoop {
-    comms_lib::winlib::bump_priority();
     use audio_device::wasapi::audio_connection::WasapiAudioConnection;
     WasapiAudioConnection::create::<audio_device::buffer::NoopInterruptReceiver>(mic, playback)
         .create_event_loop()
 }
 
 fn main() {
+    audio_device::priority::bump_priority().unwrap();
     let (mic, playback) = create_pipeline();
     let event_loop = create_event_loop(mic, playback);
     event_loop.run();

@@ -7,8 +7,6 @@ use std::mem;
 pub mod network;
 pub mod packet;
 pub mod serialization;
-#[cfg(windows)]
-pub mod winlib;
 
 pub type OpusAudioFrame = Vec<u8>;
 

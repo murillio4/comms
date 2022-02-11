@@ -48,8 +48,6 @@ impl BeepPacketSerializer {
 }
 
 fn main() -> Result<(), BeepClientErr> {
-    #[cfg(windows)]
-    comms_lib::winlib::bump_priority();
     let mut serializer = BeepPacketSerializer::new();
 
     let mut args = env::args().take(3).skip(1);

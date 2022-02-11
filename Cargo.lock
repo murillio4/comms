@@ -233,6 +233,7 @@ dependencies = [
 name = "audio-device"
 version = "0.1.0"
 dependencies = [
+ "audio_thread_priority",
  "comms-lib",
  "dasp",
  "lazy_static",
@@ -512,8 +513,6 @@ dependencies = [
  "serde_bytes",
  "slice-deque",
  "thiserror",
- "winapi",
- "windows",
 ]
 
 [[package]]

@@ -16,8 +16,6 @@ use crate::task::EndpointResult;
 use comms_lib::network::{CommsNetworkError, UdpConnection};
 use comms_lib::packet;
 use comms_lib::packet::ClientId;
-#[cfg(windows)]
-use comms_lib::winlib::bump_priority;
 use mio::net::TcpListener;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token, Waker};
@@ -38,9 +36,6 @@ pub async fn on_connect(network_handle: NetworkHandle, client_id: ClientId) -> E
 }
 
 fn main() -> Result<(), CommsServerError> {
-    #[cfg(windows)]
-    bump_priority();
-
     let mut raw_next_client_id: ClientId = 0;
     let mut next_client_id = move || {
         let id = raw_next_client_id;
