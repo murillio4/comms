@@ -47,17 +47,41 @@ impl BeepPacketSerializer {
     }
 }
 
+fn parse_arguments(
+    args: impl Iterator<Item = String>,
+) -> Result<(Option<String>, Option<String>, bool), BeepClientErr> {
+    let mut server_address = None;
+    let mut client_name = None;
+    let mut use_interactive_mode = false;
+
+    for argument in args {
+        // Handle optional flags
+        if !use_interactive_mode && argument.to_lowercase() == "--interactive" {
+            use_interactive_mode = true
+        }
+        // Handle positional arguments
+        else if !argument.starts_with("--") && server_address == None {
+            server_address = Some(argument)
+        } else if !argument.starts_with("--") && client_name == None {
+            client_name = Some(argument)
+        } else {
+            eprintln!("Usage: beep-cli server_address [client_name] [--interactive]");
+            return Err(BeepClientErr::Usage);
+        }
+    }
+
+    Ok((server_address, client_name, use_interactive_mode))
+}
+
 fn main() -> Result<(), BeepClientErr> {
     let mut serializer = BeepPacketSerializer::new();
 
-    let mut args = env::args().take(3).skip(1);
-    let server_address = args.next();
-    let client_name = args.next();
+    let (server_address, client_name, use_interactive_mode) = parse_arguments(env::args().skip(1))?;
 
     let server_address = match server_address {
         Some(server_address) => server_address,
         None => {
-            eprintln!("Usage: beep-cli server_address [client_name]");
+            eprintln!("Usage: beep-cli server_address [client_name] [--interactive]");
             return Err(BeepClientErr::Usage);
         }
     };
@@ -106,24 +130,44 @@ fn main() -> Result<(), BeepClientErr> {
 
     let encoder = Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::LowDelay)?;
 
-    loop {
-        std::thread::sleep(Duration::from_millis(3));
-        let now = SystemTime::now();
-        let diff = now.duration_since(start).unwrap();
-        let ms = diff.as_millis();
-        let samples_since_start_count = ms * 48;
+    if use_interactive_mode {
+        loop {
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
 
-        while samples_since_start_count - sample_count >= 480 {
-            sample_count += 480;
-            let mut chunk = [0f32; 480];
-            for sample in chunk.iter_mut() {
-                *sample = next_value()
+            // One second is 48000 samples, hence we send 480 * 50 = 24000 samples (500ms) for one "press"
+            for _ in 0..50 {
+                let mut chunk = [0f32; 480];
+                for sample in chunk.iter_mut() {
+                    *sample = next_value()
+                }
+
+                let mut opus_buffer = [0u8; 2048];
+                let size = encoder.encode_float(&chunk, &mut opus_buffer)?;
+                let opus_bytes = opus_buffer[..size].to_vec();
+                udp.send(&serializer.serialize(&AudioFromClient(opus_bytes.clone()))?)?;
             }
+        }
+    } else {
+        loop {
+            std::thread::sleep(Duration::from_millis(3));
+            let now = SystemTime::now();
+            let diff = now.duration_since(start).unwrap();
+            let ms = diff.as_millis();
+            let samples_since_start_count = ms * 48;
 
-            let mut opus_buffer = [0u8; 2048];
-            let size = encoder.encode_float(&chunk, &mut opus_buffer)?;
-            let opus_bytes = opus_buffer[..size].to_vec();
-            udp.send(&serializer.serialize(&AudioFromClient(opus_bytes))?)?;
+            while samples_since_start_count - sample_count >= 480 {
+                sample_count += 480;
+                let mut chunk = [0f32; 480];
+                for sample in chunk.iter_mut() {
+                    *sample = next_value()
+                }
+
+                let mut opus_buffer = [0u8; 2048];
+                let size = encoder.encode_float(&chunk, &mut opus_buffer)?;
+                let opus_bytes = opus_buffer[..size].to_vec();
+                udp.send(&serializer.serialize(&AudioFromClient(opus_bytes))?)?;
+            }
         }
     }
 }
@@ -151,5 +195,86 @@ impl From<SerializeError> for BeepClientErr {
 impl From<audiopus::Error> for BeepClientErr {
     fn from(_: audiopus::Error) -> Self {
         BeepClientErr::Opus
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ip_only() {
+        let test_string = [String::from("127.0.0.1")];
+        assert_eq!(
+            parse_arguments(test_string.into_iter()).unwrap(),
+            (Some("127.0.0.1".to_string()), None, false)
+        );
+    }
+
+    #[test]
+    fn test_parse_interactive_enabled() {
+        let test_string = [String::from("127.0.0.1"), String::from("--interactive")];
+        assert_eq!(
+            parse_arguments(test_string.into_iter()).unwrap(),
+            (Some("127.0.0.1".to_string()), None, true)
+        );
+    }
+
+    #[test]
+    fn test_parse_interactive_enabled_badly_spelled() {
+        let test_string = [String::from("127.0.0.1"), String::from("---interactive")];
+        assert!(parse_arguments(test_string.into_iter()).is_err());
+    }
+
+    #[test]
+    fn test_parse_client_name_and_interactive_enabled() {
+        let test_string = [
+            String::from("127.0.0.1"),
+            String::from("Bob"),
+            String::from("--interactive"),
+        ];
+        assert_eq!(
+            parse_arguments(test_string.into_iter()).unwrap(),
+            (Some("127.0.0.1".to_string()), Some("Bob".to_string()), true)
+        );
+    }
+
+    #[test]
+    fn test_parse_double_client_name() {
+        let test_string = [
+            String::from("127.0.0.1"),
+            String::from("Bob"),
+            String::from("Mitch"),
+        ];
+        assert!(parse_arguments(test_string.into_iter()).is_err());
+    }
+
+    #[test]
+    fn test_parse_bad_optional_argument() {
+        let test_string = [
+            String::from("127.0.0.1"),
+            String::from("--icantspelloptionalargument"),
+        ];
+        assert!(parse_arguments(test_string.into_iter()).is_err());
+    }
+
+    #[test]
+    fn test_parse_too_many_args() {
+        let test_string = [
+            String::from("127.0.0.1"),
+            String::from("Bob"),
+            String::from("--interactive"),
+            String::from("argument"),
+        ];
+        assert!(parse_arguments(test_string.into_iter()).is_err());
+    }
+
+    #[test]
+    fn test_parse_dumb_order() {
+        let test_string = [String::from("--interactive"), String::from("127.0.0.1")];
+        assert_eq!(
+            parse_arguments(test_string.into_iter()).unwrap(),
+            (Some("127.0.0.1".to_string()), None, true)
+        );
     }
 }
