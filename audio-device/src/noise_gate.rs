@@ -121,7 +121,7 @@ impl GateNoiseFilter {
         self.recent_rms.push(rms);
 
         let noise_floor = self.recent_rms.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-        self.threshold = noise_floor + 0.007;
+        self.threshold = noise_floor + 0.005;
         self.state.update_threshold_state(rms > self.threshold);
     }
 
