@@ -2,3 +2,5 @@
 *.iml
 target
 **/*.rs.bk
+package
+comms.exe
