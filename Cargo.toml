@@ -10,3 +10,6 @@ members = [
     "live-noise-gate-ui",
     "loopback-cli",
 ]
+
+[profile.release]
+lto = true
