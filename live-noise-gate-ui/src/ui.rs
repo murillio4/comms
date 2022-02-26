@@ -3,7 +3,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use eframe::egui::plot::{Legend, Values};
-use eframe::egui::CtxRef;
+use eframe::egui::Context;
 use eframe::epi::Frame;
 use eframe::{egui, epi};
 use egui::plot::{HLine, Line, Plot};
@@ -215,7 +215,7 @@ struct App {
 }
 
 impl epi::App for App {
-    fn update(&mut self, ctx: &CtxRef, frame: &Frame) {
+    fn update(&mut self, ctx: &Context, frame: &Frame) {
         let Self { time, noise_gate } = self;
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {

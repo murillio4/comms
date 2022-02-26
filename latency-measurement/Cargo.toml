@@ -14,8 +14,8 @@ path = "src/ui.rs"
 
 
 [dependencies]
-audio_thread_priority = "0.23.4"
-eframe = "0.16.0"
+audio_thread_priority = "0.26"
+eframe = "0.17.0"
 
 [dependencies.audio-device]
 path = "../audio-device"

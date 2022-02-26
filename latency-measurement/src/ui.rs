@@ -3,7 +3,7 @@ mod ui_audio;
 use crate::egui::plot::{Legend, Line, Plot, Value, Values};
 use crate::egui::{Button, Color32, ProgressBar, Response, Ui, Widget};
 use crate::ui_audio::AudioCommand;
-use eframe::egui::CtxRef;
+use eframe::egui::Context;
 use eframe::epi::Frame;
 use eframe::{egui, epi};
 use std::ops::Neg;
@@ -145,7 +145,7 @@ struct App {
 }
 
 impl epi::App for App {
-    fn update(&mut self, ctx: &CtxRef, _: &Frame) {
+    fn update(&mut self, ctx: &Context, _: &Frame) {
         for data in self.audio_rx.try_iter() {
             match data {
                 AudioData::IncomingSample(when, sample) => {
