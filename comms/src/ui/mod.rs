@@ -357,11 +357,17 @@ pub fn run(
         stack.set_transition_duration(300);
 
         // --- Setup for connect-to-server state
+
+        let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
+
         if let Some(initial_storage) = initial_local_storage {
-            let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
-            username_entry.set_text(&initial_storage.username);
             let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
             server_entry.set_text(&initial_storage.server);
+            username_entry.set_text(&initial_storage.username);
+        } else {
+            if let Some(val) = std::env::var_os(if cfg!(windows) { "USERNAME" } else { "USER" }) {
+                username_entry.set_text(&val.to_string_lossy().to_string());
+            }
         }
 
         let submit_connection_form = {
