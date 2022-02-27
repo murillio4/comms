@@ -50,12 +50,15 @@ build_release_windows:
   only:
     - master
   script:
+    - if (Test-Path "comms.exe") { rm "comms.exe" }
     - cargo fmt --all -- --check
     - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo test
     - cargo build --all --release
+    - comms/package.ps1
   artifacts:
     paths:
+      - comms.exe
       - target/release/beep-cli.exe
       - target/release/comms.exe
       - target/release/comms-server.exe
