@@ -16,6 +16,10 @@ path = "src/noise_gate.rs"
 name = "opus"
 path = "src/opus.rs"
 
+[[bin]]
+name = "opus_drop_packets"
+path = "src/opus_drop_packets.rs"
+
 [dependencies]
 audiopus = "0.2.0"
 dasp = "0.11.0"
