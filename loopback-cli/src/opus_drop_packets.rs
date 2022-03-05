@@ -2,7 +2,6 @@ use audio_device::audio_connection::{create_minimal_event_loop, EventLoop};
 use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use audiopus::coder::{Decoder, Encoder};
 use audiopus::{Application, Channels, SampleRate};
-use dasp::Sample;
 use slice_deque::SliceDeque;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::Instant;
@@ -72,7 +71,16 @@ impl PlaybackSource for Playback {
                     self.pcm_samples.extend_from_slice(&pcm_buffer[..size]);
                     self.pcm_samples.pop_front().unwrap()
                 }
-                Err(TryRecvError::Empty) => Sample::EQUILIBRIUM,
+                Err(TryRecvError::Empty) => {
+                    let mut pcm_buffer = [0f32; 480];
+
+                    let size = self
+                        .decoder
+                        .decode_float(None as Option<&[u8]>, &mut pcm_buffer as &mut [f32], false)
+                        .unwrap();
+                    self.pcm_samples.extend_from_slice(&pcm_buffer[..size]);
+                    self.pcm_samples.pop_front().unwrap()
+                }
                 Err(TryRecvError::Disconnected) => unimplemented!("channel failed"),
             },
         }
