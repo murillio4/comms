@@ -1,5 +1,8 @@
 # Comms
 
+![screenshot of the connect pane](doc/screenshot-connect.png)
+![screenshot of the user-list pane](doc/screenshot-user-list.png)
+
 ## Linux Build Instructions
 
 1. Install `rust`, GTK3 libs, opus libs
