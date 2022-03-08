@@ -13,6 +13,17 @@ mod ui;
 // const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 
 fn main() {
+    #[cfg(release)]
+    let _guard = sentry::init((
+        "https://3fb3d81f3fed453198dcd46fa47971ff@sentry.fuzzlesoft.ca/2",
+        sentry::ClientOptions {
+            release: std::option_env!("CI_COMMIT_SHA").map(Cow::from),
+            send_default_pii: true,
+            environment: std::option_env!("CI_COMMIT_SHA").map(|_| Cow::from("production")),
+            ..Default::default()
+        },
+    ));
+
     let orig_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
         orig_hook(panic_info);
