@@ -66,11 +66,3 @@ build_release_windows:
   when: manual
   tags:
     - windows
-
-cache:
-  key:
-    files:
-      - Cargo.lock
-    prefix: ${CI_JOB_NAME}
-  paths:
-    - target
