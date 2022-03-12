@@ -21,6 +21,8 @@ pub enum AudioCommand {
     #[allow(dead_code)]
     SwitchOutputDevice(String),
     ListDevices,
+    #[allow(dead_code)]
+    ChangeVolume(ClientId, u8),
 }
 
 impl Display for AudioCommand {
@@ -33,6 +35,7 @@ impl Display for AudioCommand {
             AudioCommand::SwitchInputDevice(_) => f.write_str("SwitchInputDevice"),
             AudioCommand::SwitchOutputDevice(_) => f.write_str("SwitchOutputDevice"),
             AudioCommand::ListDevices => f.write_str("ListDevices"),
+            AudioCommand::ChangeVolume(..) => f.write_str("ChangeVolume"),
         }
     }
 }
@@ -119,6 +122,9 @@ impl<R> InterruptReceiver<R> for AudioReceiver<R> {
                             .unwrap();
                     });
                 }
+                AudioCommand::ChangeVolume(id, volume) => self.multiplexer.with(|multiplexer| {
+                    multiplexer.change_volume(id, volume as f32 / 100.0);
+                }),
             }
         }
     }

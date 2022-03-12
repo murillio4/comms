@@ -14,6 +14,7 @@ use std::rc::Rc;
 struct ClientQueue {
     decoder: Decoder,
     sample_buffer: SliceDeque<f32>,
+    current_volume: f32,
 }
 
 impl ClientQueue {
@@ -24,12 +25,13 @@ impl ClientQueue {
             // 800 samples at a time, so it's unlikely to back up this much unless a burst of
             // audio arrives.
             sample_buffer: SliceDeque::with_capacity(4096),
+            current_volume: 1.0,
         })
     }
 
     fn next_sample(&mut self) -> Result<f32, audiopus::Error> {
-        match self.sample_buffer.pop_front() {
-            Some(sample) => Ok(sample),
+        let sample = match self.sample_buffer.pop_front() {
+            Some(sample) => sample,
             None => {
                 let mut decode_buffer = [0f32; 480];
                 let size = self.decoder.decode_float(
@@ -39,9 +41,10 @@ impl ClientQueue {
                 )?;
                 self.sample_buffer
                     .extend_from_slice(&decode_buffer[1..size]);
-                Ok(decode_buffer[0])
+                decode_buffer[0]
             }
-        }
+        };
+        Ok(sample * self.current_volume)
     }
 }
 
@@ -57,7 +60,8 @@ impl Multiplexer {
     }
 
     pub fn new_client(&mut self, id: ClientId) -> Result<(), audiopus::Error> {
-        self.client_queues.insert(id, ClientQueue::new()?);
+        let client_queue = ClientQueue::new()?;
+        self.client_queues.insert(id, client_queue);
         Ok(())
     }
 
@@ -88,6 +92,12 @@ impl Multiplexer {
 
     pub fn clear(&mut self) {
         self.client_queues.clear();
+    }
+
+    pub fn change_volume(&mut self, id: ClientId, volume: f32) {
+        if let Some(client) = self.client_queues.get_mut(&id) {
+            client.current_volume = volume;
+        }
     }
 }
 
