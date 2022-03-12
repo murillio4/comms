@@ -60,8 +60,7 @@ impl Multiplexer {
     }
 
     pub fn new_client(&mut self, id: ClientId) -> Result<(), audiopus::Error> {
-        let client_queue = ClientQueue::new()?;
-        self.client_queues.insert(id, client_queue);
+        self.client_queues.insert(id, ClientQueue::new()?);
         Ok(())
     }
 
