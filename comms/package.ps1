@@ -51,8 +51,7 @@ cp (Join-Path -Path $msys_dir -ChildPath "mingw64\lib\gdk-pixbuf-2.0\2.10.0\load
 
 SETLOCAL
 SET GDK_PIXBUF_MODULE_FILE=%~dp0\loaders.cache
-
-CALL %~dp0\comms.exe %*
+CALL "%~dp0\comms.exe" %*
 EXIT /B %ERRORLEVEL%
 "@)
 
