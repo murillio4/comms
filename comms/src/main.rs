@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::mpsc;
 use std::{panic, process};
 
@@ -13,7 +14,7 @@ mod ui;
 // const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 
 fn main() {
-    #[cfg(release)]
+    #[cfg(not(debug_assertions))]
     let _guard = sentry::init((
         "https://3fb3d81f3fed453198dcd46fa47971ff@sentry.fuzzlesoft.ca/2",
         sentry::ClientOptions {
