@@ -5,5 +5,5 @@
 
 $bytes = [Convert]::FromBase64String($env:CERTIFICATE)
 [IO.File]::WriteAllBytes("$PWD\certificate.pfx", $bytes)
-& $env:SIGN_TOOL_PATH sign /tr http://timestamp.digicert.com /td SHA256 /fd SHA256 /f certificate.pfx /p $env:CERTIFICATE_PASSWORD comms.exe
+& "$env:SIGN_TOOL_PATH" sign /tr http://timestamp.digicert.com /td SHA256 /fd SHA256 /f certificate.pfx /p $env:CERTIFICATE_PASSWORD comms.exe
 rm .\certificate.pfx
