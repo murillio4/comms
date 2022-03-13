@@ -1,5 +1,7 @@
 # Comms
 
+[😎 Fetch the most recently built Comms for Windows here! 😎](https://gitlab.com/comms-app/comms/-/jobs/artifacts/master/raw/comms.exe?job=build_release_windows)
+
 ![screenshot of the connect pane](doc/screenshot-connect.png)
 ![screenshot of the user-list pane](doc/screenshot-user-list.png)
 
