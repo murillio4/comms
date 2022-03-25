@@ -169,15 +169,7 @@ impl<
 
 fn wait_for_handle_signal(handles: &[HANDLE]) -> Result<usize, String> {
     debug_assert!(handles.len() <= SystemServices::MAXIMUM_WAIT_OBJECTS as usize);
-    let result = unsafe {
-        Threading::WaitForMultipleObjectsEx(
-            handles.len() as u32,
-            handles.as_ptr(),
-            false,
-            u32::MAX,
-            false,
-        )
-    };
+    let result = unsafe { Threading::WaitForMultipleObjectsEx(handles, false, u32::MAX, false) };
     if result == Foundation::WAIT_FAILED.0 {
         let err = unsafe { Foundation::GetLastError() };
         let description = format!("WaitForMultipleObjectsEx failed: {:?}", err);
