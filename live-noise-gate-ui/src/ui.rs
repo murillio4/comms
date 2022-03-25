@@ -17,7 +17,9 @@ const GRAPH_DURATION: Duration = Duration::from_millis(PLOT_NUMBER_OF_CHUNKS * 1
 
 pub enum IncomingAudioPlotData {
     Sample(f32),
-    NoiseGateLevel(f32),
+    NoiseGateThreshold(f32),
+    RecentRms(AllocRingBuffer<f32>),
+    StateChange(u8),
 }
 
 pub struct AudioPlot {
@@ -25,6 +27,8 @@ pub struct AudioPlot {
     aggregate: Vec<f32>,
     threshold: f32,
     samples: VecDeque<(Instant, f32)>,
+    recent_rms: Option<AllocRingBuffer<f32>>,
+    state: u8,
 }
 
 impl AudioPlot {
@@ -34,6 +38,8 @@ impl AudioPlot {
             aggregate: Vec::new(),
             threshold: 0f32,
             samples: VecDeque::new(),
+            recent_rms: None,
+            state: 0u8,
         }
     }
 }
@@ -58,9 +64,11 @@ impl AudioPlot {
                         samples.push_back((Instant::now(), next_sample));
                     }
                 }
-                IncomingAudioPlotData::NoiseGateLevel(threshold) => {
+                IncomingAudioPlotData::NoiseGateThreshold(threshold) => {
                     self.threshold = threshold;
                 }
+                IncomingAudioPlotData::RecentRms(recent_rms) => self.recent_rms = Some(recent_rms),
+                IncomingAudioPlotData::StateChange(state) => self.state = state,
             }
         }
 
@@ -93,6 +101,42 @@ impl AudioPlot {
         .color(Color32::from_rgb(100, 220, 100))
         .name("Samples")
     }
+
+    fn recent_rms(&mut self) -> Line {
+        if let Some(recent_rms) = &self.recent_rms {
+            if recent_rms.is_empty() {
+                return Line::new(Values::default());
+            }
+            let offset = (PLOT_NUMBER_OF_CHUNKS - recent_rms.len() as u64) as f64;
+            Line::new(Values::from_parametric_callback(
+                move |t| {
+                    (
+                        (offset + t) * 10.0,
+                        recent_rms.get(t as isize).copied().unwrap_or(0f32) as f64,
+                    )
+                },
+                0f64..=recent_rms.len() as f64 - 1f64,
+                recent_rms.len(),
+            ))
+        } else {
+            Line::new(Values::default())
+        }
+    }
+
+    fn threshold(&self) -> HLine {
+        let threshold_color = match self.state {
+            0 => Color32::from_rgb(255, 50, 255),
+            1 => Color32::from_rgb(255, 50, 50),
+            2 => Color32::from_rgb(50, 50, 255),
+            3 => Color32::from_rgb(50, 50, 255),
+            4 => Color32::from_rgb(50, 255, 50),
+            _ => Color32::from_rgb(50, 50, 50),
+        };
+
+        HLine::new(self.threshold)
+            .color(threshold_color)
+            .name("Threshold")
+    }
 }
 
 impl Widget for &mut AudioPlot {
@@ -108,102 +152,8 @@ impl Widget for &mut AudioPlot {
             .legend(Legend::default())
             .show(ui, |plot| {
                 plot.line(self.samples());
-                plot.hline(
-                    HLine::new(self.threshold)
-                        .color(Color32::from_rgb(50, 50, 255))
-                        .name("Threshold"),
-                )
-            })
-            .response
-    }
-}
-
-pub enum IncomingNoiseGatePlotData {
-    RecentRms(AllocRingBuffer<f32>),
-    Threshold(f32),
-    StateChange(u8),
-}
-
-pub struct NoiseGatePlot {
-    receiver: Receiver<IncomingNoiseGatePlotData>,
-    recent_rms: Option<AllocRingBuffer<f32>>,
-    threshold: f32,
-    state: u8,
-}
-
-impl NoiseGatePlot {
-    fn new(receiver: Receiver<IncomingNoiseGatePlotData>) -> Self {
-        Self {
-            receiver,
-            recent_rms: None,
-            threshold: 0f32,
-            state: 0u8,
-        }
-    }
-}
-
-impl NoiseGatePlot {
-    fn update(&mut self) {
-        for incoming_data in self.receiver.try_iter() {
-            match incoming_data {
-                IncomingNoiseGatePlotData::RecentRms(recent_rms) => {
-                    self.recent_rms = Some(recent_rms)
-                }
-                IncomingNoiseGatePlotData::Threshold(threshold) => self.threshold = threshold,
-                IncomingNoiseGatePlotData::StateChange(state) => self.state = state,
-            }
-        }
-    }
-
-    fn recent_rms(&mut self) -> Line {
-        if let Some(recent_rms) = &self.recent_rms {
-            if recent_rms.is_empty() {
-                return Line::new(Values::default());
-            }
-            let offset = (PLOT_NUMBER_OF_CHUNKS - recent_rms.len() as u64) as f64;
-            Line::new(Values::from_parametric_callback(
-                move |t| {
-                    (
-                        offset + t,
-                        recent_rms.get(t as isize).copied().unwrap_or(0f32) as f64,
-                    )
-                },
-                0f64..=recent_rms.len() as f64 - 1f64,
-                recent_rms.len(),
-            ))
-        } else {
-            Line::new(Values::default())
-        }
-    }
-}
-
-impl Widget for &mut NoiseGatePlot {
-    fn ui(self, ui: &mut Ui) -> Response {
-        ui.ctx().request_repaint();
-        self.update();
-
-        let threshold_color = match self.state {
-            0 => Color32::from_rgb(255, 50, 255),
-            1 => Color32::from_rgb(255, 50, 50),
-            2 => Color32::from_rgb(50, 50, 255),
-            3 => Color32::from_rgb(50, 50, 255),
-            4 => Color32::from_rgb(50, 255, 50),
-            _ => Color32::from_rgb(50, 50, 50),
-        };
-
-        Plot::new("Noise Gate Plot")
-            .include_x(0f64)
-            .include_x(PLOT_NUMBER_OF_CHUNKS as f64)
-            .include_y(0f64)
-            .include_y(0.05f64)
-            .legend(Legend::default())
-            .show(ui, |plot| {
                 plot.line(self.recent_rms());
-                plot.hline(
-                    HLine::new(self.threshold)
-                        .color(threshold_color)
-                        .name("Threshold"),
-                )
+                plot.hline(self.threshold())
             })
             .response
     }
@@ -211,12 +161,11 @@ impl Widget for &mut NoiseGatePlot {
 
 struct App {
     time: AudioPlot,
-    noise_gate: NoiseGatePlot,
 }
 
 impl epi::App for App {
     fn update(&mut self, ctx: &Context, frame: &Frame) {
-        let Self { time, noise_gate } = self;
+        let Self { time } = self;
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
@@ -229,9 +178,7 @@ impl epi::App for App {
             });
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            let plot_height = ui.available_height() / 2.0;
-            ui.add_sized([ui.available_width(), plot_height], time);
-            ui.add_sized([ui.available_width(), plot_height], noise_gate);
+            ui.add_sized([ui.available_width(), ui.available_height()], time);
         });
     }
 
@@ -240,13 +187,9 @@ impl epi::App for App {
     }
 }
 
-pub fn run(
-    time_plot_receiver: Receiver<IncomingAudioPlotData>,
-    noise_gate_receiver: Receiver<IncomingNoiseGatePlotData>,
-) {
+pub fn run(time_plot_receiver: Receiver<IncomingAudioPlotData>) {
     let app = App {
         time: AudioPlot::new(time_plot_receiver),
-        noise_gate: NoiseGatePlot::new(noise_gate_receiver),
     };
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(Box::new(app), native_options);

@@ -1,4 +1,4 @@
-use crate::ui::{IncomingAudioPlotData, IncomingNoiseGatePlotData};
+use crate::ui::IncomingAudioPlotData;
 use audio_device::audio_connection::{create_minimal_event_loop, EventLoop};
 use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use audio_device::noise_gate::{GateNoiseFilter, State};
@@ -32,7 +32,6 @@ impl MicSink for MicForLoopback {
 pub struct PlaybackForLoopback {
     receiver: Receiver<Vec<f32>>,
     audio_plot_sender: Sender<IncomingAudioPlotData>,
-    noise_gate_plot_sender: Sender<IncomingNoiseGatePlotData>,
     gate: GateNoiseFilter,
     pcm_samples: SliceDeque<f32>,
 }
@@ -49,27 +48,22 @@ impl PlaybackSource for PlaybackForLoopback {
                 };
                 let samples_f32: Vec<f32> = samples.iter().map(|s| s.to_sample::<f32>()).collect();
                 self.gate.update_window(&samples_f32);
-                self.noise_gate_plot_sender
-                    .send(IncomingNoiseGatePlotData::RecentRms(
+                self.audio_plot_sender
+                    .send(IncomingAudioPlotData::RecentRms(
                         self.gate.recent_rms.clone(),
                     ))
                     .unwrap();
-                self.noise_gate_plot_sender
-                    .send(IncomingNoiseGatePlotData::Threshold(self.gate.threshold))
-                    .unwrap();
-                self.noise_gate_plot_sender
-                    .send(IncomingNoiseGatePlotData::StateChange(
-                        match self.gate.state {
-                            State::Off => 0,
-                            State::Attack(_) => 1,
-                            State::Active => 2,
-                            State::Hold(_) => 3,
-                            State::Release(_) => 4,
-                        },
-                    ))
+                self.audio_plot_sender
+                    .send(IncomingAudioPlotData::StateChange(match self.gate.state {
+                        State::Off => 0,
+                        State::Attack(_) => 1,
+                        State::Active => 2,
+                        State::Hold(_) => 3,
+                        State::Release(_) => 4,
+                    }))
                     .unwrap();
                 self.audio_plot_sender
-                    .send(IncomingAudioPlotData::NoiseGateLevel(
+                    .send(IncomingAudioPlotData::NoiseGateThreshold(
                         self.gate.threshold as f32,
                     ))
                     .unwrap();
@@ -84,7 +78,6 @@ impl PlaybackSource for PlaybackForLoopback {
 
 pub fn create_pipeline(
     audio_plot_sender: Sender<IncomingAudioPlotData>,
-    noise_gate_plot_sender: Sender<IncomingNoiseGatePlotData>,
 ) -> (MicForLoopback, UnsharedPlaybackSource<PlaybackForLoopback>) {
     let (tx, rx) = channel();
     (
@@ -96,18 +89,14 @@ pub fn create_pipeline(
         UnsharedPlaybackSource(PlaybackForLoopback {
             receiver: rx,
             audio_plot_sender,
-            noise_gate_plot_sender,
             pcm_samples: SliceDeque::new(),
             gate: GateNoiseFilter::new(128),
         }),
     )
 }
 
-pub fn run(
-    audio_plot_sender: Sender<IncomingAudioPlotData>,
-    noise_gate_plot_sender: Sender<IncomingNoiseGatePlotData>,
-) {
-    let (mic, playback) = create_pipeline(audio_plot_sender, noise_gate_plot_sender);
+pub fn run(audio_plot_sender: Sender<IncomingAudioPlotData>) {
+    let (mic, playback) = create_pipeline(audio_plot_sender);
     let event_loop = create_minimal_event_loop(mic, playback);
     event_loop.run();
 }
