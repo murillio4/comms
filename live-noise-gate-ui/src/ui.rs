@@ -228,9 +228,10 @@ impl epi::App for App {
                 });
             });
         });
-        egui::TopBottomPanel::top("time_plot").show(ctx, |ui| {
-            ui.add_sized([250.0, 250.0], time);
-            ui.add_sized([250.0, 250.0], noise_gate);
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let plot_height = ui.available_height() / 2.0;
+            ui.add_sized([ui.available_width(), plot_height], time);
+            ui.add_sized([ui.available_width(), plot_height], noise_gate);
         });
     }
 
