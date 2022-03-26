@@ -97,7 +97,7 @@ impl State {
 }
 
 pub struct GateNoiseFilter {
-    pub recent_rms: AllocRingBuffer<f32>,
+    pub recent_chunks: AllocRingBuffer<f32>,
     pub threshold: f32,
     pub state: State,
 }
@@ -105,7 +105,7 @@ pub struct GateNoiseFilter {
 impl GateNoiseFilter {
     pub fn new(sliding_window_chunk_count: usize) -> Self {
         GateNoiseFilter {
-            recent_rms: AllocRingBuffer::with_capacity(sliding_window_chunk_count),
+            recent_chunks: AllocRingBuffer::with_capacity(sliding_window_chunk_count),
             threshold: 0f32,
             state: State::Off,
         }
@@ -118,9 +118,19 @@ impl GateNoiseFilter {
         }
 
         let rms = (accumulator / next_chunk.len() as f32).sqrt() as f32;
-        self.recent_rms.push(rms);
 
-        let noise_floor = self.recent_rms.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let max = next_chunk
+            .iter()
+            .map(|s| s.abs())
+            .max_by(|x, y| x.partial_cmp(y).unwrap())
+            .unwrap();
+
+        self.recent_chunks.push(max);
+
+        let noise_floor = self
+            .recent_chunks
+            .iter()
+            .fold(f32::INFINITY, |a, &b| a.min(b));
         self.threshold = noise_floor + 0.005;
         self.state.update_threshold_state(rms > self.threshold);
     }

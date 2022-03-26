@@ -10,7 +10,7 @@ use eframe::{egui, epi};
 use egui::plot::{HLine, Line, Plot};
 use egui::*;
 
-const SAMPLES_IN_BUCKET: usize = 32;
+const SAMPLES_IN_BUCKET: usize = 16;
 const GRAPH_DURATION_IN_SAMPLES: usize = NOISE_GATE_CHUNK_LEN * SAMPLES_IN_CHUNK;
 const GRAPH_DURATION: Duration =
     Duration::from_millis((GRAPH_DURATION_IN_SAMPLES as f64 / 44.800) as u64);
@@ -21,6 +21,7 @@ pub enum IncomingAudioPlotData {
     SampleChunk(Vec<f32>),
     NoiseGateThreshold(f32),
     ChunkRms(f32),
+    ChunkMax(f32),
     StateChange(u8),
 }
 
@@ -50,7 +51,8 @@ pub struct AudioPlot {
     aggregate: Vec<f32>,
     threshold: f32,
     buckets: VecDeque<(Instant, f32)>,
-    chunks: VecDeque<(Instant, f32)>,
+    chunk_rmses: VecDeque<(Instant, f32)>,
+    chunk_maxes: VecDeque<(Instant, f32)>,
     state: u8,
     last_bucket_instant: Instant,
 }
@@ -62,7 +64,8 @@ impl AudioPlot {
             aggregate: Vec::new(),
             threshold: 0f32,
             buckets: VecDeque::new(),
-            chunks: VecDeque::new(),
+            chunk_rmses: VecDeque::new(),
+            chunk_maxes: VecDeque::new(),
             state: 0u8,
             last_bucket_instant: Instant::now(),
         }
@@ -75,7 +78,8 @@ impl AudioPlot {
             receiver,
             aggregate,
             buckets,
-            chunks,
+            chunk_rmses,
+            chunk_maxes,
             last_bucket_instant,
             ..
         } = self;
@@ -108,15 +112,19 @@ impl AudioPlot {
                 IncomingAudioPlotData::NoiseGateThreshold(threshold) => {
                     self.threshold = threshold;
                 }
-                IncomingAudioPlotData::ChunkRms(chunk_rms) => {
-                    chunks.push_back((Instant::now(), chunk_rms))
+                IncomingAudioPlotData::ChunkRms(rms) => {
+                    chunk_rmses.push_back((Instant::now(), rms))
+                }
+                IncomingAudioPlotData::ChunkMax(max) => {
+                    chunk_maxes.push_back((Instant::now(), max))
                 }
                 IncomingAudioPlotData::StateChange(state) => self.state = state,
             }
         }
 
         buckets.retain(|(instant, _)| instant.elapsed() < GRAPH_DURATION);
-        chunks.retain(|(instant, _)| instant.elapsed() < GRAPH_DURATION);
+        chunk_rmses.retain(|(instant, _)| instant.elapsed() < GRAPH_DURATION);
+        chunk_maxes.retain(|(instant, _)| instant.elapsed() < GRAPH_DURATION);
     }
 
     fn buckets(&mut self) -> Line {
@@ -128,11 +136,11 @@ impl AudioPlot {
 
         samples_to_line(buckets)
             .color(Color32::from_rgb(100, 220, 100))
-            .name("Samples (groups of 32)")
+            .name(format!("Samples (groups of {})", SAMPLES_IN_BUCKET))
     }
 
-    fn recent_rms(&mut self) -> Line {
-        let chunks = &self.chunks;
+    fn rmses(&mut self) -> Line {
+        let chunks = &self.chunk_rmses;
 
         if chunks.is_empty() {
             return Line::new(Values::default());
@@ -140,7 +148,19 @@ impl AudioPlot {
 
         samples_to_line(chunks)
             .color(Color32::from_rgb(220, 100, 100))
-            .name("RMS (\"averaged\" amplitude)")
+            .name("Chunk RMSes")
+    }
+
+    fn maxes(&mut self) -> Line {
+        let chunks = &self.chunk_maxes;
+
+        if chunks.is_empty() {
+            return Line::new(Values::default());
+        }
+
+        samples_to_line(chunks)
+            .color(Color32::from_rgb(100, 100, 220))
+            .name("Chunk maxes")
     }
 
     fn threshold(&self) -> HLine {
@@ -172,7 +192,8 @@ impl Widget for &mut AudioPlot {
             .legend(Legend::default())
             .show(ui, |plot| {
                 plot.line(self.buckets());
-                plot.line(self.recent_rms());
+                plot.line(self.rmses());
+                plot.line(self.maxes());
                 plot.hline(self.threshold())
             })
             .response

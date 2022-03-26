@@ -3,7 +3,6 @@ use audio_device::audio_connection::{create_minimal_event_loop, EventLoop};
 use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use audio_device::noise_gate::{GateNoiseFilter, State};
 use dasp::Sample;
-use ringbuffer::RingBufferExt;
 use slice_deque::SliceDeque;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 
@@ -61,11 +60,25 @@ impl PlaybackSource for PlaybackForLoopback {
                     Err(TryRecvError::Disconnected) => unimplemented!("channel failed"),
                 };
                 let samples_f32: Vec<f32> = samples.iter().map(|s| s.to_sample::<f32>()).collect();
+
+                let mut accumulator = 0f32;
+                for sample in &samples_f32 {
+                    accumulator += sample * sample;
+                }
+
+                let rms = (accumulator / samples_f32.len() as f32).sqrt() as f32;
+                let max = samples_f32
+                    .iter()
+                    .map(|s| s.abs())
+                    .max_by(|x, y| x.partial_cmp(y).unwrap())
+                    .unwrap();
+
                 self.gate.update_window(&samples_f32);
                 self.audio_plot_sender
-                    .send(IncomingAudioPlotData::ChunkRms(
-                        *self.gate.recent_rms.back().unwrap(),
-                    ))
+                    .send(IncomingAudioPlotData::ChunkMax(max))
+                    .unwrap();
+                self.audio_plot_sender
+                    .send(IncomingAudioPlotData::ChunkRms(rms))
                     .unwrap();
                 self.audio_plot_sender
                     .send(IncomingAudioPlotData::StateChange(match self.gate.state {
