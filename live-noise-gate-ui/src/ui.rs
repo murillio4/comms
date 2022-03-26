@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::audio::{NOISE_GATE_CHUNK_LEN, SAMPLES_IN_CHUNK};
@@ -22,6 +22,10 @@ pub enum IncomingAudioPlotData {
     NoiseGateThreshold(f32),
     ChunkRms(f32),
     StateChange(u8),
+}
+
+pub enum Command {
+    ToggleMute,
 }
 
 fn samples_to_line(samples: &VecDeque<(Instant, f32)>) -> Line {
@@ -177,11 +181,17 @@ impl Widget for &mut AudioPlot {
 
 struct App {
     time: AudioPlot,
+    is_muted: bool,
+    command_tx: Sender<Command>,
 }
 
 impl epi::App for App {
     fn update(&mut self, ctx: &Context, frame: &Frame) {
-        let Self { time } = self;
+        let Self {
+            time,
+            is_muted,
+            command_tx,
+        } = self;
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
@@ -194,6 +204,11 @@ impl epi::App for App {
             });
         });
         egui::CentralPanel::default().show(ctx, |ui| {
+            let mute_control_text = if *is_muted { "Unmute" } else { "Mute" };
+            if ui.button(mute_control_text).clicked() {
+                *is_muted = !*is_muted;
+                command_tx.send(Command::ToggleMute).unwrap();
+            }
             ui.add_sized([ui.available_width(), ui.available_height()], time);
         });
     }
@@ -203,9 +218,11 @@ impl epi::App for App {
     }
 }
 
-pub fn run(time_plot_receiver: Receiver<IncomingAudioPlotData>) {
+pub fn run(command_tx: Sender<Command>, time_plot_receiver: Receiver<IncomingAudioPlotData>) {
     let app = App {
         time: AudioPlot::new(time_plot_receiver),
+        is_muted: false,
+        command_tx,
     };
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(Box::new(app), native_options);

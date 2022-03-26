@@ -5,8 +5,9 @@ mod ui;
 
 fn main() {
     let (audio_tx, audio_rx) = channel();
+    let (command_tx, command_rx) = channel();
     std::thread::spawn(|| {
-        audio::run(audio_tx);
+        audio::run(command_rx, audio_tx);
     });
-    ui::run(audio_rx);
+    ui::run(command_tx, audio_rx);
 }

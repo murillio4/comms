@@ -1,4 +1,4 @@
-use crate::ui::IncomingAudioPlotData;
+use crate::ui::{Command, IncomingAudioPlotData};
 use audio_device::audio_connection::{create_minimal_event_loop, EventLoop};
 use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use audio_device::noise_gate::{GateNoiseFilter, State};
@@ -35,13 +35,23 @@ impl MicSink for MicForLoopback {
 
 pub struct PlaybackForLoopback {
     receiver: Receiver<Vec<f32>>,
+    command_rx: Receiver<Command>,
     audio_plot_sender: Sender<IncomingAudioPlotData>,
     gate: GateNoiseFilter,
     pcm_samples: SliceDeque<f32>,
+    is_muted: bool,
 }
 
 impl PlaybackSource for PlaybackForLoopback {
     fn next_sample(&mut self) -> f32 {
+        for command in self.command_rx.try_iter() {
+            match command {
+                Command::ToggleMute => {
+                    self.is_muted = !self.is_muted;
+                }
+            }
+        }
+
         let sample = match self.pcm_samples.pop_front() {
             Some(sample) => sample,
             None => {
@@ -76,11 +86,17 @@ impl PlaybackSource for PlaybackForLoopback {
             }
         };
 
-        self.gate.process(sample.to_sample()).to_sample()
+        let sample = self.gate.process(sample.to_sample()).to_sample();
+        if self.is_muted {
+            0.0
+        } else {
+            sample
+        }
     }
 }
 
 pub fn create_pipeline(
+    command_rx: Receiver<Command>,
     audio_plot_sender: Sender<IncomingAudioPlotData>,
 ) -> (MicForLoopback, UnsharedPlaybackSource<PlaybackForLoopback>) {
     let (tx, rx) = channel();
@@ -92,15 +108,17 @@ pub fn create_pipeline(
         },
         UnsharedPlaybackSource(PlaybackForLoopback {
             receiver: rx,
+            command_rx,
             audio_plot_sender,
             pcm_samples: SliceDeque::new(),
             gate: GateNoiseFilter::new(NOISE_GATE_CHUNK_LEN),
+            is_muted: false,
         }),
     )
 }
 
-pub fn run(audio_plot_sender: Sender<IncomingAudioPlotData>) {
-    let (mic, playback) = create_pipeline(audio_plot_sender);
+pub fn run(command_rx: Receiver<Command>, audio_plot_sender: Sender<IncomingAudioPlotData>) {
+    let (mic, playback) = create_pipeline(command_rx, audio_plot_sender);
     let event_loop = create_minimal_event_loop(mic, playback);
     event_loop.run();
 }
