@@ -50,12 +50,14 @@ impl ClientQueue {
 
 pub struct Multiplexer {
     client_queues: HashMap<ClientId, ClientQueue>,
+    main_volume: f32,
 }
 
 impl Multiplexer {
     pub fn new() -> Self {
         Multiplexer {
             client_queues: HashMap::new(),
+            main_volume: 1.0,
         }
     }
 
@@ -93,7 +95,11 @@ impl Multiplexer {
         self.client_queues.clear();
     }
 
-    pub fn change_volume(&mut self, id: ClientId, volume: f32) {
+    pub fn change_main_volume(&mut self, volume: f32) {
+        self.main_volume = volume;
+    }
+
+    pub fn change_client_volume(&mut self, id: ClientId, volume: f32) {
         if let Some(client) = self.client_queues.get_mut(&id) {
             client.current_volume = volume;
         }
@@ -105,7 +111,7 @@ impl PlaybackSource for Multiplexer {
         let init: f32 = Sample::EQUILIBRIUM;
         let init = init.to_signed_sample();
 
-        self.client_queues.values_mut().fold(init, |acc, queue| {
+        let sample = self.client_queues.values_mut().fold(init, |acc, queue| {
             let next_sample = queue
                 .next_sample()
                 .expect("Unsure how to handle opus decode error yet");
@@ -115,7 +121,8 @@ impl PlaybackSource for Multiplexer {
             } else {
                 acc
             }
-        })
+        });
+        sample * self.main_volume
     }
 }
 
