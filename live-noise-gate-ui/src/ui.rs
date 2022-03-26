@@ -2,33 +2,53 @@ use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use crate::audio::{NOISE_GATE_CHUNK_LEN, SAMPLES_IN_CHUNK};
 use eframe::egui::plot::{Legend, Values};
 use eframe::egui::Context;
 use eframe::epi::Frame;
 use eframe::{egui, epi};
 use egui::plot::{HLine, Line, Plot};
 use egui::*;
-use ringbuffer::{AllocRingBuffer, RingBuffer, RingBufferExt};
 
-const SAMPLE_BUCKETS: usize = 32;
-const PLOT_NUMBER_OF_CHUNKS: u64 = 128;
-// Each chunk is roughly 10ms, depending on OS.
-const GRAPH_DURATION: Duration = Duration::from_millis(PLOT_NUMBER_OF_CHUNKS * 10);
+const SAMPLES_IN_BUCKET: usize = 32;
+const GRAPH_DURATION_IN_SAMPLES: usize = NOISE_GATE_CHUNK_LEN * SAMPLES_IN_CHUNK;
+const GRAPH_DURATION: Duration =
+    Duration::from_millis((GRAPH_DURATION_IN_SAMPLES as f64 / 44.800) as u64);
+const DURATION_BETWEEN_BUCKETS: Duration =
+    Duration::from_nanos((1_000_000_000f64 / (44800 / SAMPLES_IN_BUCKET) as f64) as u64);
 
 pub enum IncomingAudioPlotData {
-    Sample(f32),
+    SampleChunk(Vec<f32>),
     NoiseGateThreshold(f32),
-    RecentRms(AllocRingBuffer<f32>),
+    ChunkRms(f32),
     StateChange(u8),
+}
+
+fn samples_to_line(samples: &VecDeque<(Instant, f32)>) -> Line {
+    Line::new(Values::from_parametric_callback(
+        move |t| {
+            let (instant, sample) = samples.get(t as usize).copied().unwrap();
+            (
+                -((instant
+                    .elapsed()
+                    .as_millis()
+                    .min(GRAPH_DURATION.as_millis())) as f64),
+                sample as f64,
+            )
+        },
+        0f64..samples.len() as f64,
+        samples.len(),
+    ))
 }
 
 pub struct AudioPlot {
     receiver: Receiver<IncomingAudioPlotData>,
     aggregate: Vec<f32>,
     threshold: f32,
-    samples: VecDeque<(Instant, f32)>,
-    recent_rms: Option<AllocRingBuffer<f32>>,
+    buckets: VecDeque<(Instant, f32)>,
+    chunks: VecDeque<(Instant, f32)>,
     state: u8,
+    last_bucket_instant: Instant,
 }
 
 impl AudioPlot {
@@ -37,9 +57,10 @@ impl AudioPlot {
             receiver,
             aggregate: Vec::new(),
             threshold: 0f32,
-            samples: VecDeque::new(),
-            recent_rms: None,
+            buckets: VecDeque::new(),
+            chunks: VecDeque::new(),
             state: 0u8,
+            last_bucket_instant: Instant::now(),
         }
     }
 }
@@ -49,78 +70,73 @@ impl AudioPlot {
         let Self {
             receiver,
             aggregate,
-            samples,
+            buckets,
+            chunks,
+            last_bucket_instant,
             ..
         } = self;
 
         for incoming_data in receiver.try_iter() {
             match incoming_data {
-                IncomingAudioPlotData::Sample(sample) => {
-                    aggregate.push(sample);
-                    if aggregate.len() == SAMPLE_BUCKETS {
-                        let next_sample =
-                            aggregate.drain(..).map(|sample| sample.abs()).sum::<f32>()
-                                / SAMPLE_BUCKETS as f32;
-                        samples.push_back((Instant::now(), next_sample));
+                IncomingAudioPlotData::SampleChunk(chunk) => {
+                    aggregate.extend(chunk);
+                    while aggregate.len() >= SAMPLES_IN_BUCKET {
+                        let next_bucket = aggregate
+                            .drain(..SAMPLES_IN_BUCKET)
+                            .map(|sample| sample.abs())
+                            .sum::<f32>()
+                            / SAMPLES_IN_BUCKET as f32;
+
+                        let now = Instant::now();
+                        let bonk = last_bucket_instant.duration_since(now);
+                        let bucket_instant = if bonk < DURATION_BETWEEN_BUCKETS {
+                            *last_bucket_instant = last_bucket_instant
+                                .checked_add(DURATION_BETWEEN_BUCKETS)
+                                .unwrap();
+                            *last_bucket_instant
+                        } else {
+                            *last_bucket_instant = now;
+                            now
+                        };
+                        buckets.push_back((bucket_instant, next_bucket));
                     }
                 }
                 IncomingAudioPlotData::NoiseGateThreshold(threshold) => {
                     self.threshold = threshold;
                 }
-                IncomingAudioPlotData::RecentRms(recent_rms) => self.recent_rms = Some(recent_rms),
+                IncomingAudioPlotData::ChunkRms(chunk_rms) => {
+                    chunks.push_back((Instant::now(), chunk_rms))
+                }
                 IncomingAudioPlotData::StateChange(state) => self.state = state,
             }
         }
 
-        samples.retain(|(instant, _)| instant.elapsed() < GRAPH_DURATION);
+        buckets.retain(|(instant, _)| instant.elapsed() < GRAPH_DURATION);
+        chunks.retain(|(instant, _)| instant.elapsed() < GRAPH_DURATION);
     }
 
-    fn samples(&mut self) -> Line {
-        let samples = &self.samples;
+    fn buckets(&mut self) -> Line {
+        let buckets = &self.buckets;
 
-        if samples.is_empty() {
+        if buckets.is_empty() {
             return Line::new(Values::default());
         }
 
-        Line::new(Values::from_parametric_callback(
-            move |t| {
-                let (instant, sample) = samples.get(t as usize).copied().unwrap();
-                if instant.elapsed().as_millis() > GRAPH_DURATION.as_millis() {}
-                (
-                    (GRAPH_DURATION.as_millis()
-                        - instant
-                            .elapsed()
-                            .as_millis()
-                            .min(GRAPH_DURATION.as_millis())) as f64,
-                    sample as f64,
-                )
-            },
-            0f64..=samples.len() as f64 - 1f64,
-            samples.len(),
-        ))
-        .color(Color32::from_rgb(100, 220, 100))
-        .name("Samples")
+        samples_to_line(buckets)
+            .color(Color32::from_rgb(100, 220, 100))
+            .name("Samples (groups of 32)")
     }
 
     fn recent_rms(&mut self) -> Line {
-        if let Some(recent_rms) = &self.recent_rms {
-            if recent_rms.is_empty() {
-                return Line::new(Values::default());
-            }
-            let offset = (PLOT_NUMBER_OF_CHUNKS - recent_rms.len() as u64) as f64;
-            Line::new(Values::from_parametric_callback(
-                move |t| {
-                    (
-                        (offset + t) * 10.0,
-                        recent_rms.get(t as isize).copied().unwrap_or(0f32) as f64,
-                    )
-                },
-                0f64..=recent_rms.len() as f64 - 1f64,
-                recent_rms.len(),
-            ))
-        } else {
-            Line::new(Values::default())
+        let chunks = &self.chunks;
+
+        if chunks.is_empty() {
+            return Line::new(Values::default());
         }
+
+        samples_to_line(chunks)
+            .color(Color32::from_rgb(220, 100, 100))
+            .name("RMS (\"averaged\" amplitude)")
     }
 
     fn threshold(&self) -> HLine {
@@ -145,13 +161,13 @@ impl Widget for &mut AudioPlot {
         self.update();
 
         Plot::new("Demo Plot")
+            .include_x(-(GRAPH_DURATION.as_millis() as f64))
             .include_x(0f64)
-            .include_x(GRAPH_DURATION.as_millis() as f64)
             .include_y(0f64)
             .include_y(0.05f64)
             .legend(Legend::default())
             .show(ui, |plot| {
-                plot.line(self.samples());
+                plot.line(self.buckets());
                 plot.line(self.recent_rms());
                 plot.hline(self.threshold())
             })

@@ -3,8 +3,12 @@ use audio_device::audio_connection::{create_minimal_event_loop, EventLoop};
 use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use audio_device::noise_gate::{GateNoiseFilter, State};
 use dasp::Sample;
+use ringbuffer::RingBufferExt;
 use slice_deque::SliceDeque;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+
+pub const SAMPLES_IN_CHUNK: usize = 480;
+pub const NOISE_GATE_CHUNK_LEN: usize = 128;
 
 pub struct MicForLoopback {
     playback_sender: Sender<Vec<f32>>,
@@ -14,17 +18,17 @@ pub struct MicForLoopback {
 
 impl MicSink for MicForLoopback {
     fn append_sample_from_mic(&mut self, sample: f32) {
-        self.audio_plot_sender
-            .send(IncomingAudioPlotData::Sample(sample))
-            .unwrap();
         self.pcm_samples.push_back(sample);
     }
 
     fn publish_chunks(&mut self) {
-        while self.pcm_samples.len() > 480 {
-            let buffer = self.pcm_samples.as_slice()[..480].to_vec();
-            self.playback_sender.send(buffer).unwrap();
-            unsafe { self.pcm_samples.move_head(480) };
+        while self.pcm_samples.len() > SAMPLES_IN_CHUNK {
+            let buffer = self.pcm_samples.as_slice()[..SAMPLES_IN_CHUNK].to_vec();
+            self.playback_sender.send(buffer.clone()).unwrap();
+            self.audio_plot_sender
+                .send(IncomingAudioPlotData::SampleChunk(buffer))
+                .unwrap();
+            unsafe { self.pcm_samples.move_head(SAMPLES_IN_CHUNK as isize) };
         }
     }
 }
@@ -49,8 +53,8 @@ impl PlaybackSource for PlaybackForLoopback {
                 let samples_f32: Vec<f32> = samples.iter().map(|s| s.to_sample::<f32>()).collect();
                 self.gate.update_window(&samples_f32);
                 self.audio_plot_sender
-                    .send(IncomingAudioPlotData::RecentRms(
-                        self.gate.recent_rms.clone(),
+                    .send(IncomingAudioPlotData::ChunkRms(
+                        *self.gate.recent_rms.back().unwrap(),
                     ))
                     .unwrap();
                 self.audio_plot_sender
@@ -90,7 +94,7 @@ pub fn create_pipeline(
             receiver: rx,
             audio_plot_sender,
             pcm_samples: SliceDeque::new(),
-            gate: GateNoiseFilter::new(128),
+            gate: GateNoiseFilter::new(NOISE_GATE_CHUNK_LEN),
         }),
     )
 }
