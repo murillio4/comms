@@ -6,9 +6,10 @@ use directories::ProjectDirs;
 use futures::stream::StreamExt;
 use gio::prelude::*;
 use gtk::prelude::*;
+use gtk::{Orientation, PositionType};
 use serde::{Deserialize, Serialize};
 
-use comms_lib::packet::{Packet, PacketBody, UserJoined, UserLeft};
+use comms_lib::packet::{ClientId, Packet, PacketBody, UserJoined, UserLeft};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network;
@@ -24,10 +25,17 @@ pub mod ipc;
 enum Columns {
     Id = 0,
     Username = 1,
+    Volume = 2,
+    IsCurrentUser = 3,
 }
 
 fn initialize_user_list(treeview: &gtk::TreeView) -> gtk::ListStore {
-    let col_types: [glib::Type; 2] = [glib::Type::U32, glib::Type::STRING];
+    let col_types: [glib::Type; 4] = [
+        glib::Type::U32,
+        glib::Type::STRING,
+        glib::Type::U8,
+        glib::Type::BOOL,
+    ];
 
     let user_list_model = gtk::ListStore::new(&col_types);
     treeview.set_model(Some(&user_list_model));
@@ -111,15 +119,18 @@ async fn try_connect(audio_handle: AudioHandle, network: NetworkHandle, ui: Rc<R
                 let status_treeview = ui.builder.object("status_treeview").unwrap();
                 let user_list_model = initialize_user_list(&status_treeview);
 
-                let values: [(u32, &dyn ToValue); 2] = [
+                let values: [(u32, &dyn ToValue); 4] = [
                     (Columns::Id as u32, &(client_id as u32)),
                     (Columns::Username as u32, &username),
+                    (Columns::Volume as u32, &100),
+                    (Columns::IsCurrentUser as u32, &true),
                 ];
                 user_list_model.insert_with_values(None, &values);
                 for (id, user) in users.iter() {
-                    let values: [(u32, &dyn ToValue); 2] = [
+                    let values: [(u32, &dyn ToValue); 3] = [
                         (Columns::Id as u32, &(*id as u32)),
                         (Columns::Username as u32, &user),
+                        (Columns::Volume as u32, &100),
                     ];
                     user_list_model.insert_with_values(None, &values);
                 }
@@ -228,6 +239,7 @@ async fn handle_network_events(
                                     &[
                                         (Columns::Id as u32, &(packet.body.client_id as u32)),
                                         (Columns::Username as u32, &packet.body.name),
+                                        (Columns::Volume as u32, &100),
                                     ],
                                 );
                             }
@@ -414,6 +426,75 @@ pub fn run(
         column.set_title("Users");
         column.add_attribute(&renderer, "text", Columns::Username as i32);
         treeview.append_column(&column);
+
+        {
+            let audio = audio.clone();
+
+            treeview.connect_button_press_event(move |treeview, event| {
+                if event.event_type() == gtk::gdk::EventType::ButtonPress && event.button() == 3 {
+                    let position = (event.position().0 as i32, event.position().1 as i32);
+                    if let Some(user) = treeview.path_at_pos(position.0, position.1) {
+                        let model = treeview.model().unwrap();
+                        let iter = model.iter(user.0.as_ref().unwrap()).unwrap();
+
+                        let id = model.value(&iter, Columns::Id as i32).get::<u32>().unwrap();
+
+                        let volume = model
+                            .value(&iter, Columns::Volume as i32)
+                            .get::<u8>()
+                            .unwrap();
+                        let is_current_user = model
+                            .value(&iter, Columns::IsCurrentUser as i32)
+                            .get::<bool>()
+                            .unwrap();
+
+                        let popover = gtk::Popover::new(Some(treeview));
+                        let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+                        let adjustment =
+                            gtk::Adjustment::new(volume as f64, 0.0, 200.0, 2.0, 10.0, 0.0);
+                        let scale = gtk::builders::ScaleBuilder::new()
+                            .adjustment(&adjustment)
+                            .value_pos(PositionType::Left)
+                            .orientation(Orientation::Horizontal)
+                            .build();
+
+                        scale.add_mark(100.0, gtk::PositionType::Bottom, None);
+
+                        scale.set_width_request(200);
+                        popover_box.add(&scale);
+
+                        if is_current_user {
+                            let audio = audio.clone();
+                            scale.connect_value_changed(move |scale| {
+                                audio
+                                    .send(AudioCommand::ChangeMainVolume(
+                                        scale.adjustment().value() as u8,
+                                    ))
+                                    .unwrap();
+                            });
+                        } else {
+                            let audio = audio.clone();
+                            scale.connect_value_changed(move |scale| {
+                                audio
+                                    .send(AudioCommand::ChangeClientVolume(
+                                        id as ClientId,
+                                        scale.adjustment().value() as u8,
+                                    ))
+                                    .unwrap();
+                            });
+                        }
+
+                        let rectangle = gtk::Rectangle::new(position.0, position.1, 0, 0);
+                        popover.set_pointing_to(&rectangle);
+                        popover.add(&popover_box);
+                        popover.popup();
+                        popover.show_all();
+                    }
+                }
+                Inhibit(false)
+            });
+        }
 
         let disconnect_menu_item: gtk::MenuItem = builder.object("disconnect_menu_item").unwrap();
         disconnect_menu_item.connect_activate(move |_| {

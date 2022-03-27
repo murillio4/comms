@@ -13,7 +13,6 @@ futures-timer = "3.0"
 gdk-pixbuf = "0.15"
 gio = "0.15"
 glib = "0.15"
-gtk = "0.15"
 include_dir = "0.7"
 mio = { version = "0.8", features = ["net", "os-poll"] }
 dasp = "0.11.0"
@@ -27,6 +26,12 @@ path = "../audio-device"
 
 [dependencies.comms-lib]
 path = "../comms-lib"
+
+[dependencies.gtk]
+version = "0.15"
+features = [
+    "v3_22",
+]
 
 [target.'cfg(target_os = "windows")'.dependencies.windows]
 version = "0.34.0"
