@@ -429,6 +429,7 @@ pub fn run(
 
         {
             let audio = audio.clone();
+            let ui = ui.clone();
 
             treeview.connect_button_press_event(move |treeview, event| {
                 if event.event_type() == gtk::gdk::EventType::ButtonPress && event.button() == 3 {
@@ -464,26 +465,27 @@ pub fn run(
                         scale.set_width_request(200);
                         popover_box.add(&scale);
 
-                        if is_current_user {
-                            let audio = audio.clone();
-                            scale.connect_value_changed(move |scale| {
-                                audio
-                                    .send(AudioCommand::ChangeMainVolume(
-                                        scale.adjustment().value() as u8,
-                                    ))
-                                    .unwrap();
-                            });
-                        } else {
-                            let audio = audio.clone();
-                            scale.connect_value_changed(move |scale| {
-                                audio
-                                    .send(AudioCommand::ChangeClientVolume(
-                                        id as ClientId,
-                                        scale.adjustment().value() as u8,
-                                    ))
-                                    .unwrap();
-                            });
-                        }
+                        let audio = audio.clone();
+                        let ui = ui.clone();
+                        scale.connect_value_changed(move |scale| {
+                            let new_volume = scale.adjustment().value() as u8;
+                            audio
+                                .send(if is_current_user {
+                                    AudioCommand::ChangeMainVolume(new_volume)
+                                } else {
+                                    AudioCommand::ChangeClientVolume(id as ClientId, new_volume)
+                                })
+                                .unwrap();
+                            let state = &ui.borrow().state;
+                            if let UiState::Main {
+                                user_list_model, ..
+                            } = state
+                            {
+                                let values: [(u32, &dyn ToValue); 1] =
+                                    [(Columns::Volume as u32, &new_volume)];
+                                user_list_model.set(&iter, &values);
+                            }
+                        });
 
                         let rectangle = gtk::Rectangle::new(position.0, position.1, 0, 0);
                         popover.set_pointing_to(&rectangle);
