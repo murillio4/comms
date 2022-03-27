@@ -74,7 +74,7 @@ pub async fn connect(
     destination: String,
     username: String,
 ) -> Result<(ClientId, Vec<(ClientId, String)>), ConnectError> {
-    let timeout = Delay::new(Duration::from_secs(1));
+    let timeout = Delay::new(Duration::from_secs(3));
     let connect_future = connect_without_timeout(handle, destination, username);
     pin_mut!(connect_future);
     match future::select(timeout, connect_future).await {
