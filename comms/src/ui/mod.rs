@@ -306,6 +306,13 @@ pub fn run(
     ui_receiver: std::sync::mpsc::Receiver<UICommand>,
     audio: AudioHandle,
 ) {
+    #[cfg(not(debug_assertions))]
+    {
+        let self_path = std::env::current_exe().unwrap();
+        let pixbuf_module_path = self_path.parent().unwrap().join("loaders.cache");
+        std::env::set_var("GDK_PIXBUF_MODULE_FILE", pixbuf_module_path.as_os_str());
+    }
+
     let command = ui_receiver.recv().unwrap();
     match command {
         UICommand::AudioIPCReady => (),
