@@ -5,6 +5,27 @@
 ![screenshot of the connect pane](doc/screenshot-connect.png)
 ![screenshot of the user-list pane](doc/screenshot-user-list.png)
 
+Round-trip audio latency, as casually measured from residential internet:
+
+```
+[From ~Toronto]
++-----------------------------+-------+
+| Comms (Local Network)       | 66ms  |
++-----------------------------+-------+
+| TeamSpeak 3 (Local Network) | 99ms  |
++-----------------------------+-------+
+| Discord (<closest>)         | 207ms |
++-----------------------------+-------+
+|                             |       |
++-----------------------------+-------+
+| Comms (West Coast NA)       | 121ms |
++-----------------------------+-------+
+| TeamSpeak 3 (West Coast NA) | 179ms |
++-----------------------------+-------+
+| Discord (West Coast NA)     | 248ms |
++-----------------------------+-------+
+```
+
 ## Linux Build Instructions
 
 1. Install `rust`, GTK3 libs, opus libs
