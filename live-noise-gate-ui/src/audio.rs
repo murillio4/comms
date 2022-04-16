@@ -4,6 +4,9 @@ use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use audio_device::noise_gate::{GateNoiseFilter, State};
 use dasp::Sample;
 use slice_deque::SliceDeque;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::iter;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 
 pub const SAMPLES_IN_CHUNK: usize = 480;
@@ -11,7 +14,6 @@ pub const NOISE_GATE_CHUNK_LEN: usize = 128;
 
 pub struct MicForLoopback {
     playback_sender: Sender<Vec<f32>>,
-    audio_plot_sender: Sender<IncomingAudioPlotData>,
     pcm_samples: SliceDeque<f32>,
 }
 
@@ -23,10 +25,7 @@ impl MicSink for MicForLoopback {
     fn publish_chunks(&mut self) {
         while self.pcm_samples.len() > SAMPLES_IN_CHUNK {
             let buffer = self.pcm_samples.as_slice()[..SAMPLES_IN_CHUNK].to_vec();
-            self.playback_sender.send(buffer.clone()).unwrap();
-            self.audio_plot_sender
-                .send(IncomingAudioPlotData::SampleChunk(buffer))
-                .unwrap();
+            self.playback_sender.send(buffer).unwrap();
             unsafe { self.pcm_samples.move_head(SAMPLES_IN_CHUNK as isize) };
         }
     }
@@ -39,6 +38,8 @@ pub struct PlaybackForLoopback {
     gate: GateNoiseFilter,
     pcm_samples: SliceDeque<f32>,
     is_muted: bool,
+    recording_file_buffer: Option<Vec<f32>>,
+    playback_file_buffer: Option<Vec<f32>>,
 }
 
 impl PlaybackSource for PlaybackForLoopback {
@@ -48,32 +49,82 @@ impl PlaybackSource for PlaybackForLoopback {
                 Command::ToggleMute => {
                     self.is_muted = !self.is_muted;
                 }
+                Command::StartRecording => {
+                    self.recording_file_buffer = Some(Vec::new());
+                }
+                Command::StopRecording(path) => {
+                    if let Some(buffer) = self.recording_file_buffer.take() {
+                        let buffer: &[f32] = &buffer;
+                        let bytes = unsafe {
+                            std::slice::from_raw_parts(
+                                buffer.as_ptr() as *const u8,
+                                buffer.len() * 4,
+                            )
+                        };
+                        let mut file = File::create(path).unwrap();
+                        file.write_all(bytes).unwrap();
+                    }
+                }
+                Command::PlayRecording(path) => {
+                    if let Ok(mut file) = File::open(path) {
+                        let mut bytes: Vec<u8> = Vec::new();
+                        file.read_to_end(&mut bytes).unwrap();
+                        let bytes: &[u8] = &bytes;
+                        assert_eq!(bytes.len() % 4, 0);
+                        assert_eq!(bytes.as_ptr() as usize % std::mem::align_of::<f32>(), 0);
+                        let buffer: &[f32] = unsafe {
+                            std::slice::from_raw_parts(
+                                bytes.as_ptr() as *const f32,
+                                bytes.len() / 4,
+                            )
+                        };
+                        self.playback_file_buffer = Some(Vec::from(buffer));
+                        self.gate.reset();
+                    }
+                }
+                Command::PlayLoopback => {
+                    self.playback_file_buffer = None;
+                    self.gate.reset();
+                }
             }
         }
 
         let sample = match self.pcm_samples.pop_front() {
             Some(sample) => sample,
             None => {
+                // Always attempt to pull from receiver to keep it cleared.
                 let samples = match self.receiver.try_recv() {
                     Ok(pcm_samples) => pcm_samples,
                     Err(TryRecvError::Empty) => return Sample::EQUILIBRIUM,
                     Err(TryRecvError::Disconnected) => unimplemented!("channel failed"),
                 };
-                let samples_f32: Vec<f32> = samples.iter().map(|s| s.to_sample::<f32>()).collect();
+                let samples = if let Some(buffer) = &mut self.playback_file_buffer {
+                    buffer
+                        .drain(..SAMPLES_IN_CHUNK.min(buffer.len()))
+                        .chain(iter::repeat(Sample::EQUILIBRIUM))
+                        .take(SAMPLES_IN_CHUNK)
+                        .collect()
+                } else {
+                    samples
+                };
+
+                self.audio_plot_sender
+                    .send(IncomingAudioPlotData::SampleChunk(samples.clone()))
+                    .unwrap();
 
                 let mut accumulator = 0f32;
-                for sample in &samples_f32 {
+                for sample in &samples {
                     accumulator += sample * sample;
                 }
 
-                let rms = (accumulator / samples_f32.len() as f32).sqrt() as f32;
-                let max = samples_f32
+                let rms = (accumulator / samples.len() as f32).sqrt() as f32;
+                let max = samples
                     .iter()
                     .map(|s| s.abs())
                     .max_by(|x, y| x.partial_cmp(y).unwrap())
                     .unwrap();
 
-                self.gate.update_window(&samples_f32);
+                self.gate.update_window(&samples);
                 self.audio_plot_sender
                     .send(IncomingAudioPlotData::ChunkMax(max))
                     .unwrap();
@@ -99,6 +150,10 @@ impl PlaybackSource for PlaybackForLoopback {
             }
         };
 
+        if let Some(buffer) = &mut self.recording_file_buffer {
+            buffer.push(sample);
+        }
+
         let sample = self.gate.process(sample.to_sample()).to_sample();
         if self.is_muted {
             0.0
@@ -116,7 +171,6 @@ pub fn create_pipeline(
     (
         MicForLoopback {
             playback_sender: tx,
-            audio_plot_sender: audio_plot_sender.clone(),
             pcm_samples: SliceDeque::new(),
         },
         UnsharedPlaybackSource(PlaybackForLoopback {
@@ -126,6 +180,8 @@ pub fn create_pipeline(
             pcm_samples: SliceDeque::new(),
             gate: GateNoiseFilter::new(NOISE_GATE_CHUNK_LEN),
             is_muted: false,
+            recording_file_buffer: None,
+            playback_file_buffer: None,
         }),
     )
 }

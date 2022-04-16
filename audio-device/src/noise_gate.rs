@@ -138,4 +138,10 @@ impl GateNoiseFilter {
     pub fn process(&mut self, sample: f32) -> f32 {
         self.state.attenuate_sample(sample)
     }
+
+    pub fn reset(&mut self) {
+        self.recent_chunks.clear();
+        self.threshold = 0f32;
+        self.state = State::Off;
+    }
 }

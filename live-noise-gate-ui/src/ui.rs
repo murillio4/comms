@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
+use std::env;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::audio::{NOISE_GATE_CHUNK_LEN, SAMPLES_IN_CHUNK};
-use eframe::egui::plot::{Legend, Values};
+use eframe::egui::plot::{Legend, Polygon, Value, Values};
 use eframe::egui::Context;
 use eframe::epi::Frame;
 use eframe::{egui, epi};
@@ -27,6 +29,10 @@ pub enum IncomingAudioPlotData {
 
 pub enum Command {
     ToggleMute,
+    StartRecording,
+    StopRecording(PathBuf),
+    PlayRecording(PathBuf),
+    PlayLoopback,
 }
 
 fn samples_to_line(samples: &VecDeque<(Instant, f32)>) -> Line {
@@ -55,6 +61,8 @@ pub struct AudioPlot {
     chunk_maxes: VecDeque<(Instant, f32)>,
     state: u8,
     last_bucket_instant: Instant,
+    recording_start: Option<Instant>,
+    recording_end: Option<Instant>,
 }
 
 impl AudioPlot {
@@ -68,6 +76,8 @@ impl AudioPlot {
             chunk_maxes: VecDeque::new(),
             state: 0u8,
             last_bucket_instant: Instant::now(),
+            recording_start: None,
+            recording_end: None,
         }
     }
 }
@@ -177,6 +187,37 @@ impl AudioPlot {
             .color(threshold_color)
             .name("Threshold")
     }
+
+    fn recording(&self) -> Polygon {
+        if let Some(start) = self.recording_start {
+            let start_x = -((start.elapsed().as_millis().min(GRAPH_DURATION.as_millis())) as f64);
+            let end_x = if let Some(end) = self.recording_end {
+                -((end.elapsed().as_millis().min(GRAPH_DURATION.as_millis())) as f64)
+            } else {
+                0f64
+            };
+
+            if start_x == end_x {
+                // Beginning and end are equivalent (such as when recording happened before
+                // beginning of current window) - don't show a polygon at all.
+                Polygon::new(Values::default())
+            } else {
+                Polygon::new(Values::from_values_iter(
+                    [
+                        Value::new(start_x, 0),
+                        Value::new(start_x, 1),
+                        Value::new(end_x, 1),
+                        Value::new(end_x, 0),
+                    ]
+                    .into_iter(),
+                ))
+            }
+        } else {
+            Polygon::new(Values::default())
+        }
+        .color(Color32::from_rgba_unmultiplied(180, 120, 120, 128))
+        .name("Recording")
+    }
 }
 
 impl Widget for &mut AudioPlot {
@@ -194,7 +235,8 @@ impl Widget for &mut AudioPlot {
                 plot.line(self.buckets());
                 plot.line(self.rmses());
                 plot.line(self.maxes());
-                plot.hline(self.threshold())
+                plot.hline(self.threshold());
+                plot.polygon(self.recording());
             })
             .response
     }
@@ -203,6 +245,9 @@ impl Widget for &mut AudioPlot {
 struct App {
     time: AudioPlot,
     is_muted: bool,
+    recording_path: Option<PathBuf>,
+    last_playback_recording: Option<PathBuf>,
+    playback_source_is_loopback: bool,
     command_tx: Sender<Command>,
 }
 
@@ -211,6 +256,9 @@ impl epi::App for App {
         let Self {
             time,
             is_muted,
+            recording_path,
+            last_playback_recording,
+            playback_source_is_loopback,
             command_tx,
         } = self;
 
@@ -225,11 +273,73 @@ impl epi::App for App {
             });
         });
         egui::CentralPanel::default().show(ctx, |ui| {
-            let mute_control_text = if *is_muted { "Unmute" } else { "Mute" };
-            if ui.button(mute_control_text).clicked() {
-                *is_muted = !*is_muted;
-                command_tx.send(Command::ToggleMute).unwrap();
-            }
+            ui.horizontal(|ui| {
+                let mute_control_text = if *is_muted { "Unmute" } else { "Mute" };
+                if ui.button(mute_control_text).clicked() {
+                    *is_muted = !*is_muted;
+                    command_tx.send(Command::ToggleMute).unwrap();
+                }
+                if recording_path.is_none() && ui.button("Play recording file").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_directory(
+                            last_playback_recording
+                                .as_ref()
+                                .map(|p| p.parent().unwrap().to_owned())
+                                .unwrap_or_else(|| {
+                                    env::current_exe().unwrap().parent().unwrap().to_owned()
+                                }),
+                        )
+                        .set_file_name(
+                            &last_playback_recording
+                                .as_ref()
+                                .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+                                .unwrap_or_else(|| "comms-audio-dump.dmp".to_string()),
+                        )
+                        .add_filter("Comms audio dump files", &["dmp"])
+                        .add_filter("All Files", &["*"])
+                        .pick_file()
+                    {
+                        command_tx
+                            .send(Command::PlayRecording(path.clone()))
+                            .unwrap();
+                        *playback_source_is_loopback = false;
+                        *last_playback_recording = Some(path);
+                    }
+                }
+                if !*playback_source_is_loopback {
+                    if ui.button("Play recording again").clicked() {
+                        command_tx
+                            .send(Command::PlayRecording(
+                                last_playback_recording.to_owned().unwrap(),
+                            ))
+                            .unwrap();
+                    }
+                    if ui.button("Play microphone").clicked() {
+                        command_tx.send(Command::PlayLoopback).unwrap();
+                        *playback_source_is_loopback = true;
+                    }
+                } else if recording_path.is_none() {
+                    if ui.button("Record to file").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_directory(env::current_exe().unwrap().parent().unwrap())
+                            .set_file_name("comms-audio-dump.dmp")
+                            .add_filter("Comms audio dump files", &["dmp"])
+                            .add_filter("All Files", &["*"])
+                            .save_file()
+                        {
+                            command_tx.send(Command::StartRecording).unwrap();
+                            time.recording_start = Some(Instant::now());
+                            time.recording_end = None;
+                            *recording_path = Some(path);
+                        }
+                    }
+                } else if ui.button("Stop recording").clicked() {
+                    command_tx
+                        .send(Command::StopRecording(recording_path.take().unwrap()))
+                        .unwrap();
+                    time.recording_end = Some(Instant::now());
+                }
+            });
             ui.add_sized([ui.available_width(), ui.available_height()], time);
         });
     }
@@ -243,6 +353,9 @@ pub fn run(command_tx: Sender<Command>, time_plot_receiver: Receiver<IncomingAud
     let app = App {
         time: AudioPlot::new(time_plot_receiver),
         is_muted: false,
+        recording_path: None,
+        last_playback_recording: None,
+        playback_source_is_loopback: true,
         command_tx,
     };
     let native_options = eframe::NativeOptions::default();
