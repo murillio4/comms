@@ -28,7 +28,7 @@ impl EventLoopNotify for WasapiEventLoopNotify {
 }
 
 pub fn event_loop_channel() -> (WasapiEventLoopRegistration, WasapiEventLoopNotify) {
-    let win_handle = unsafe { Threading::CreateEventA(ptr::null(), false, false, None) };
+    let win_handle = unsafe { Threading::CreateEventA(ptr::null(), false, false, None) }.unwrap();
     (
         WasapiEventLoopRegistration { win_handle },
         WasapiEventLoopNotify { win_handle },

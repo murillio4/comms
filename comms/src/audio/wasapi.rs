@@ -22,7 +22,8 @@ impl AudioPlatform for WasapiAudioPlatform {
     }
 
     fn create_channel() -> (Self::Registration, Self::Notify) {
-        let win_handle = unsafe { Threading::CreateEventA(ptr::null(), false, false, None) };
+        let win_handle =
+            unsafe { Threading::CreateEventA(ptr::null(), false, false, None) }.unwrap();
         (
             WasapiEventLoopRegistration { win_handle },
             WasapiEventLoopNotify { win_handle },

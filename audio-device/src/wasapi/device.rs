@@ -37,12 +37,12 @@ impl IAudioClientWrapper {
         match is_format_supported(audio_client, &format_attempt.Format) {
             Ok(None) => {}
             Ok(Some(format)) => {
-                format_attempt.Format.nChannels = unsafe { (*format).nChannels };
-                format_attempt.Format.nSamplesPerSec = unsafe { (*format).nSamplesPerSec };
-                format_attempt.Format.nAvgBytesPerSec = unsafe { (*format).nAvgBytesPerSec };
-                format_attempt.Format.nBlockAlign = unsafe { (*format).nBlockAlign };
-                format_attempt.Format.wBitsPerSample = unsafe { (*format).wBitsPerSample };
-                format_attempt.Format.cbSize = unsafe { (*format).cbSize };
+                format_attempt.Format.nChannels = format.nChannels;
+                format_attempt.Format.nSamplesPerSec = format.nSamplesPerSec;
+                format_attempt.Format.nAvgBytesPerSec = format.nAvgBytesPerSec;
+                format_attempt.Format.nBlockAlign = format.nBlockAlign;
+                format_attempt.Format.wBitsPerSample = format.wBitsPerSample;
+                format_attempt.Format.cbSize = format.cbSize;
             }
             Err(MmregSupportedFormatsError::DeviceNotAvailable) => {
                 return Err(BuildStreamError::DeviceNotAvailable)
@@ -105,12 +105,15 @@ impl IAudioClientWrapper {
     }
 
     pub fn create_notify(&self) -> Result<WasapiEventLoopRegistration, BuildStreamError> {
-        let event = unsafe { Threading::CreateEventA(ptr::null(), false, false, None) };
-        if event.is_invalid() {
-            return Err(BuildStreamError::BackendSpecific(
-                "failed to create event".to_string(),
-            ));
-        }
+        let event = match unsafe { Threading::CreateEventA(ptr::null(), false, false, None) } {
+            Ok(event) => event,
+            Err(err) => {
+                return Err(BuildStreamError::BackendSpecific(format!(
+                    "Failed to create event: {:?}",
+                    err
+                )))
+            }
+        };
 
         if let Err(e) = unsafe { self.0.SetEventHandle(event) } {
             let description = format!("failed to call SetEventHandle: {}", e);

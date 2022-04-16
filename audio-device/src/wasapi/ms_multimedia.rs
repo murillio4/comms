@@ -1,5 +1,7 @@
 use crate::wasapi::stream::{Format, SampleFormat, SampleRate};
 use std::mem;
+use std::mem::MaybeUninit;
+use windows::Win32::Foundation;
 use windows::Win32::Media::{Audio, KernelStreaming, Multimedia};
 use windows::Win32::System::Com;
 
@@ -12,14 +14,19 @@ pub enum MmregSupportedFormatsError {
 pub fn is_format_supported(
     client: &Audio::IAudioClient3,
     waveformatex: &Audio::WAVEFORMATEX,
-) -> Result<Option<*const Audio::WAVEFORMATEX>, MmregSupportedFormatsError> {
-    match unsafe { client.IsFormatSupported(Audio::AUDCLNT_SHAREMODE_SHARED, waveformatex) } {
-        Ok(closest_waveformatex_ptr) if closest_waveformatex_ptr.is_null() => Ok(None),
-        Ok(closest_waveformatex_ptr) => Ok(Some(closest_waveformatex_ptr)),
-        Err(ref e) if e.code() == Audio::AUDCLNT_E_DEVICE_INVALIDATED => {
-            Err(MmregSupportedFormatsError::DeviceNotAvailable)
-        }
-        Err(_) => Err(MmregSupportedFormatsError::Other),
+) -> Result<Option<Audio::WAVEFORMATEX>, MmregSupportedFormatsError> {
+    let mut closest_waveformatex = MaybeUninit::<Audio::WAVEFORMATEX>::uninit();
+    match unsafe {
+        client.IsFormatSupported(
+            Audio::AUDCLNT_SHAREMODE_SHARED,
+            waveformatex,
+            &mut closest_waveformatex.as_mut_ptr(),
+        )
+    } {
+        Foundation::S_OK => Ok(None),
+        Foundation::S_FALSE => Ok(Some(unsafe { closest_waveformatex.assume_init() })),
+        Audio::AUDCLNT_E_DEVICE_INVALIDATED => Err(MmregSupportedFormatsError::DeviceNotAvailable),
+        _ => Err(MmregSupportedFormatsError::Other),
     }
 }
 
