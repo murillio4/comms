@@ -5,7 +5,7 @@ stages:
 build_linux:
   stage: build
   except:
-    - master
+    - main
   script:
     - cargo fmt --all -- --check
     - cargo clippy --locked --all-targets --all-features -- -D warnings
@@ -17,7 +17,7 @@ build_linux:
 build_windows:
   stage: build
   except:
-    - master
+    - main
   script:
     - cargo fmt --all -- --check
     - cargo clippy --locked --all-targets --all-features -- -D warnings
@@ -29,7 +29,7 @@ build_windows:
 build_release_linux:
   stage: build_release
   only:
-    - master
+    - main
   script:
     - cargo fmt --all -- --check
     - cargo clippy --locked --all-targets --all-features -- -D warnings
@@ -46,7 +46,7 @@ build_release_linux:
 build_release_windows:
   stage: build_release
   only:
-    - master
+    - main
   script:
     - if (Test-Path "comms.exe") { rm "comms.exe" }
     - cargo fmt --all -- --check
