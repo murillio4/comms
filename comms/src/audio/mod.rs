@@ -34,6 +34,7 @@ pub fn run(
         registration,
         receiver,
         ui_handle.clone(),
+        network_handle.clone(),
     );
     let mic_buffer = MicBuffer::new(network_handle)?;
     let event_loop =

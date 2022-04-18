@@ -44,7 +44,7 @@ fn main() {
         command_tx: audio_sender,
     };
     // UI <> Network comm channel
-    let (network_handle, network_event_receiver, network_worker_init) =
+    let (network_handle, network_event_receiver, network_event_sender, network_worker_init) =
         { NetworkHandle::new_handle_and_worker(audio_handle.clone()) };
 
     std::thread::spawn(move || {
@@ -81,6 +81,7 @@ fn main() {
     ui::run(
         network_handle,
         network_event_receiver,
+        network_event_sender,
         ui_receiver,
         audio_handle,
     );

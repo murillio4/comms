@@ -1,4 +1,4 @@
-use crate::packet::{PacketId, PacketKind};
+use crate::packet::{AudioIndex, PacketId, PacketKind};
 
 use crate::serialization::SerializeError;
 pub use serde::{Deserialize, Serialize};
@@ -8,7 +8,10 @@ pub mod network;
 pub mod packet;
 pub mod serialization;
 
-pub type OpusAudioFrame = Vec<u8>;
+pub struct OpusAudioFrame {
+    pub index: AudioIndex,
+    pub bytes: Vec<u8>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PacketHeader {

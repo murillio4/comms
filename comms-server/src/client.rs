@@ -4,6 +4,7 @@ use comms_lib::serialization::OutgoingPacketFrame;
 use mio::net::TcpStream;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::time::{Duration, Instant};
 
 pub struct NextPacketId(PacketId);
 
@@ -43,15 +44,24 @@ impl Connection {
     }
 }
 
+pub struct UdpAssociation {
+    pub local_udp_addr: SocketAddr,
+    pub public_udp_addr: SocketAddr,
+    pub udp_accepted_sent_at: Instant,
+}
+
 pub struct ConnectingClient {
     pub connection: Connection,
-    pub udp_addr: Option<SocketAddr>,
+    pub udp_association: Option<UdpAssociation>,
 }
 
 pub struct Client {
     pub connection: Connection,
-    pub udp_addr: SocketAddr,
+    pub local_udp_addr: SocketAddr,
+    pub public_udp_addr: SocketAddr,
     pub username: String,
+    pub round_trip_latency: Duration,
+    pub p2p_connections: Vec<ClientId>,
 }
 
 pub struct Clients {
@@ -72,15 +82,17 @@ impl Clients {
         }
     }
 
-    pub fn id_by_socket_addr(&self, addr: &SocketAddr) -> Option<ClientId> {
+    pub fn id_by_public_socket_addr(&self, addr: &SocketAddr) -> Option<ClientId> {
         self.established
             .iter()
-            .find(|(_, c)| &c.udp_addr == addr)
+            .find(|(_, c)| &c.public_udp_addr == addr)
             .map(|(id, _)| *id)
             .or_else(|| {
                 self.connecting
                     .iter()
-                    .find(|(_, c)| c.udp_addr == Some(*addr))
+                    .find(|(_, c)| {
+                        c.udp_association.as_ref().map(|a| a.public_udp_addr) == Some(*addr)
+                    })
                     .map(|(id, _)| *id)
             })
     }
@@ -113,5 +125,8 @@ impl Clients {
             .map(|_| ())
             .or_else(|| self.connecting.remove(client_id).map(|_| ()))
             .expect("Tried to close connection with nonexistent client");
+        for client in self.established.values_mut() {
+            client.p2p_connections.retain(|id| id != client_id);
+        }
     }
 }

@@ -102,7 +102,7 @@ pub trait UdpPacket {
     fn from_recv(socket: &mut UdpSocket) -> io::Result<Option<Self>>
     where
         Self: Sized;
-    fn into_incoming_packet(self) -> Result<Self::IncomingPacket, SerializeError>;
+    fn into_incoming_packet(self) -> (Result<Self::IncomingPacket, SerializeError>, SocketAddr);
 }
 
 pub struct ServerUdpPacket {
@@ -120,7 +120,7 @@ impl ServerUdpPacket {
 }
 
 impl UdpPacket for ServerUdpPacket {
-    type IncomingPacket = (SocketAddr, IncomingPacketFrame);
+    type IncomingPacket = IncomingPacketFrame;
 
     fn send(&self, socket: &mut UdpSocket) -> io::Result<usize> {
         socket.send_to(&self.buffer, self.client_addr)
@@ -139,19 +139,23 @@ impl UdpPacket for ServerUdpPacket {
         }))
     }
 
-    fn into_incoming_packet(self) -> Result<Self::IncomingPacket, SerializeError> {
-        let incoming_packet = IncomingPacketFrame::from_bytes(&self.buffer)?;
-        Ok((self.client_addr, incoming_packet))
+    fn into_incoming_packet(self) -> (Result<Self::IncomingPacket, SerializeError>, SocketAddr) {
+        let incoming_packet_result = IncomingPacketFrame::from_bytes(&self.buffer);
+        (incoming_packet_result, self.client_addr)
     }
 }
 
 pub struct ClientUdpPacket {
+    client_addr: SocketAddr,
     buffer: Vec<u8>,
 }
 
 impl ClientUdpPacket {
-    pub fn new(buffer: Vec<u8>) -> Self {
-        Self { buffer }
+    pub fn new(buffer: Vec<u8>, client_addr: SocketAddr) -> Self {
+        Self {
+            buffer,
+            client_addr,
+        }
     }
 }
 
@@ -159,23 +163,28 @@ impl UdpPacket for ClientUdpPacket {
     type IncomingPacket = IncomingPacketFrame;
 
     fn send(&self, socket: &mut UdpSocket) -> io::Result<usize> {
-        socket.send(&self.buffer)
+        socket.send_to(&self.buffer, self.client_addr)
     }
 
     fn from_recv(socket: &mut UdpSocket) -> io::Result<Option<Self>> {
         let mut buffer = [0u8; 65536];
-        let size = socket.recv(&mut buffer)?;
+        let (size, address) = socket.recv_from(&mut buffer)?;
+
         if size == 0 {
             return Ok(None);
         }
 
         Ok(Some(Self {
+            client_addr: address,
             buffer: buffer[..size].to_vec(),
         }))
     }
 
-    fn into_incoming_packet(self) -> Result<Self::IncomingPacket, SerializeError> {
-        IncomingPacketFrame::from_bytes(&self.buffer)
+    fn into_incoming_packet(self) -> (Result<Self::IncomingPacket, SerializeError>, SocketAddr) {
+        (
+            IncomingPacketFrame::from_bytes(&self.buffer),
+            self.client_addr,
+        )
     }
 }
 
@@ -315,13 +324,13 @@ impl<U: UdpPacket> UdpReadIter<'_, U> {
     // TODO join with TCP impl into a trait
     pub fn try_process(
         &mut self,
-        mut f: impl FnMut(U::IncomingPacket) -> Result<(), CommsNetworkError>,
+        mut f: impl FnMut(U::IncomingPacket, SocketAddr) -> Result<(), CommsNetworkError>,
     ) -> Result<(), CommsNetworkError> {
         if let Some(e) = self.read_error.take() {
             return Err(e);
         }
-        for result in self {
-            if let Err(e) = result.map_err(|e| e.into()).and_then(&mut f) {
+        for (result, addr) in self {
+            if let Err(e) = result.map_err(|e| e.into()).and_then(|p| f(p, addr)) {
                 return Err(e);
             }
         }
@@ -330,7 +339,7 @@ impl<U: UdpPacket> UdpReadIter<'_, U> {
 }
 
 impl<'a, U: UdpPacket> Iterator for UdpReadIter<'a, U> {
-    type Item = Result<U::IncomingPacket, SerializeError>;
+    type Item = (Result<U::IncomingPacket, SerializeError>, SocketAddr);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.incoming_packets

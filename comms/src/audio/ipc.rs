@@ -1,12 +1,13 @@
 use std::sync::mpsc::{Receiver, SendError, Sender};
 
 use crate::ui::ipc::UICommand;
-use comms_lib::packet::ClientId;
+use comms_lib::packet::{AudioIndex, ClientId};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 
 use crate::audio::buffer::RcMultiplexer;
 use crate::audio::{AudioPlatform, AudioPlatformImpl};
+use crate::NetworkHandle;
 use audio_device::audio_connection::{AudioConnection, EventLoopNotify};
 use audio_device::buffer::{InterruptReceiver, MaybeSharedPlaybackSource};
 use comms_lib::OpusAudioFrame;
@@ -15,7 +16,7 @@ pub enum AudioCommand {
     NewClient(ClientId),
     DropClient(ClientId),
     ServerDisconnect,
-    AudioFromClient(ClientId, OpusAudioFrame),
+    AudioFromClient(ClientId, OpusAudioFrame, bool),
     #[allow(dead_code)]
     SwitchInputDevice(String),
     #[allow(dead_code)]
@@ -50,9 +51,22 @@ pub struct AudioHandle {
 }
 
 impl AudioHandle {
-    pub fn send_audio(&mut self, id: ClientId, bytes: Vec<u8>) {
-        self.send(AudioCommand::AudioFromClient(id, bytes.to_vec()))
-            .unwrap();
+    pub fn send_audio(
+        &mut self,
+        index: AudioIndex,
+        id: ClientId,
+        bytes: Vec<u8>,
+        is_peer_to_peer: bool,
+    ) {
+        self.send(AudioCommand::AudioFromClient(
+            id,
+            OpusAudioFrame {
+                index,
+                bytes: bytes.to_vec(),
+            },
+            is_peer_to_peer,
+        ))
+        .unwrap();
     }
 
     pub fn send(&self, command: AudioCommand) -> Result<(), SendError<AudioCommand>> {
@@ -67,6 +81,7 @@ pub struct AudioReceiver<R> {
     pub(crate) registration: R,
     pub(crate) command_rx: Receiver<AudioCommand>,
     pub(crate) ui_handle: Sender<UICommand>,
+    pub(crate) network_handle: NetworkHandle,
 }
 
 impl<R> AudioReceiver<R> {
@@ -75,12 +90,14 @@ impl<R> AudioReceiver<R> {
         registration: R,
         command_rx: Receiver<AudioCommand>,
         ui_handle: Sender<UICommand>,
+        network_handle: NetworkHandle,
     ) -> Self {
         Self {
             multiplexer,
             registration,
             command_rx,
             ui_handle,
+            network_handle,
         }
     }
 }
@@ -105,10 +122,15 @@ impl<R> InterruptReceiver<R> for AudioReceiver<R> {
                 AudioCommand::ServerDisconnect => self.multiplexer.with(|multiplexer| {
                     multiplexer.clear();
                 }),
-                AudioCommand::AudioFromClient(client_id, chunk) => {
+                AudioCommand::AudioFromClient(client_id, chunk, is_peer_to_peer) => {
                     self.multiplexer.with(|multiplexer| {
                         multiplexer
-                            .append_chunk_from_client(client_id, chunk)
+                            .append_chunk_from_client(
+                                client_id,
+                                chunk,
+                                is_peer_to_peer,
+                                &self.network_handle,
+                            )
                             .expect("Failed to decode audio from multiplexer client")
                     })
                 }

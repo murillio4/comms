@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::num::NonZeroU64;
+use std::time::Duration;
 
 pub type ClientId = u16;
 pub type PacketKind = u8;
 pub type PacketId = NonZeroU64;
+pub type AudioIndex = NonZeroU64;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Packet<T: PacketBody> {
@@ -28,6 +31,7 @@ pub trait PacketBody: Serialize {
 #[derive(Serialize, Deserialize)]
 pub struct AssociateUdp {
     pub client_id: ClientId,
+    pub local_udp_addr: SocketAddr,
 }
 
 impl PacketBody for AssociateUdp {
@@ -51,7 +55,11 @@ impl PacketBody for FinishConnect {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct AudioFromClient(#[serde(with = "serde_bytes")] pub Vec<u8>);
+pub struct AudioFromClient {
+    pub index: AudioIndex,
+    #[serde(with = "serde_bytes")]
+    pub bytes: Vec<u8>,
+}
 
 impl PacketBody for AudioFromClient {
     const KIND_ID: PacketKind = 3u8;
@@ -66,9 +74,11 @@ impl PacketBody for KeepAlive {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AudioToClient {
+    pub index: AudioIndex,
+    pub author: ClientId,
     #[serde(with = "serde_bytes")]
     pub bytes: Vec<u8>,
-    pub author: ClientId,
+    pub from_client_peer_to_peer: bool,
 }
 
 impl PacketBody for AudioToClient {
@@ -76,12 +86,56 @@ impl PacketBody for AudioToClient {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct NetworkUser {
+    pub client_id: ClientId,
+    pub name: String,
+    pub local_udp_addr: SocketAddr,
+    pub public_udp_addr: SocketAddr,
+    pub round_trip_latency: Duration,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FinishConnectAccepted {
-    pub users: Vec<(ClientId, String)>,
+    pub users: Vec<NetworkUser>,
+    pub round_trip_latency: Duration,
 }
 
 impl PacketBody for FinishConnectAccepted {
     const KIND_ID: PacketKind = 6u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct P2pSynchronize();
+
+impl PacketBody for P2pSynchronize {
+    const KIND_ID: PacketKind = 12u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct P2pAcknowledge();
+
+impl PacketBody for P2pAcknowledge {
+    const KIND_ID: PacketKind = 13u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct P2pAcknowledgeBack {
+    pub client_id: ClientId,
+    pub round_trip_latency: Duration,
+    pub is_from_lead_client: bool,
+}
+
+impl PacketBody for P2pAcknowledgeBack {
+    const KIND_ID: PacketKind = 14u8;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct P2pEstablished {
+    pub source_client_id: ClientId,
+}
+
+impl PacketBody for P2pEstablished {
+    const KIND_ID: PacketKind = 15u8;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -105,8 +159,7 @@ impl PacketBody for Hello {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserJoined {
-    pub client_id: ClientId,
-    pub name: String,
+    pub user: NetworkUser,
 }
 
 impl PacketBody for UserJoined {

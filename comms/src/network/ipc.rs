@@ -2,17 +2,18 @@ use std::fmt::{Display, Formatter};
 use std::net::SocketAddr;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc};
+use std::time::Duration;
 use std::{fmt, io};
 
 use mio::{Poll, Waker};
 
-use comms_lib::network::{CommsNetworkError, Protocol};
+use comms_lib::network::CommsNetworkError;
 use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
 use crate::audio::ipc::AudioHandle;
 use crate::network::future::{RequestError, SendResponse};
 use crate::network::{NextPollToken, WorkerInit};
-use comms_lib::packet::Hello;
+use comms_lib::packet::{ClientId, Hello};
 use comms_lib::OpusAudioFrame;
 
 #[derive(Debug)]
@@ -20,6 +21,16 @@ pub enum NetworkEvent {
     SocketClosed,
     NetworkError,
     Packet(IncomingPacketFrame),
+    P2pEstablished {
+        client_id: ClientId,
+        round_trip_latency: Duration,
+        is_from_lead_client: bool,
+    },
+}
+
+pub struct ConnectSuccess {
+    pub hello: Hello,
+    pub udp_local_addr: SocketAddr,
 }
 
 #[derive(Debug)]
@@ -42,7 +53,21 @@ impl From<RequestError> for ConnectError {
     }
 }
 
+#[derive(Debug)]
+pub enum Protocol {
+    Tcp,
+    Udp,
+    UdpP2p(SocketAddr),
+}
+
 pub enum NetworkCommand {
+    RegisterP2pClient {
+        client_id: ClientId,
+        udp_addr: SocketAddr,
+    },
+    RemoveP2pClient {
+        client_id: ClientId,
+    },
     Packet {
         protocol: Protocol,
         packet: OutgoingPacketFrame,
@@ -51,7 +76,7 @@ pub enum NetworkCommand {
     SendAudio(OpusAudioFrame),
     Connect {
         destination: SocketAddr,
-        send_response: SendResponse<Result<Hello, ConnectError>>,
+        send_response: SendResponse<Result<ConnectSuccess, ConnectError>>,
     },
     Disconnect {
         send_response: SendResponse<()>,
@@ -69,6 +94,8 @@ impl Display for NetworkCommand {
             Self::Connect { .. } => f.write_str("Connect"),
             Self::Disconnect { .. } => f.write_str("Disconnect"),
             Self::SendAudio { .. } => f.write_str("SendAudio"),
+            Self::RegisterP2pClient { .. } => f.write_str("RegisterClient"),
+            Self::RemoveP2pClient { .. } => f.write_str("RemoveP2pClient"),
         }
     }
 }
@@ -85,6 +112,7 @@ impl NetworkHandle {
     ) -> (
         Self,
         futures::channel::mpsc::Receiver<NetworkEvent>,
+        futures::channel::mpsc::Sender<NetworkEvent>,
         WorkerInit,
     ) {
         let (event_sender, network_event_receiver) = futures::channel::mpsc::channel(32);
@@ -96,14 +124,18 @@ impl NetworkHandle {
         let command_token = next_poll_token.create();
         let waker = Waker::new(poll.registry(), command_token).unwrap();
 
+        let network_handle = Self {
+            sender: command_sender,
+            waker: Arc::new(waker),
+        };
+
         (
-            NetworkHandle {
-                sender: command_sender,
-                waker: Arc::new(waker),
-            },
+            network_handle.clone(),
             network_event_receiver,
+            event_sender.clone(),
             WorkerInit {
                 audio_handle,
+                network_handle,
                 event_sender,
                 command_receiver,
                 poll,

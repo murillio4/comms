@@ -23,11 +23,11 @@ impl OutgoingQueue {
                 Protocol::Udp => {
                     let (packet_id, addr) = match clients.client_by_id(&dest) {
                         Some(AnyClientRef::Established(c)) => {
-                            (c.connection.next_packet_id(), c.udp_addr)
+                            (c.connection.next_packet_id(), c.public_udp_addr)
                         },
                         Some(AnyClientRef::Connecting(c)) => (
                             c.connection.next_packet_id(),
-                            c.udp_addr.expect("Attempting to send UDP packet to client that hasn't associated yet"),
+                            c.udp_association.as_ref().expect("Attempting to send UDP packet to client that hasn't associated yet").public_udp_addr,
                         ),
                         _ => continue,
                     };

@@ -65,7 +65,7 @@ pub fn format_to_waveformatextensible(format: &Format) -> Audio::WAVEFORMATEXTEN
         2 => {
             // KernelStreaming::KSAUDIO_SPEAKER_STEREO, which isn't defined in windows-rs yet
             KernelStreaming::SPEAKER_FRONT_LEFT | KernelStreaming::SPEAKER_FRONT_RIGHT
-        },
+        }
         _ => KernelStreaming::KSAUDIO_SPEAKER_DIRECTOUT,
     };
 

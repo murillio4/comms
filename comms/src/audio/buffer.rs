@@ -1,9 +1,10 @@
-use crate::network::ipc::NetworkHandle;
+use crate::network::ipc::{NetworkCommand, NetworkHandle, Protocol};
 use audio_device::buffer::{MaybeSharedPlaybackSource, MicSink, PlaybackSource};
 use audio_device::noise_gate::GateNoiseFilter;
 use audiopus::coder::{Decoder, Encoder};
 use audiopus::{Application, Channels};
-use comms_lib::packet::ClientId;
+use comms_lib::packet::{AudioIndex, ClientId, P2pEstablished};
+use comms_lib::serialization::OutgoingPacketFrame;
 use comms_lib::OpusAudioFrame;
 use dasp::Sample;
 use glib::bitflags::_core::cell::RefCell;
@@ -15,6 +16,8 @@ struct ClientQueue {
     decoder: Decoder,
     sample_buffer: SliceDeque<f32>,
     current_volume: f32,
+    current_index: AudioIndex,
+    is_peer_to_peer: bool,
 }
 
 impl ClientQueue {
@@ -26,6 +29,8 @@ impl ClientQueue {
             // audio arrives.
             sample_buffer: SliceDeque::with_capacity(4096),
             current_volume: 1.0,
+            current_index: AudioIndex::new(1).unwrap(),
+            is_peer_to_peer: false,
         })
     }
 
@@ -74,20 +79,46 @@ impl Multiplexer {
         &mut self,
         id: ClientId,
         data: OpusAudioFrame,
+        is_peer_to_peer: bool,
+        network_handle: &NetworkHandle,
     ) -> Result<(), audiopus::Error> {
         let queue = match self.client_queues.get_mut(&id) {
             Some(queue) => queue,
             None => return Ok(()),
         };
 
+        if data.index < queue.current_index {
+            // This audio data is older than data we've already received, so throw it out
+            return Ok(());
+        }
+
         let mut decode_buffer = [0f32; 480];
-        let size =
-            queue
-                .decoder
-                .decode_float(Some(&data), &mut decode_buffer as &mut [f32], false)?;
+        let size = queue.decoder.decode_float(
+            Some(&data.bytes),
+            &mut decode_buffer as &mut [f32],
+            false,
+        )?;
         queue
             .sample_buffer
             .extend_from_slice(&decode_buffer[..size]);
+        queue.current_index = data.index;
+
+        if !queue.is_peer_to_peer && is_peer_to_peer {
+            queue.is_peer_to_peer = true;
+
+            network_handle.command(NetworkCommand::Packet {
+                protocol: Protocol::Udp,
+                packet: OutgoingPacketFrame::from_packet(
+                    None,
+                    &P2pEstablished {
+                        source_client_id: id,
+                    },
+                )
+                .unwrap(),
+                send_response: None,
+            })
+        }
+
         Ok(())
     }
 
@@ -147,6 +178,7 @@ pub struct MicBuffer {
     sample_buffer: SliceDeque<f32>,
     encoder: Encoder,
     noise_gate: GateNoiseFilter,
+    index: u64,
 }
 
 impl MicBuffer {
@@ -160,6 +192,7 @@ impl MicBuffer {
                 Application::LowDelay,
             )?,
             noise_gate: GateNoiseFilter::new(2048),
+            index: 1,
         })
     }
 }
@@ -184,9 +217,15 @@ impl MicSink for MicBuffer {
                     .encoder
                     .encode_float(next_samples, &mut encode_buffer)
                     .expect("Unsure how to handle opus encoding failure yet");
+
+                let index = AudioIndex::new(self.index).unwrap();
                 self.network_handle
-                    .audio(encode_buffer[..size].to_vec())
+                    .audio(OpusAudioFrame {
+                        index,
+                        bytes: encode_buffer[..size].to_vec(),
+                    })
                     .unwrap();
+                self.index += 1;
             }
             unsafe { self.sample_buffer.move_head(480) };
         }

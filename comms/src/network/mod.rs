@@ -8,16 +8,19 @@ use mio::net::TcpStream;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token};
 
-use comms_lib::network::{
-    ClientUdpPacket, CommsNetworkError, Protocol, TcpConnection, UdpConnection,
+use comms_lib::network::{ClientUdpPacket, CommsNetworkError, TcpConnection, UdpConnection};
+use comms_lib::packet::{
+    AudioFromClient, AudioToClient, ClientId, Hello, P2pAcknowledge, P2pAcknowledgeBack,
+    P2pSynchronize, Packet, PacketBody,
 };
-use comms_lib::packet;
-use comms_lib::packet::{AudioFromClient, AudioToClient, Hello, Packet, PacketBody};
 use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network::future::SendResponse;
-use crate::network::ipc::{CommandQueue, ConnectError, NetworkCommand, NetworkEvent};
+use crate::network::ipc::{
+    CommandQueue, ConnectError, ConnectSuccess, NetworkCommand, NetworkEvent, Protocol,
+};
+use crate::NetworkHandle;
 use futures::channel::mpsc::Sender;
 
 pub mod future;
@@ -28,19 +31,37 @@ pub struct Connection {
     udp_token: Token,
     tcp: TcpConnection,
     tcp_token: Token,
+    local_addr: SocketAddr,
+    server_addr: SocketAddr,
+    known_peers: HashMap<ClientId, SocketAddr>,
     next_packet_id: NonZeroU64,
+    client_id: Option<ClientId>,
     reply_map: HashMap<NonZeroU64, SendResponse<IncomingPacketFrame>>,
-    connect_response: Option<SendResponse<Result<Hello, ConnectError>>>,
+    connect_response: Option<(
+        SocketAddr,
+        SendResponse<Result<ConnectSuccess, ConnectError>>,
+    )>,
 }
 
 impl Connection {
-    fn new(socket: UdpSocket, udp_token: Token, tcp: TcpConnection, tcp_token: Token) -> Self {
+    fn new(
+        socket: UdpSocket,
+        udp_token: Token,
+        tcp: TcpConnection,
+        tcp_token: Token,
+        server_addr: SocketAddr,
+        local_addr: SocketAddr,
+    ) -> Self {
         Connection {
             udp: UdpConnection::new(socket),
             udp_token,
             tcp,
             tcp_token,
+            local_addr,
+            server_addr,
+            known_peers: HashMap::new(),
             next_packet_id: NonZeroU64::new(1).unwrap(),
+            client_id: None,
             reply_map: HashMap::new(),
             connect_response: None,
         }
@@ -55,7 +76,8 @@ impl Connection {
 
 pub struct WorkerInit {
     audio_handle: AudioHandle,
-    event_sender: futures::channel::mpsc::Sender<NetworkEvent>,
+    network_handle: NetworkHandle,
+    event_sender: Sender<NetworkEvent>,
     command_receiver: Receiver<NetworkCommand>,
     poll: Poll,
     command_token: Token,
@@ -82,9 +104,11 @@ pub struct Worker {
 
 fn handle_udp_packet(
     parsed_packet: IncomingPacketFrame,
+    addr: SocketAddr,
     reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacketFrame>>,
     audio_handle: &mut AudioHandle,
     event_sender: &mut Sender<NetworkEvent>,
+    network_handle: &NetworkHandle,
 ) -> Result<(), CommsNetworkError> {
     if let Some(reply_to) = parsed_packet.header.reply_to {
         if let Some(sender) = reply_map.remove(&reply_to) {
@@ -95,9 +119,41 @@ fn handle_udp_packet(
 
     let kind = parsed_packet.header.kind;
     match kind {
-        packet::AudioToClient::KIND_ID => {
+        AudioToClient::KIND_ID => {
             let audio_to_client: Packet<AudioToClient> = parsed_packet.finish_parse()?;
-            audio_handle.send_audio(audio_to_client.body.author, audio_to_client.body.bytes);
+            audio_handle.send_audio(
+                audio_to_client.body.index,
+                audio_to_client.body.author,
+                audio_to_client.body.bytes,
+                audio_to_client.body.from_client_peer_to_peer,
+            );
+        }
+        P2pSynchronize::KIND_ID => {
+            let sync: Packet<P2pSynchronize> = parsed_packet.finish_parse()?;
+            network_handle.command(NetworkCommand::Packet {
+                protocol: Protocol::UdpP2p(addr),
+                packet: OutgoingPacketFrame::from_packet(Some(sync.id), &P2pAcknowledge())?,
+                send_response: None,
+            })
+        }
+        P2pAcknowledgeBack::KIND_ID => {
+            let ack_back: Packet<P2pAcknowledgeBack> = parsed_packet.finish_parse()?;
+            println!(
+                "P2P connection with {} started successfully ({:.1}ms RT) via ack-back",
+                addr,
+                (ack_back.body.round_trip_latency.as_micros() as f64) / 1000.0,
+            );
+            network_handle.command(NetworkCommand::RegisterP2pClient {
+                client_id: ack_back.body.client_id,
+                udp_addr: addr,
+            });
+            event_sender
+                .try_send(NetworkEvent::P2pEstablished {
+                    client_id: ack_back.body.client_id,
+                    round_trip_latency: ack_back.body.round_trip_latency,
+                    is_from_lead_client: ack_back.body.is_from_lead_client,
+                })
+                .unwrap();
         }
         _ => {
             event_sender
@@ -111,7 +167,11 @@ fn handle_udp_packet(
 fn handle_tcp_packet(
     stream_packet: IncomingPacketFrame,
     reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacketFrame>>,
-    await_hello: &mut Option<SendResponse<Result<Hello, ConnectError>>>,
+    client_id: &mut Option<ClientId>,
+    await_hello: &mut Option<(
+        SocketAddr,
+        SendResponse<Result<ConnectSuccess, ConnectError>>,
+    )>,
     event_sender: &mut Sender<NetworkEvent>,
 ) -> Result<(), CommsNetworkError> {
     if let Some(reply_to) = stream_packet.header.reply_to {
@@ -123,8 +183,13 @@ fn handle_tcp_packet(
 
     let kind = stream_packet.header.kind;
     if kind == Hello::KIND_ID && await_hello.is_some() {
-        if let Some(send_response) = await_hello.take() {
-            send_response.done(Ok(stream_packet.finish_parse()?.body));
+        if let Some((udp_local_addr, send_response)) = await_hello.take() {
+            let hello: Hello = stream_packet.finish_parse()?.body;
+            *client_id = Some(hello.client_id);
+            send_response.done(Ok(ConnectSuccess {
+                hello,
+                udp_local_addr,
+            }));
         }
     } else {
         event_sender
@@ -146,7 +211,14 @@ fn connect(
 
     let mut tcp = TcpStream::connect(destination)?;
     let mut udp = UdpSocket::bind("0.0.0.0:0".parse().unwrap())?;
-    udp.connect(destination)?;
+
+    let local_addr = {
+        let resolve_local_addr_udp = UdpSocket::bind("0.0.0.0:0".parse().unwrap())?;
+        resolve_local_addr_udp.connect(destination)?;
+        let mut local_addr = resolve_local_addr_udp.local_addr()?;
+        local_addr.set_port(udp.local_addr()?.port());
+        local_addr
+    };
 
     let udp_token = next_poll_token.create();
     let tcp_token = next_poll_token.create();
@@ -161,6 +233,8 @@ fn connect(
         udp_token,
         TcpConnection::new(tcp),
         tcp_token,
+        destination,
+        local_addr,
     ));
     Ok(())
 }
@@ -173,6 +247,7 @@ impl Worker {
     pub fn run(mut self, worker_init: WorkerInit) -> Result<(), NetworkError> {
         let command_queue = CommandQueue::new(worker_init.command_receiver);
         let mut audio_handle = worker_init.audio_handle;
+        let network_handle = worker_init.network_handle;
         let mut event_sender = worker_init.event_sender;
 
         let mut next_poll_token = worker_init.next_poll_token;
@@ -205,7 +280,7 @@ impl Worker {
                                             Protocol::Tcp => {
                                                 if let Err(e) = connection.tcp.push_outgoing(&raw) {
                                                     println!("Failed to send TCP data: {:?}", e);
-                                                    if let Some(send_response) =
+                                                    if let Some((_, send_response)) =
                                                         connection.connect_response.take()
                                                     {
                                                         send_response
@@ -218,16 +293,39 @@ impl Worker {
                                                 }
                                             }
                                             Protocol::Udp => {
+                                                match connection.udp.push_outgoing(
+                                                    ClientUdpPacket::new(
+                                                        raw,
+                                                        connection.server_addr,
+                                                    ),
+                                                ) {
+                                                    Ok(_) => (),
+                                                    Err(e)
+                                                        if e.kind()
+                                                            == io::ErrorKind::ConnectionRefused =>
+                                                    {
+                                                        if let Some((_, send_response)) =
+                                                            connection.connect_response.take()
+                                                        {
+                                                            send_response.done(Err(
+                                                                ConnectError::NetworkError,
+                                                            ));
+                                                        }
+                                                    }
+                                                    Err(e) => return Err(e.into()),
+                                                }
+                                            }
+                                            Protocol::UdpP2p(addr) => {
                                                 match connection
                                                     .udp
-                                                    .push_outgoing(ClientUdpPacket::new(raw))
+                                                    .push_outgoing(ClientUdpPacket::new(raw, addr))
                                                 {
                                                     Ok(_) => (),
                                                     Err(e)
                                                         if e.kind()
                                                             == io::ErrorKind::ConnectionRefused =>
                                                     {
-                                                        if let Some(send_response) =
+                                                        if let Some((_, send_response)) =
                                                             connection.connect_response.take()
                                                         {
                                                             send_response.done(Err(
@@ -244,33 +342,61 @@ impl Worker {
                             }
                             NetworkCommand::SendAudio(chunk) => {
                                 if let Some(connection) = &mut self.connection {
-                                    let bytes = chunk
+                                    let bytes: Vec<u8> = chunk
+                                        .bytes
                                         .iter()
                                         .flat_map(|sample| sample.to_le_bytes().to_vec())
                                         .collect();
-                                    let packet = OutgoingPacketFrame::from_packet(
-                                        None,
-                                        &AudioFromClient(bytes),
-                                    )
-                                    .unwrap();
-                                    let id = connection.next_packet_id();
-                                    if let Ok(raw) = packet.into_raw(id) {
-                                        match connection
-                                            .udp
-                                            .push_outgoing(ClientUdpPacket::new(raw))
-                                        {
-                                            Ok(_) => (),
-                                            Err(e)
-                                                if e.kind() == io::ErrorKind::ConnectionRefused =>
-                                            {
-                                                if let Some(send_response) =
-                                                    connection.connect_response.take()
+
+                                    let mut packets = vec![(
+                                        connection.server_addr,
+                                        OutgoingPacketFrame::from_packet(
+                                            None,
+                                            &AudioFromClient {
+                                                index: chunk.index,
+                                                bytes: bytes.clone(),
+                                            },
+                                        )
+                                        .unwrap(),
+                                    )];
+                                    if let Some(client_id) = connection.client_id {
+                                        for peer in connection.known_peers.values() {
+                                            packets.push((
+                                                *peer,
+                                                OutgoingPacketFrame::from_packet(
+                                                    None,
+                                                    &AudioToClient {
+                                                        index: chunk.index,
+                                                        bytes: bytes.clone(),
+                                                        author: client_id,
+                                                        from_client_peer_to_peer: true,
+                                                    },
+                                                )
+                                                .unwrap(),
+                                            ));
+                                        }
+                                    }
+
+                                    for (destination, packet) in packets {
+                                        let id = connection.next_packet_id();
+                                        if let Ok(raw) = packet.into_raw(id) {
+                                            match connection.udp.push_outgoing(
+                                                ClientUdpPacket::new(raw, destination),
+                                            ) {
+                                                Ok(_) => (),
+                                                Err(e)
+                                                    if e.kind()
+                                                        == io::ErrorKind::ConnectionRefused =>
                                                 {
-                                                    send_response
-                                                        .done(Err(ConnectError::NetworkError));
+                                                    if let Some((_, send_response)) =
+                                                        connection.connect_response.take()
+                                                    {
+                                                        send_response
+                                                            .done(Err(ConnectError::NetworkError));
+                                                    }
                                                 }
+                                                Err(e) => return Err(e.into()),
                                             }
-                                            Err(e) => return Err(e.into()),
                                         }
                                     }
                                 }
@@ -285,12 +411,26 @@ impl Worker {
                                 {
                                     send_response.done(Err(e));
                                 } else if let Some(connection) = &mut connection {
-                                    connection.connect_response = Some(send_response);
+                                    connection.connect_response =
+                                        Some((connection.local_addr, send_response));
                                 }
                             }
                             NetworkCommand::Disconnect { send_response } => {
                                 self.connection.take();
                                 send_response.done(());
+                            }
+                            NetworkCommand::RegisterP2pClient {
+                                client_id,
+                                udp_addr,
+                            } => {
+                                if let Some(connection) = &mut self.connection {
+                                    connection.known_peers.insert(client_id, udp_addr);
+                                }
+                            }
+                            NetworkCommand::RemoveP2pClient { client_id } => {
+                                if let Some(connection) = &mut self.connection {
+                                    connection.known_peers.remove(&client_id);
+                                }
                             }
                         }
                     }
@@ -298,14 +438,19 @@ impl Worker {
                     if token == connection.udp_token {
                         if event.is_readable() {
                             let reply_map = &mut connection.reply_map;
-                            match connection.udp.read_new_packets().try_process(|packet| {
-                                handle_udp_packet(
-                                    packet,
-                                    reply_map,
-                                    &mut audio_handle,
-                                    &mut event_sender,
-                                )
-                            }) {
+                            match connection
+                                .udp
+                                .read_new_packets()
+                                .try_process(|packet, addr| {
+                                    handle_udp_packet(
+                                        packet,
+                                        addr,
+                                        reply_map,
+                                        &mut audio_handle,
+                                        &mut event_sender,
+                                        &network_handle,
+                                    )
+                                }) {
                                 Err(CommsNetworkError::Closed) => {
                                     event_sender.try_send(NetworkEvent::SocketClosed).unwrap();
                                 }
@@ -322,11 +467,13 @@ impl Worker {
                         if event.is_readable() {
                             let reply_map = &mut connection.reply_map;
                             let connect_response = &mut connection.connect_response;
+                            let client_id = &mut connection.client_id;
 
                             match connection.tcp.read_new_packets().try_process(|packet| {
                                 handle_tcp_packet(
                                     packet,
                                     reply_map,
+                                    client_id,
                                     connect_response,
                                     &mut event_sender,
                                 )

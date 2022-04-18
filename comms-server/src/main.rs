@@ -93,7 +93,7 @@ fn main() -> Result<(), CommsServerError> {
             } else if token == udp_token {
                 if event.is_readable() {
                     udp.read_new_packets()
-                        .try_process(|(addr, packet)| {
+                        .try_process(|packet, addr| {
                             handle_udp_packet(
                                 addr,
                                 packet,
@@ -130,7 +130,7 @@ fn main() -> Result<(), CommsServerError> {
                         client_id,
                         ConnectingClient {
                             connection: Connection::new(stream),
-                            udp_addr: None,
+                            udp_association: None,
                         },
                     );
 

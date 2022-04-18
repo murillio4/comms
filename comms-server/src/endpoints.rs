@@ -1,11 +1,11 @@
-use crate::client::{Client, Clients};
+use crate::client::{Client, Clients, UdpAssociation};
 use crate::network::{NetworkHandle, SendPacket, Target};
 use crate::task::{EndpointResult, Spawner};
 use comms_lib::network::CommsNetworkError;
 use comms_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, ClientId, Disconnect,
-    DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, Packet, PacketBody,
-    PacketId, UserJoined, UserLeft,
+    DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, NetworkUser,
+    P2pEstablished, Packet, PacketBody, PacketId, UserJoined, UserLeft,
 };
 use comms_lib::serialization::{IncomingPacketFrame, SerializeError};
 use futures::future;
@@ -13,6 +13,7 @@ use std::cell::RefCell;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub struct Context {
     pub clients: Arc<RefCell<Clients>>,
@@ -23,7 +24,7 @@ pub struct Context {
 async fn associate_udp(
     udp_handle: NetworkHandle,
     clients: Arc<RefCell<Clients>>,
-    addr: SocketAddr,
+    public_addr: SocketAddr,
     packet: Packet<AssociateUdp>,
 ) -> EndpointResult {
     let outgoing = {
@@ -32,7 +33,11 @@ async fn associate_udp(
             Some(client) => client,
             None => return Ok(()),
         };
-        client.udp_addr = Some(addr);
+        client.udp_association = Some(UdpAssociation {
+            local_udp_addr: packet.body.local_udp_addr,
+            public_udp_addr: public_addr,
+            udp_accepted_sent_at: Instant::now(),
+        });
         SendPacket::udp(
             Target::One(packet.body.client_id),
             Some(packet.id),
@@ -46,22 +51,37 @@ async fn associate_udp(
 async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) -> EndpointResult {
     let client_ids = {
         let clients = context.clients.borrow();
+        let mut excluded_client_ids = &Vec::new();
+        if let Some(client) = clients.established.get(&context.client_id) {
+            excluded_client_ids = &client.p2p_connections
+        }
         clients
             .established
             .iter()
             .map(|(id, _)| *id)
             .filter(|id| id != &context.client_id)
+            .filter(|id| !excluded_client_ids.contains(id))
             .collect()
     };
     let outgoing = SendPacket::udp(
         Target::Many(client_ids),
         None,
         AudioToClient {
+            index: packet.body.index,
             author: context.client_id,
-            bytes: packet.body.0,
+            bytes: packet.body.bytes,
+            from_client_peer_to_peer: false,
         },
     )?;
     outgoing.send(&context.network_handle).await;
+    Ok(())
+}
+
+async fn p2p_established(context: Context, packet: Packet<P2pEstablished>) -> EndpointResult {
+    let mut clients = context.clients.borrow_mut();
+    if let Some(client) = clients.established.get_mut(&packet.body.source_client_id) {
+        client.p2p_connections.push(context.client_id);
+    }
     Ok(())
 }
 
@@ -73,7 +93,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
             None => return Ok(()),
         };
 
-        match client.udp_addr.take() {
+        match client.udp_association.take() {
             None => {
                 clients.connecting.insert(context.client_id, client);
                 vec![SendPacket::tcp(
@@ -82,15 +102,22 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
                     ErrorResponse::AssociateUdpFirst,
                 )?]
             }
-            Some(addr) => {
-                println!("[{:?}] \"{}\" has connected", &addr, &packet.body.name);
+            Some(udp_association) => {
+                let round_trip_latency = udp_association.udp_accepted_sent_at.elapsed();
+                println!(
+                    "[{:?}] \"{}\" has connected (round trip latency: {:.1}ms, local socket addr: {:?})",
+                    &udp_association.public_udp_addr, &packet.body.name, (round_trip_latency.as_micros() as f64) / 1000.0, &udp_association.local_udp_addr
+                );
                 let other_clients = clients.established.keys().copied().collect();
                 clients.established.insert(
                     context.client_id,
                     Client {
-                        udp_addr: addr,
+                        local_udp_addr: udp_association.local_udp_addr,
+                        public_udp_addr: udp_association.public_udp_addr,
                         connection: client.connection,
                         username: packet.body.name.clone(),
+                        round_trip_latency,
+                        p2p_connections: Vec::new(),
                     },
                 );
 
@@ -103,16 +130,28 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
                                 .established
                                 .iter()
                                 .filter(|(id, _)| **id != context.client_id)
-                                .map(|(id, c)| (*id, c.username.clone()))
+                                .map(|(id, c)| NetworkUser {
+                                    client_id: *id,
+                                    name: c.username.clone(),
+                                    local_udp_addr: c.local_udp_addr,
+                                    public_udp_addr: c.public_udp_addr,
+                                    round_trip_latency: c.round_trip_latency,
+                                })
                                 .collect(),
+                            round_trip_latency,
                         },
                     )?,
                     SendPacket::tcp(
                         Target::Many(other_clients),
                         None,
                         UserJoined {
-                            name: packet.body.name,
-                            client_id: context.client_id,
+                            user: NetworkUser {
+                                name: packet.body.name,
+                                client_id: context.client_id,
+                                local_udp_addr: udp_association.local_udp_addr,
+                                public_udp_addr: udp_association.public_udp_addr,
+                                round_trip_latency,
+                            },
                         },
                     )?,
                 ]
@@ -207,6 +246,7 @@ fn udp_packet_to_endpoint(
         AudioFromClient::KIND_ID => {
             spawner.spawn(audio_from_client(context, packet.finish_parse()?))
         }
+        P2pEstablished::KIND_ID => spawner.spawn(p2p_established(context, packet.finish_parse()?)),
         _ => spawner.spawn(sent_wrong_packet(context, packet.header.id)),
     };
     Ok(())
@@ -278,7 +318,7 @@ pub fn handle_udp_packet(
 
     let client_id = {
         let clients = clients.borrow();
-        match clients.id_by_socket_addr(&addr) {
+        match clients.id_by_public_socket_addr(&addr) {
             Some(client_id) => client_id,
             None => return Ok(()),
         }

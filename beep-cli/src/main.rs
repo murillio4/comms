@@ -1,8 +1,8 @@
 use audiopus::coder::Encoder;
 use audiopus::{Application, Channels, SampleRate};
 use comms_lib::packet::{
-    AssociateUdp, AssociateUdpAccepted, AudioFromClient, FinishConnect, FinishConnectAccepted,
-    Hello, Packet, PacketBody,
+    AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioIndex, FinishConnect,
+    FinishConnectAccepted, Hello, Packet, PacketBody,
 };
 use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame, SerializeError};
 use std::io::{Read, Write};
@@ -102,6 +102,7 @@ fn main() -> Result<(), BeepClientErr> {
 
     udp.send(&serializer.serialize(&AssociateUdp {
         client_id: hello.body.client_id,
+        local_udp_addr: udp.local_addr().unwrap(),
     })?)?;
 
     let parsed_packet = read_next_udp(&udp)?;
@@ -129,6 +130,7 @@ fn main() -> Result<(), BeepClientErr> {
     let mut sample_count: u128 = 0;
 
     let encoder = Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::LowDelay)?;
+    let mut audio_id = AudioIndex::new(1).unwrap();
 
     if use_interactive_mode {
         loop {
@@ -145,7 +147,11 @@ fn main() -> Result<(), BeepClientErr> {
                 let mut opus_buffer = [0u8; 2048];
                 let size = encoder.encode_float(&chunk, &mut opus_buffer)?;
                 let opus_bytes = opus_buffer[..size].to_vec();
-                udp.send(&serializer.serialize(&AudioFromClient(opus_bytes.clone()))?)?;
+                udp.send(&serializer.serialize(&AudioFromClient {
+                    index: audio_id,
+                    bytes: opus_bytes.clone(),
+                })?)?;
+                audio_id = AudioIndex::new(audio_id.get() + 1).unwrap();
             }
         }
     } else {
@@ -166,7 +172,11 @@ fn main() -> Result<(), BeepClientErr> {
                 let mut opus_buffer = [0u8; 2048];
                 let size = encoder.encode_float(&chunk, &mut opus_buffer)?;
                 let opus_bytes = opus_buffer[..size].to_vec();
-                udp.send(&serializer.serialize(&AudioFromClient(opus_bytes))?)?;
+                udp.send(&serializer.serialize(&AudioFromClient {
+                    index: audio_id,
+                    bytes: opus_bytes,
+                })?)?;
+                audio_id = AudioIndex::new(audio_id.get() + 1).unwrap();
             }
         }
     }

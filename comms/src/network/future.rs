@@ -1,12 +1,14 @@
 use std::fmt::{Debug, Error, Formatter};
 use std::future::Future;
+use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_std::net::ToSocketAddrs;
+use futures::channel::mpsc::Sender;
 use futures::channel::oneshot;
 use futures::future;
 use futures::future::Either;
@@ -15,20 +17,20 @@ use futures_timer::Delay;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use comms_lib::network::{CommsNetworkError, Protocol};
+use comms_lib::network::CommsNetworkError;
 use comms_lib::packet::{
-    AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted, Packet,
-    PacketBody,
+    AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted,
+    NetworkUser, P2pAcknowledge, P2pAcknowledgeBack, P2pSynchronize, Packet, PacketBody,
 };
 use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
-use crate::network::ipc::{ConnectError, NetworkCommand, NetworkHandle};
+use crate::network::ipc::{ConnectError, NetworkCommand, NetworkEvent, NetworkHandle, Protocol};
 
 async fn connect_without_timeout(
     handle: &NetworkHandle,
     destination: String,
     username: String,
-) -> Result<(ClientId, Vec<(ClientId, String)>), ConnectError> {
+) -> Result<(ClientId, Vec<NetworkUser>, Duration), ConnectError> {
     let destination_with_port = format!("{}:18847", destination);
     let destination = match destination_with_port.to_socket_addrs().await {
         Ok(mut addresses) => {
@@ -43,7 +45,7 @@ async fn connect_without_timeout(
         }
     };
 
-    let hello = NetworkFuture::new(handle, |s| NetworkCommand::Connect {
+    let connect_success = NetworkFuture::new(handle, |s| NetworkCommand::Connect {
         destination,
         send_response: s,
     })
@@ -54,7 +56,8 @@ async fn connect_without_timeout(
         Protocol::Udp,
         None,
         AssociateUdp {
-            client_id: hello.client_id,
+            client_id: connect_success.hello.client_id,
+            local_udp_addr: connect_success.udp_local_addr,
         },
     )
     .await?;
@@ -66,14 +69,18 @@ async fn connect_without_timeout(
         FinishConnect { name: username },
     )
     .await?;
-    Ok((hello.client_id, connect_accepted.body.users))
+    Ok((
+        connect_success.hello.client_id,
+        connect_accepted.body.users,
+        connect_accepted.body.round_trip_latency,
+    ))
 }
 
 pub async fn connect(
     handle: &NetworkHandle,
     destination: String,
     username: String,
-) -> Result<(ClientId, Vec<(ClientId, String)>), ConnectError> {
+) -> Result<(ClientId, Vec<NetworkUser>, Duration), ConnectError> {
     let timeout = Delay::new(Duration::from_secs(3));
     let connect_future = connect_without_timeout(handle, destination, username);
     pin_mut!(connect_future);
@@ -87,6 +94,119 @@ pub async fn connect(
                 disconnect(handle).await;
             }
             result
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct P2pDestination {
+    pub client_id: ClientId,
+    pub local_udp_addr: SocketAddr,
+    pub public_udp_addr: SocketAddr,
+}
+
+pub async fn attempt_p2p_without_timeout(
+    handle: NetworkHandle,
+    local_client_id: ClientId,
+    destination: P2pDestination,
+    is_lead_client: bool,
+) -> Result<(Duration, SocketAddr), ()> {
+    println!("Attempting P2P connection with {:?}!", destination);
+    let timeout = Delay::new(Duration::from_secs(3));
+    let before_synchronize = Instant::now();
+    let acknowledge_local = request_expect(
+        &handle,
+        Protocol::UdpP2p(destination.local_udp_addr),
+        None,
+        P2pSynchronize(),
+    );
+    let acknowledge_public = request_expect(
+        &handle,
+        Protocol::UdpP2p(destination.public_udp_addr),
+        None,
+        P2pSynchronize(),
+    );
+    pin_mut!(acknowledge_local);
+    pin_mut!(acknowledge_public);
+    let (packet_result, addr) = match future::select(
+        timeout,
+        future::select(acknowledge_local, acknowledge_public),
+    )
+    .await
+    {
+        Either::Left(_) => {
+            eprintln!("P2P connection attempt timed out");
+            return Err(());
+        }
+        Either::Right((Either::Left((packet_result, _)), _)) => {
+            (packet_result, destination.local_udp_addr)
+        }
+        Either::Right((Either::Right((packet_result, _)), _)) => {
+            (packet_result, destination.public_udp_addr)
+        }
+    };
+    let packet: Packet<P2pAcknowledge> = match packet_result {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to parse P2P packet: {:?}", e);
+            return Err(());
+        }
+    };
+    let round_trip_latency = before_synchronize.elapsed();
+    if let Err(e) = send(
+        &handle,
+        Protocol::UdpP2p(addr),
+        Some(packet.id),
+        P2pAcknowledgeBack {
+            round_trip_latency,
+            is_from_lead_client: is_lead_client,
+            client_id: local_client_id,
+        },
+    ) {
+        eprintln!("Failed to send P2P packet: {:?}", e);
+        return Err(());
+    }
+
+    Ok((round_trip_latency, addr))
+}
+
+pub async fn attempt_p2p(
+    network_handle: NetworkHandle,
+    mut network_event_sender: Sender<NetworkEvent>,
+    local_client_id: ClientId,
+    destination: P2pDestination,
+    is_lead_client: bool,
+) {
+    let destination_client_id = destination.client_id;
+    let public_udp_addr = destination.public_udp_addr;
+    match attempt_p2p_without_timeout(
+        network_handle.clone(),
+        local_client_id,
+        destination,
+        is_lead_client,
+    )
+    .await
+    {
+        Ok((latency, addr)) => {
+            println!(
+                "P2P connection with {} started successfully ({:.1}ms RT)",
+                addr,
+                (latency.as_micros() as f64) / 1000.0
+            );
+            network_handle.command(NetworkCommand::RegisterP2pClient {
+                client_id: destination_client_id,
+                udp_addr: addr,
+            });
+            network_event_sender
+                .try_send(NetworkEvent::P2pEstablished {
+                    client_id: destination_client_id,
+                    round_trip_latency: latency,
+                    is_from_lead_client: is_lead_client,
+                })
+                .unwrap();
+        }
+        Err(()) => {
+            eprintln!("Failed to start P2P connection with {}", public_udp_addr);
         }
     }
 }
@@ -134,7 +254,6 @@ where
         .map_err(|_| RequestError::DeserializeError)
 }
 
-#[allow(dead_code)]
 pub fn send<Req>(
     handle: &NetworkHandle,
     packet_type: Protocol,
@@ -171,7 +290,7 @@ impl<T: Debug> Debug for SendResponse<T> {
     }
 }
 
-impl<T: Debug> SendResponse<T> {
+impl<T> SendResponse<T> {
     pub fn done(self, response: T) {
         let _ = self.sender.send(response); // Timeouts can cause the result of a future to become irrelevant
         let mut waker = self.waker.lock().unwrap();
