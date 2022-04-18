@@ -336,6 +336,7 @@ pub fn run(
 
     gtk_start(move |app| {
         let stack = gtk::Stack::new();
+        stack.set_visible(true);
         let raw_app_ui = RESOURCES_DIR
             .get_file("app.ui")
             .unwrap()
@@ -543,6 +544,6 @@ pub fn run(
         stack.add_named(&status_box, "status");
 
         window.add(&stack);
-        window.show_all();
+        window.show();
     });
 }

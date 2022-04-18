@@ -173,8 +173,8 @@
           </object>
         </child>
         <child>
-          <object class="GtkMenuItem">
-            <property name="visible">True</property>
+          <object class="GtkMenuItem" id="devices_menu">
+            <property name="visible">False</property>
             <property name="can-focus">False</property>
             <property name="label" translatable="yes">_Devices</property>
             <property name="use-underline">True</property>
