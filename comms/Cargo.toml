@@ -30,7 +30,7 @@ path = "../comms-lib"
 [dependencies.gtk]
 version = "0.15"
 features = [
-    "v3_22",
+    "v3_24",
 ]
 
 [target.'cfg(target_os = "windows")'.dependencies.windows]
