@@ -131,7 +131,7 @@ impl GateNoiseFilter {
             .recent_chunks
             .iter()
             .fold(f32::INFINITY, |a, &b| a.min(b));
-        self.threshold = noise_floor + 0.005;
+        self.threshold = noise_floor * 1.1 + 0.005;
         self.state.update_threshold_state(rms > self.threshold);
     }
 
