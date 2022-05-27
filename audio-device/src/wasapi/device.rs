@@ -123,23 +123,17 @@ impl IAudioClientWrapper {
         Ok(WasapiEventLoopRegistration { win_handle: event })
     }
 
-    fn create_client<T>(&self, interface_id: &windows::core::GUID) -> Result<T, BuildStreamError> {
-        let mut client_ptr: Option<T> = None;
-        match unsafe {
-            self.0
-                .GetService(interface_id, &mut client_ptr as *mut _ as _)
-        } {
+    fn create_client<T: Interface>(&self) -> Result<T, BuildStreamError> {
+        match unsafe { self.0.GetService() } {
             Err(ref e) if e.code() == Audio::AUDCLNT_E_DEVICE_INVALIDATED => {
-                return Err(BuildStreamError::DeviceNotAvailable);
+                Err(BuildStreamError::DeviceNotAvailable)
             }
             Err(e) => {
                 let description = format!("failed to build render client: {}", e);
-                return Err(BuildStreamError::BackendSpecific(description));
+                Err(BuildStreamError::BackendSpecific(description))
             }
-            Ok(()) => (),
-        };
-
-        Ok(client_ptr.unwrap())
+            Ok(client) => Ok(client),
+        }
     }
 }
 
@@ -207,7 +201,9 @@ impl IMMDeviceWrapper {
             unsafe { self.0.OpenPropertyStore(StructuredStorage::STGM_READ) }.unwrap();
 
         let mut property_value = match unsafe {
-            property_store.GetValue(&Properties::DEVPKEY_Device_FriendlyName)
+            property_store.GetValue(&std::mem::transmute(
+                Properties::DEVPKEY_Device_FriendlyName,
+            ))
         } {
             Ok(property_value) => property_value,
             Err(err) => {
@@ -301,8 +297,7 @@ impl InputDevice {
     }
 
     pub fn create_client(&self) -> Result<Audio::IAudioCaptureClient, BuildStreamError> {
-        self.audio_client
-            .create_client(&Audio::IAudioCaptureClient::IID)
+        self.audio_client.create_client()
     }
 
     pub fn default() -> Option<InputDevice> {
@@ -343,8 +338,7 @@ impl OutputDevice {
     }
 
     pub fn create_client(&self) -> Result<Audio::IAudioRenderClient, BuildStreamError> {
-        self.audio_client
-            .create_client(&Audio::IAudioRenderClient::IID)
+        self.audio_client.create_client()
     }
 
     pub fn default() -> Option<OutputDevice> {
