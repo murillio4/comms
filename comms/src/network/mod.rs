@@ -255,10 +255,22 @@ impl Worker {
                                     .unwrap();
                                     let id = connection.next_packet_id();
                                     if let Ok(raw) = packet.into_raw(id) {
-                                        if let Err(e) =
-                                            connection.udp.push_outgoing(ClientUdpPacket::new(raw))
+                                        match connection
+                                            .udp
+                                            .push_outgoing(ClientUdpPacket::new(raw))
                                         {
-                                            return Err(e.into());
+                                            Ok(_) => (),
+                                            Err(e)
+                                                if e.kind() == io::ErrorKind::ConnectionRefused =>
+                                            {
+                                                if let Some(send_response) =
+                                                    connection.connect_response.take()
+                                                {
+                                                    send_response
+                                                        .done(Err(ConnectError::NetworkError));
+                                                }
+                                            }
+                                            Err(e) => return Err(e.into()),
                                         }
                                     }
                                 }
