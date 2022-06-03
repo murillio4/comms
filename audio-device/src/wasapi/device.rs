@@ -47,10 +47,11 @@ impl IAudioClientWrapper {
             Err(MmregSupportedFormatsError::DeviceNotAvailable) => {
                 return Err(BuildStreamError::DeviceNotAvailable)
             }
-            Err(MmregSupportedFormatsError::Other) => {
-                return Err(BuildStreamError::BackendSpecific(
-                    "Unexpected failure during format-support checking".to_string(),
-                ))
+            Err(MmregSupportedFormatsError::Other(hresult)) => {
+                return Err(BuildStreamError::BackendSpecific(format!(
+                    "Unexpected failure during format-support checking: {}",
+                    hresult.0,
+                )))
             }
         }
 

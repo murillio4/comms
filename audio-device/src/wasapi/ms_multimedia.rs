@@ -1,6 +1,7 @@
 use crate::wasapi::stream::{Format, SampleFormat, SampleRate};
 use std::mem;
 use std::mem::MaybeUninit;
+use windows::core::HRESULT;
 use windows::Win32::Foundation;
 use windows::Win32::Media::{Audio, KernelStreaming, Multimedia};
 use windows::Win32::System::Com;
@@ -8,7 +9,7 @@ use windows::Win32::System::Com;
 #[derive(Debug)]
 pub enum MmregSupportedFormatsError {
     DeviceNotAvailable,
-    Other,
+    Other(HRESULT),
 }
 
 pub fn is_format_supported(
@@ -26,7 +27,7 @@ pub fn is_format_supported(
         Foundation::S_OK => Ok(None),
         Foundation::S_FALSE => Ok(Some(unsafe { closest_waveformatex.assume_init() })),
         Audio::AUDCLNT_E_DEVICE_INVALIDATED => Err(MmregSupportedFormatsError::DeviceNotAvailable),
-        _ => Err(MmregSupportedFormatsError::Other),
+        err_result => Err(MmregSupportedFormatsError::Other(err_result)),
     }
 }
 
@@ -59,8 +60,14 @@ pub fn format_to_waveformatextensible(format: &Format) -> Audio::WAVEFORMATEXTEN
         cbSize: cb_size,
     };
 
-    const KSAUDIO_SPEAKER_DIRECTOUT: u32 = 0;
-    let channel_mask = KSAUDIO_SPEAKER_DIRECTOUT;
+    let channel_mask = match channels {
+        1 => KernelStreaming::KSAUDIO_SPEAKER_MONO,
+        2 => {
+            // KernelStreaming::KSAUDIO_SPEAKER_STEREO, which isn't defined in windows-rs yet
+            KernelStreaming::SPEAKER_FRONT_LEFT | KernelStreaming::SPEAKER_FRONT_RIGHT
+        },
+        _ => KernelStreaming::KSAUDIO_SPEAKER_DIRECTOUT,
+    };
 
     let sub_format = match format_tag {
         MmregFormat::Pcm => KernelStreaming::KSDATAFORMAT_SUBTYPE_PCM,
