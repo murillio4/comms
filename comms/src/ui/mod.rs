@@ -461,7 +461,7 @@ pub fn run(
                         let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
                         let adjustment =
-                            gtk::Adjustment::new(volume as f64, 0.0, 200.0, 2.0, 10.0, 0.0);
+                            gtk::Adjustment::new(volume as f64, 0.0, 400.0, 2.0, 10.0, 0.0);
                         let scale = gtk::builders::ScaleBuilder::new()
                             .adjustment(&adjustment)
                             .value_pos(PositionType::Left)
@@ -469,6 +469,8 @@ pub fn run(
                             .build();
 
                         scale.add_mark(100.0, gtk::PositionType::Bottom, None);
+                        scale.add_mark(200.0, gtk::PositionType::Bottom, None);
+                        scale.add_mark(300.0, gtk::PositionType::Bottom, None);
 
                         scale.set_width_request(200);
                         popover_box.add(&scale);
