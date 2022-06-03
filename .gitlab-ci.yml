@@ -11,6 +11,7 @@ build_linux:
     - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo build --all
     - cargo test
+  when: manual
   tags:
     - linux
 
@@ -23,6 +24,7 @@ build_windows:
     - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo test
     - cargo build --all
+  when: manual
   tags:
     - windows
 
@@ -35,6 +37,7 @@ build_release_linux:
     - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo test
     - cargo build --all --release
+  when: manual
   artifacts:
     paths:
       - target/release/beep-cli
@@ -55,6 +58,7 @@ build_release_windows:
     - cargo build --all --release
     - comms/package.ps1
     - comms/sign.ps1
+  when: manual
   artifacts:
     paths:
       - comms.exe
