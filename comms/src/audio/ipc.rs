@@ -22,10 +22,8 @@ pub enum AudioCommand {
     #[allow(dead_code)]
     SwitchOutputDevice(String),
     ListDevices,
-    #[allow(dead_code)]
-    ChangeMainVolume(u8),
-    #[allow(dead_code)]
-    ChangeClientVolume(ClientId, u8),
+    ChangeMainVolume(u32),
+    ChangeClientVolume(ClientId, u32),
 }
 
 impl Display for AudioCommand {

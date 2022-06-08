@@ -39,7 +39,7 @@ fn initialize_user_list(treeview: &TreeView) -> gtk::ListStore {
     let col_types = [
         glib::Type::U32,
         glib::Type::STRING,
-        glib::Type::U8,
+        glib::Type::U32,
         glib::Type::BOOL,
         glib::Type::STRING,
         glib::Type::BOOL,
@@ -698,7 +698,7 @@ pub fn run(
 
                         let volume = model
                             .value(&iter, Columns::Volume as i32)
-                            .get::<u8>()
+                            .get::<u32>()
                             .unwrap();
                         let is_current_user = model
                             .value(&iter, Columns::IsCurrentUser as i32)
@@ -726,7 +726,7 @@ pub fn run(
                         let audio = audio.clone();
                         let ui = ui.clone();
                         scale.connect_value_changed(move |scale| {
-                            let new_volume = scale.adjustment().value() as u8;
+                            let new_volume = scale.adjustment().value() as u32;
                             audio
                                 .send(if is_current_user {
                                     AudioCommand::ChangeMainVolume(new_volume)
