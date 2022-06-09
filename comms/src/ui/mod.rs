@@ -815,12 +815,14 @@ pub fn run(
                         let audio = audio.clone();
                         let ui = ui.clone();
                         scale.connect_value_changed(move |scale| {
-                            let state = &ui.borrow().state;
-                            let user_list_model = if let UiState::Main {
-                                user_list_model, ..
+                            let state = &mut ui.borrow_mut().state;
+                            let (user_list_model, saved_volumes) = if let UiState::Main {
+                                user_list_model,
+                                saved_volumes,
+                                ..
                             } = state
                             {
-                                user_list_model
+                                (user_list_model, saved_volumes)
                             } else {
                                 return;
                             };
@@ -841,8 +843,9 @@ pub fn run(
                                 [(Columns::Volume as u32, &(new_volume as u32))];
                             user_list_model.set(&iter, &values);
 
+                            saved_volumes.insert(user_id, new_volume);
                             let glib_context = glib::MainContext::default();
-                            glib_context.spawn_local(update_saved_volume(user_id, new_volume));
+                            glib_context.spawn_local(update_saved_volumes(saved_volumes.clone()));
                         });
 
                         let rectangle = gtk::Rectangle::new(position.0, position.1, 0, 0);
@@ -924,9 +927,9 @@ async fn update_local_storage(f: impl FnOnce(&mut LocalStorage)) {
     }
 }
 
-async fn update_saved_volume(user_id: UserId, volume: u16) {
+async fn update_saved_volumes(volumes: HashMap<UserId, u16>) {
     update_local_storage(|storage| {
-        storage.volumes.insert(user_id, volume);
+        storage.volumes = volumes;
     })
     .await;
 }
