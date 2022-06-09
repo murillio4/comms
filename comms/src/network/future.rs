@@ -20,7 +20,7 @@ use serde::Serialize;
 use comms_lib::network::CommsNetworkError;
 use comms_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted,
-    NetworkUser, P2pAcknowledge, P2pAcknowledgeBack, P2pSynchronize, Packet, PacketBody,
+    NetworkUser, P2pAcknowledge, P2pAcknowledgeBack, P2pSynchronize, Packet, PacketBody, UserId,
 };
 use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
@@ -30,6 +30,7 @@ async fn connect_without_timeout(
     handle: &NetworkHandle,
     destination: String,
     username: String,
+    user_id: UserId,
 ) -> Result<(ClientId, Vec<NetworkUser>, Duration), ConnectError> {
     let destination_with_port = format!("{}:18847", destination);
     let destination = match destination_with_port.to_socket_addrs().await {
@@ -66,7 +67,10 @@ async fn connect_without_timeout(
         handle,
         Protocol::Tcp,
         None,
-        FinishConnect { name: username },
+        FinishConnect {
+            name: username,
+            user_id,
+        },
     )
     .await?;
     Ok((
@@ -80,9 +84,10 @@ pub async fn connect(
     handle: &NetworkHandle,
     destination: String,
     username: String,
+    user_id: UserId,
 ) -> Result<(ClientId, Vec<NetworkUser>, Duration), ConnectError> {
     let timeout = Delay::new(Duration::from_secs(3));
-    let connect_future = connect_without_timeout(handle, destination, username);
+    let connect_future = connect_without_timeout(handle, destination, username, user_id);
     pin_mut!(connect_future);
     match future::select(timeout, connect_future).await {
         Either::Left(_) => {

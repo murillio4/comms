@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::time::Duration;
+use uuid::Uuid;
 
+pub type UserId = Uuid;
 pub type ClientId = u16;
 pub type PacketKind = u8;
 pub type PacketId = NonZeroU64;
@@ -48,6 +50,7 @@ impl PacketBody for AssociateUdpAccepted {
 #[derive(Serialize, Deserialize)]
 pub struct FinishConnect {
     pub name: String,
+    pub user_id: UserId,
 }
 
 impl PacketBody for FinishConnect {
@@ -88,6 +91,7 @@ impl PacketBody for AudioToClient {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NetworkUser {
     pub client_id: ClientId,
+    pub user_id: UserId,
     pub name: String,
     pub local_udp_addr: SocketAddr,
     pub public_udp_addr: SocketAddr,

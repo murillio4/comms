@@ -1,5 +1,5 @@
 use comms_lib::network::TcpConnection;
-use comms_lib::packet::{ClientId, PacketId};
+use comms_lib::packet::{ClientId, PacketId, UserId};
 use comms_lib::serialization::OutgoingPacketFrame;
 use mio::net::TcpStream;
 use std::collections::{HashMap, VecDeque};
@@ -60,6 +60,7 @@ pub struct Client {
     pub local_udp_addr: SocketAddr,
     pub public_udp_addr: SocketAddr,
     pub username: String,
+    pub user_id: UserId,
     pub round_trip_latency: Duration,
     pub p2p_connections: Vec<ClientId>,
 }

@@ -116,6 +116,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
                         public_udp_addr: udp_association.public_udp_addr,
                         connection: client.connection,
                         username: packet.body.name.clone(),
+                        user_id: packet.body.user_id,
                         round_trip_latency,
                         p2p_connections: Vec::new(),
                     },
@@ -132,6 +133,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
                                 .filter(|(id, _)| **id != context.client_id)
                                 .map(|(id, c)| NetworkUser {
                                     client_id: *id,
+                                    user_id: c.user_id,
                                     name: c.username.clone(),
                                     local_udp_addr: c.local_udp_addr,
                                     public_udp_addr: c.public_udp_addr,
@@ -147,6 +149,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
                         UserJoined {
                             user: NetworkUser {
                                 name: packet.body.name,
+                                user_id: packet.body.user_id,
                                 client_id: context.client_id,
                                 local_udp_addr: udp_association.local_udp_addr,
                                 public_udp_addr: udp_association.public_udp_addr,

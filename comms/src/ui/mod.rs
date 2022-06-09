@@ -1,5 +1,7 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::str::FromStr;
 use std::time::Duration;
 
 use directories::ProjectDirs;
@@ -12,7 +14,7 @@ use gtk::prelude::*;
 use gtk::{CellRendererText, Orientation, PositionType, TreeView, TreeViewColumn};
 use serde::{Deserialize, Serialize};
 
-use comms_lib::packet::{ClientId, Packet, PacketBody, UserJoined, UserLeft};
+use comms_lib::packet::{ClientId, Packet, PacketBody, UserId, UserJoined, UserLeft};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network;
@@ -21,6 +23,7 @@ use crate::network::ipc::{ConnectError, NetworkCommand, NetworkEvent, NetworkHan
 use crate::ui::ipc::UICommand;
 use comms_lib::network::CommsNetworkError;
 use glib::timeout_add_local;
+use uuid::Uuid;
 
 pub mod ipc;
 
@@ -33,6 +36,7 @@ enum Columns {
     IsCurrentUser = 3,
     NetworkLatency = 4,
     IsPeerToPeer = 5,
+    UserId = 6,
 }
 
 fn initialize_user_list(treeview: &TreeView) -> gtk::ListStore {
@@ -43,6 +47,7 @@ fn initialize_user_list(treeview: &TreeView) -> gtk::ListStore {
         glib::Type::BOOL,
         glib::Type::STRING,
         glib::Type::BOOL,
+        glib::Type::STRING,
     ];
 
     let user_list_model = gtk::ListStore::new(&col_types);
@@ -54,6 +59,8 @@ fn initialize_user_list(treeview: &TreeView) -> gtk::ListStore {
 struct LocalStorage {
     username: String,
     server: String,
+    user_id: UserId,
+    volumes: HashMap<UserId, u16>,
 }
 
 async fn try_connect(
@@ -63,7 +70,11 @@ async fn try_connect(
     ui: Rc<RefCell<UiModel>>,
 ) {
     let old_state = ui.borrow().state.clone();
-    if let UiState::ChooseServer = old_state {
+    if let UiState::ChooseServer {
+        user_id,
+        saved_volumes,
+    } = old_state
+    {
         let builder = ui.borrow().builder.clone();
         let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
         let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
@@ -103,6 +114,8 @@ async fn try_connect(
                 let local_storage = LocalStorage {
                     username: username.clone(),
                     server: server.clone(),
+                    user_id,
+                    volumes: saved_volumes.clone(),
                 };
                 serde_json::to_string(&local_storage)
                     .ok()
@@ -115,7 +128,7 @@ async fn try_connect(
         }
 
         let connect_result =
-            network::future::connect(&network_handle, server, username.clone()).await;
+            network::future::connect(&network_handle, server, username.clone(), user_id).await;
 
         finished.replace(true);
         connect_progress_stack.set_visible_child_name("hidden_progress");
@@ -232,10 +245,13 @@ async fn try_connect(
                     );
                 }
 
-                let values: [(u32, &dyn ToValue); 6] = [
+                let values: [(u32, &dyn ToValue); 7] = [
                     (Columns::Id as u32, &(client_id as u32)),
                     (Columns::Username as u32, &username),
-                    (Columns::Volume as u32, &100),
+                    (
+                        Columns::Volume as u32,
+                        &(*saved_volumes.get(&user_id).unwrap_or(&100u16) as u32),
+                    ),
                     (Columns::IsCurrentUser as u32, &true),
                     (
                         Columns::NetworkLatency as u32,
@@ -245,21 +261,32 @@ async fn try_connect(
                         ),
                     ),
                     (Columns::IsPeerToPeer as u32, &false),
+                    (Columns::UserId as u32, &user_id.to_string()),
                 ];
                 user_list_model.insert_with_values(None, &values);
                 for user in users.iter() {
                     let one_way_latency =
                         user.round_trip_latency.saturating_add(round_trip_latency) / 2;
 
-                    let values: [(u32, &dyn ToValue); 5] = [
+                    let volume = if let Some(volume) = saved_volumes.get(&user.user_id) {
+                        audio_handle
+                            .send(AudioCommand::ChangeClientVolume(user.client_id, *volume))
+                            .unwrap();
+                        *volume
+                    } else {
+                        100u16
+                    };
+
+                    let values: [(u32, &dyn ToValue); 6] = [
                         (Columns::Id as u32, &(user.client_id as u32)),
                         (Columns::Username as u32, &user.name),
-                        (Columns::Volume as u32, &100),
+                        (Columns::Volume as u32, &(volume as u32)),
                         (
                             Columns::NetworkLatency as u32,
                             &format!("{:.1}ms", (one_way_latency.as_micros() as f64) / 1000.0),
                         ),
                         (Columns::IsPeerToPeer as u32, &false),
+                        (Columns::UserId as u32, &user.user_id.to_string()),
                     ];
                     user_list_model.insert_with_values(None, &values);
                 }
@@ -271,6 +298,8 @@ async fn try_connect(
                     user_list_model,
                     client_id,
                     round_trip_latency,
+                    user_id,
+                    saved_volumes,
                 };
             }
             Err(e) => {
@@ -286,7 +315,10 @@ async fn try_connect(
                     ConnectError::RequestError(e) => format!("Request failed: {:?}", e),
                 };
                 connect_failure_status.set_text(&error_message);
-                ui.borrow_mut().state = UiState::ChooseServer;
+                ui.borrow_mut().state = UiState::ChooseServer {
+                    user_id,
+                    saved_volumes,
+                };
             }
         }
     }
@@ -299,7 +331,10 @@ async fn disconnect_from_server(
 ) {
     let state = ui.borrow().state.clone();
     if let UiState::Main {
-        user_list_model, ..
+        user_list_model,
+        user_id,
+        saved_volumes,
+        ..
     } = state
     {
         network::future::disconnect(&handle).await;
@@ -310,14 +345,22 @@ async fn disconnect_from_server(
         }
         user_list_model.clear();
         audio.send(AudioCommand::ServerDisconnect).unwrap();
-        ui.borrow_mut().state = UiState::ChooseServer;
+        ui.borrow_mut().state = UiState::ChooseServer {
+            user_id,
+            saved_volumes,
+        };
     }
 }
 
 #[derive(Clone, Debug)]
 enum UiState {
-    ChooseServer,
+    ChooseServer {
+        user_id: UserId,
+        saved_volumes: HashMap<UserId, u16>,
+    },
     Main {
+        user_id: UserId,
+        saved_volumes: HashMap<UserId, u16>,
         user_list_model: gtk::ListStore,
         client_id: ClientId,
         round_trip_latency: Duration,
@@ -420,6 +463,8 @@ async fn handle_network_events(
                     user_list_model,
                     client_id,
                     round_trip_latency,
+                    saved_volumes,
+                    ..
                 } = ui.borrow().state.clone()
                 {
                     let result: Result<(), CommsNetworkError> = (|| {
@@ -449,12 +494,28 @@ async fn handle_network_events(
                                     .saturating_add(round_trip_latency)
                                     / 2;
 
+                                let volume = if let Some(volume) =
+                                    saved_volumes.get(&packet.body.user.user_id)
+                                {
+                                    audio
+                                        .send({
+                                            AudioCommand::ChangeClientVolume(
+                                                packet.body.user.client_id,
+                                                *volume,
+                                            )
+                                        })
+                                        .unwrap();
+                                    *volume
+                                } else {
+                                    100u16
+                                };
+
                                 user_list_model.set(
                                     &user_list_model.append(),
                                     &[
                                         (Columns::Id as u32, &(packet.body.user.client_id as u32)),
                                         (Columns::Username as u32, &packet.body.user.name),
-                                        (Columns::Volume as u32, &100),
+                                        (Columns::Volume as u32, &(volume as u32)),
                                         (
                                             Columns::NetworkLatency as u32,
                                             &format!(
@@ -463,6 +524,10 @@ async fn handle_network_events(
                                             ),
                                         ),
                                         (Columns::IsPeerToPeer as u32, &false),
+                                        (
+                                            Columns::UserId as u32,
+                                            &packet.body.user.user_id.to_string(),
+                                        ),
                                     ],
                                 );
                             }
@@ -563,6 +628,24 @@ pub fn run(
         })
         .and_then(|storage_string| serde_json::from_str(&storage_string).ok());
 
+    let initial_local_storage = initial_local_storage.unwrap_or(LocalStorage {
+        username: std::env::var_os(if cfg!(windows) { "USERNAME" } else { "USER" })
+            .map(|v| v.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        server: String::new(),
+        user_id: Uuid::new_v4(),
+        volumes: HashMap::new(),
+    });
+
+    if let Some(initial_main_volume) = initial_local_storage
+        .volumes
+        .get(&initial_local_storage.user_id)
+    {
+        audio
+            .send(AudioCommand::ChangeMainVolume(*initial_main_volume))
+            .unwrap();
+    }
+
     gtk_start(move |app| {
         let stack = gtk::Stack::new();
         stack.set_visible(true);
@@ -573,7 +656,10 @@ pub fn run(
             .unwrap();
         let builder = gtk::Builder::from_string(raw_app_ui);
         let ui = Rc::new(RefCell::new(UiModel {
-            state: UiState::ChooseServer,
+            state: UiState::ChooseServer {
+                user_id: initial_local_storage.user_id,
+                saved_volumes: initial_local_storage.volumes,
+            },
             pane_stack: stack.clone(),
             builder: builder.clone(),
             network_latency_column_ref: None,
@@ -609,16 +695,10 @@ pub fn run(
 
         // --- Setup for connect-to-server state
 
+        let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
+        server_entry.set_text(&initial_local_storage.server);
         let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
-
-        if let Some(initial_storage) = initial_local_storage {
-            let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
-            server_entry.set_text(&initial_storage.server);
-            username_entry.set_text(&initial_storage.username);
-        } else if let Some(val) = std::env::var_os(if cfg!(windows) { "USERNAME" } else { "USER" })
-        {
-            username_entry.set_text(&val.to_string_lossy().to_string());
-        }
+        username_entry.set_text(&initial_local_storage.username);
 
         let submit_connection_form = {
             let glib_context = glib_context.clone();
@@ -694,7 +774,15 @@ pub fn run(
                         let model = treeview.model().unwrap();
                         let iter = model.iter(user.0.as_ref().unwrap()).unwrap();
 
-                        let id = model.value(&iter, Columns::Id as i32).get::<u32>().unwrap();
+                        let client_id =
+                            model.value(&iter, Columns::Id as i32).get::<u32>().unwrap();
+                        let user_id: UserId = UserId::from_str(
+                            &model
+                                .value(&iter, Columns::UserId as i32)
+                                .get::<String>()
+                                .unwrap(),
+                        )
+                        .unwrap();
 
                         let volume = model
                             .value(&iter, Columns::Volume as i32)
@@ -714,6 +802,7 @@ pub fn run(
                             .adjustment(&adjustment)
                             .value_pos(PositionType::Left)
                             .orientation(Orientation::Horizontal)
+                            .digits(0)
                             .build();
 
                         scale.add_mark(100.0, gtk::PositionType::Bottom, None);
@@ -726,23 +815,34 @@ pub fn run(
                         let audio = audio.clone();
                         let ui = ui.clone();
                         scale.connect_value_changed(move |scale| {
-                            let new_volume = scale.adjustment().value() as u32;
+                            let state = &ui.borrow().state;
+                            let user_list_model = if let UiState::Main {
+                                user_list_model, ..
+                            } = state
+                            {
+                                user_list_model
+                            } else {
+                                return;
+                            };
+
+                            let new_volume = scale.adjustment().value() as u16;
                             audio
                                 .send(if is_current_user {
                                     AudioCommand::ChangeMainVolume(new_volume)
                                 } else {
-                                    AudioCommand::ChangeClientVolume(id as ClientId, new_volume)
+                                    AudioCommand::ChangeClientVolume(
+                                        client_id as ClientId,
+                                        new_volume,
+                                    )
                                 })
                                 .unwrap();
-                            let state = &ui.borrow().state;
-                            if let UiState::Main {
-                                user_list_model, ..
-                            } = state
-                            {
-                                let values: [(u32, &dyn ToValue); 1] =
-                                    [(Columns::Volume as u32, &new_volume)];
-                                user_list_model.set(&iter, &values);
-                            }
+
+                            let values: [(u32, &dyn ToValue); 1] =
+                                [(Columns::Volume as u32, &(new_volume as u32))];
+                            user_list_model.set(&iter, &values);
+
+                            let glib_context = glib::MainContext::default();
+                            glib_context.spawn_local(update_saved_volume(user_id, new_volume));
                         });
 
                         let rectangle = gtk::Rectangle::new(position.0, position.1, 0, 0);
@@ -796,4 +896,37 @@ pub fn run(
         window.add(&stack);
         window.show();
     });
+}
+
+async fn update_local_storage(f: impl FnOnce(&mut LocalStorage)) {
+    let local_storage_dir = if let Some(dirs) =
+        ProjectDirs::from("", "Comms", "Comms").map(|dirs| dirs.data_dir().join("local_storage"))
+    {
+        dirs
+    } else {
+        return;
+    };
+
+    let mut storage: LocalStorage = if let Some(storage) =
+        std::fs::read_to_string(&local_storage_dir)
+            .ok()
+            .and_then(|storage_string| serde_json::from_str(&storage_string).ok())
+    {
+        storage
+    } else {
+        return;
+    };
+
+    f(&mut storage);
+
+    if let Ok(raw_storage) = serde_json::to_string(&storage) {
+        let _ = async_std::fs::write(&local_storage_dir, raw_storage).await;
+    }
+}
+
+async fn update_saved_volume(user_id: UserId, volume: u16) {
+    update_local_storage(|storage| {
+        storage.volumes.insert(user_id, volume);
+    })
+    .await;
 }

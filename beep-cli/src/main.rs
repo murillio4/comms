@@ -10,6 +10,7 @@ use std::net::{TcpStream, UdpSocket};
 use std::num::NonZeroU64;
 use std::time::{Duration, SystemTime};
 use std::{env, io};
+use uuid::Uuid;
 
 fn read_next_tcp(tcp: &mut TcpStream) -> Result<IncomingPacketFrame, SerializeError> {
     let mut buffer = [0u8; 65535];
@@ -110,7 +111,10 @@ fn main() -> Result<(), BeepClientErr> {
     let accepted: Packet<AssociateUdpAccepted> = parsed_packet.finish_parse()?;
     dbg!(&accepted);
 
-    tcp.write_all(&serializer.serialize(&FinishConnect { name: client_name })?)?;
+    tcp.write_all(&serializer.serialize(&FinishConnect {
+        name: client_name,
+        user_id: Uuid::default(),
+    })?)?;
 
     let parsed_packet = read_next_tcp(&mut tcp)?;
     assert_eq!(parsed_packet.header.kind, FinishConnectAccepted::KIND_ID);

@@ -9,3 +9,10 @@ audiopus = "0.2.0"
 
 [dependencies.comms-lib]
 path = "../comms-lib"
+
+[dependencies.uuid]
+version = "1.1.1"
+features = [
+    "v4",
+    "fast-rng",
+]
