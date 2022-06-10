@@ -282,7 +282,7 @@ dependencies = [
  "dbus",
  "libc",
  "log",
- "mach",
+ "mach 0.3.2",
  "winapi",
 ]
 
@@ -2007,6 +2007,15 @@ dependencies = [
 
 [[package]]
 name = "mach"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86dd2487cdfea56def77b88438a2c915fb45113c5319bfe7e14306ca4cd0b0e1"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "mach"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b823e83b2affd8f40a9ee8c29dbc56404c1e34cd2710921f2801e2cf29527afa"
@@ -3046,12 +3055,12 @@ checksum = "eb703cfe953bccee95685111adeedb76fabe4e97549a58d16f03ea7b9367bb32"
 
 [[package]]
 name = "slice-deque"
-version = "0.3.0"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31ef6ee280cdefba6d2d0b4b78a84a1c1a3f3a4cec98c2d4231c8bc225de0f25"
+checksum = "d39fca478d10e201944a8e21f4393d6bfe38fa3b16a152050e4d097fe2bbf494"
 dependencies = [
  "libc",
- "mach",
+ "mach 0.2.3",
  "winapi",
 ]
 
