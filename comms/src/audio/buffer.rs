@@ -8,13 +8,16 @@ use comms_lib::serialization::OutgoingPacketFrame;
 use comms_lib::OpusAudioFrame;
 use dasp::Sample;
 use glib::bitflags::_core::cell::RefCell;
-use slice_deque::SliceDeque;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+const BUFFER_SIZE: usize = 4800;
+
 struct ClientQueue {
     decoder: Decoder,
-    sample_buffer: SliceDeque<f32>,
+    sample_buffer: [f32; BUFFER_SIZE],
+    sample_buffer_start: usize,
+    sample_buffer_end: usize,
     current_volume: f32,
     current_index: AudioIndex,
     is_peer_to_peer: bool,
@@ -27,7 +30,9 @@ impl ClientQueue {
             // The capacity chosen here is a spit-ball number. The host usually asks for 400 or
             // 800 samples at a time, so it's unlikely to back up this much unless a burst of
             // audio arrives.
-            sample_buffer: SliceDeque::with_capacity(4096),
+            sample_buffer: [0f32; BUFFER_SIZE],
+            sample_buffer_start: 0,
+            sample_buffer_end: 0,
             current_volume: 1.0,
             current_index: AudioIndex::new(1).unwrap(),
             is_peer_to_peer: false,
@@ -35,20 +40,26 @@ impl ClientQueue {
     }
 
     fn next_sample(&mut self) -> Result<f32, audiopus::Error> {
-        let sample = match self.sample_buffer.pop_front() {
-            Some(sample) => sample,
-            None => {
-                let mut decode_buffer = [0f32; 480];
-                let size = self.decoder.decode_float(
-                    None as Option<&[u8]>,
-                    &mut decode_buffer as &mut [f32],
-                    false,
-                )?;
-                self.sample_buffer
-                    .extend_from_slice(&decode_buffer[1..size]);
-                decode_buffer[0]
+        let sample = if self.sample_buffer_end != self.sample_buffer_start {
+            let sample = self.sample_buffer[self.sample_buffer_start];
+            self.sample_buffer_start = (self.sample_buffer_start + 1) % BUFFER_SIZE;
+            sample
+        } else {
+            let mut decode_buffer = [0f32; 480];
+            let size = self.decoder.decode_float(
+                None as Option<&[u8]>,
+                &mut decode_buffer as &mut [f32],
+                false,
+            )?;
+
+            for sample in &decode_buffer[1..size] {
+                self.sample_buffer[self.sample_buffer_end] = *sample;
+                self.sample_buffer_end = (self.sample_buffer_end + 1) % BUFFER_SIZE;
             }
+
+            decode_buffer[0]
         };
+
         Ok(sample * self.current_volume)
     }
 }
@@ -98,9 +109,12 @@ impl Multiplexer {
             &mut decode_buffer as &mut [f32],
             false,
         )?;
-        queue
-            .sample_buffer
-            .extend_from_slice(&decode_buffer[..size]);
+
+        for sample in &decode_buffer[..size] {
+            queue.sample_buffer[queue.sample_buffer_end] = *sample;
+            queue.sample_buffer_end = (queue.sample_buffer_end + 1) % BUFFER_SIZE;
+        }
+
         queue.current_index = data.index;
 
         if !queue.is_peer_to_peer && is_peer_to_peer {
@@ -175,7 +189,9 @@ impl MaybeSharedPlaybackSource<Multiplexer> for RcMultiplexer {
 
 pub struct MicBuffer {
     network_handle: NetworkHandle,
-    sample_buffer: SliceDeque<f32>,
+    sample_buffer: [f32; BUFFER_SIZE],
+    sample_buffer_start: usize,
+    sample_buffer_end: usize,
     encoder: Encoder,
     noise_gate: GateNoiseFilter,
     index: u64,
@@ -185,7 +201,9 @@ impl MicBuffer {
     pub fn new(network_handle: NetworkHandle) -> Result<Self, audiopus::Error> {
         Ok(Self {
             network_handle,
-            sample_buffer: SliceDeque::with_capacity(4096),
+            sample_buffer: [0f32; BUFFER_SIZE],
+            sample_buffer_start: 0,
+            sample_buffer_end: 0,
             encoder: Encoder::new(
                 audiopus::SampleRate::Hz48000,
                 Channels::Mono,
@@ -199,12 +217,16 @@ impl MicBuffer {
 
 impl MicSink for MicBuffer {
     fn append_sample_from_mic(&mut self, sample: f32) {
-        self.sample_buffer.push_back(sample);
+        self.sample_buffer[self.sample_buffer_end] = sample;
+        self.sample_buffer_end = (self.sample_buffer_end + 1) % BUFFER_SIZE;
     }
 
     fn publish_chunks(&mut self) {
-        while self.sample_buffer.len() >= 480 {
-            let next_samples = &mut self.sample_buffer[..480];
+        while self.sample_buffer_end < self.sample_buffer_start
+            || self.sample_buffer_end - self.sample_buffer_start >= 480
+        {
+            let next_samples =
+                &mut self.sample_buffer[self.sample_buffer_start..self.sample_buffer_start + 480];
             self.noise_gate.update_window(next_samples);
 
             for sample in next_samples.iter_mut() {
@@ -227,7 +249,8 @@ impl MicSink for MicBuffer {
                     .unwrap();
                 self.index += 1;
             }
-            unsafe { self.sample_buffer.move_head(480) };
+
+            self.sample_buffer_start = (self.sample_buffer_start + 480) % BUFFER_SIZE;
         }
     }
 }

@@ -1,4 +1,5 @@
 use crate::packet::{AudioIndex, PacketId, PacketKind};
+use std::io::Read;
 
 use crate::serialization::SerializeError;
 pub use serde::{Deserialize, Serialize};
@@ -22,7 +23,34 @@ pub struct PacketHeader {
 }
 pub const PACKET_HEADER_SIZE: usize = mem::size_of::<PacketHeader>();
 
+struct MultipleByteSlices<'a, 'b>(&'a mut [&'b [u8]]);
+
+impl<'a, 'b> Read for MultipleByteSlices<'a, 'b> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let slices = mem::take(&mut self.0);
+
+        match slices {
+            [head, ..] => {
+                let n_bytes = head.read(buf)?;
+
+                if head.is_empty() {
+                    self.0 = &mut slices[1..];
+                } else {
+                    self.0 = slices;
+                }
+
+                Ok(n_bytes)
+            }
+            _ => Ok(0),
+        }
+    }
+}
+
 impl PacketHeader {
+    pub fn from_multiple_byte_slices(bytes: &mut [&[u8]]) -> Result<Self, SerializeError> {
+        bincode::deserialize_from(MultipleByteSlices(bytes))
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SerializeError> {
         bincode::deserialize(bytes)
     }

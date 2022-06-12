@@ -1,7 +1,6 @@
 use crate::serialization::{IncomingPacketFrame, SerializeError};
 use crate::{PacketHeader, PACKET_HEADER_SIZE};
 use mio::net::{TcpStream, UdpSocket};
-use slice_deque::SliceDeque;
 use std::collections::VecDeque;
 use std::io;
 use std::io::{Read, Write};
@@ -13,11 +12,17 @@ pub enum Protocol {
     Udp,
 }
 
+const TCP_STREAM_BUFFER_SIZE: usize = 48_000;
+
 pub struct TcpConnection {
     stream: TcpStream,
     is_writable: bool,
-    incoming_stream: SliceDeque<u8>,
-    outgoing_stream: SliceDeque<u8>,
+    incoming_stream: [u8; TCP_STREAM_BUFFER_SIZE],
+    incoming_stream_start: usize,
+    incoming_stream_end: usize,
+    outgoing_stream: [u8; TCP_STREAM_BUFFER_SIZE],
+    outgoing_stream_start: usize,
+    outgoing_stream_end: usize,
     next_incoming_header: Option<PacketHeader>,
 }
 
@@ -26,8 +31,12 @@ impl TcpConnection {
         Self {
             stream,
             is_writable: false,
-            incoming_stream: SliceDeque::with_capacity(48_000),
-            outgoing_stream: SliceDeque::with_capacity(48_000),
+            incoming_stream: [0; TCP_STREAM_BUFFER_SIZE],
+            incoming_stream_start: 0,
+            incoming_stream_end: 0,
+            outgoing_stream: [0; TCP_STREAM_BUFFER_SIZE],
+            outgoing_stream_start: 0,
+            outgoing_stream_end: 0,
             next_incoming_header: None,
         }
     }
@@ -37,9 +46,17 @@ impl TcpConnection {
             return Ok(());
         }
 
-        while !self.outgoing_stream.is_empty() {
-            match self.stream.write(&self.outgoing_stream) {
-                Ok(count) => unsafe { self.outgoing_stream.move_head_unchecked(count as isize) },
+        while self.outgoing_stream_start != self.outgoing_stream_end {
+            let buffer = if self.outgoing_stream_end > self.outgoing_stream_start {
+                &self.outgoing_stream[self.outgoing_stream_start..self.outgoing_stream_end]
+            } else {
+                &self.outgoing_stream[self.outgoing_stream_start..TCP_STREAM_BUFFER_SIZE]
+            };
+            match self.stream.write(buffer) {
+                Ok(count) => {
+                    self.outgoing_stream_start =
+                        (self.outgoing_stream_start + count) % TCP_STREAM_BUFFER_SIZE;
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     self.is_writable = false;
                     return Ok(());
@@ -52,12 +69,23 @@ impl TcpConnection {
     }
 
     pub fn push_outgoing(&mut self, bytes: &[u8]) -> Result<(), io::Error> {
-        self.outgoing_stream.extend_from_slice(bytes);
+        self.push_outgoing_without_send(bytes);
         self.write_until_blocked()
     }
 
     pub fn push_outgoing_without_send(&mut self, bytes: &[u8]) {
-        self.outgoing_stream.extend_from_slice(bytes);
+        let end_gap = TCP_STREAM_BUFFER_SIZE - self.outgoing_stream_end;
+        if end_gap > bytes.len() {
+            self.outgoing_stream[self.outgoing_stream_end..self.outgoing_stream_end + bytes.len()]
+                .copy_from_slice(bytes);
+            self.outgoing_stream_end =
+                (self.outgoing_stream_end + bytes.len()) % TCP_STREAM_BUFFER_SIZE;
+        } else {
+            let remainder = bytes.len() - end_gap;
+            self.outgoing_stream[self.outgoing_stream_end..].copy_from_slice(&bytes[..end_gap]);
+            self.outgoing_stream[..remainder].copy_from_slice(&bytes[end_gap..]);
+            self.outgoing_stream_end = remainder;
+        }
     }
 
     pub fn notify_writable(&mut self) -> Result<(), io::Error> {
@@ -70,7 +98,23 @@ impl TcpConnection {
             let mut buf = [0; 4096];
             match self.stream.read(&mut buf) {
                 Ok(0) => return Err(CommsNetworkError::Closed),
-                Ok(amount) => self.incoming_stream.extend_from_slice(&buf[0..amount]),
+                Ok(amount) => {
+                    let buf = &buf[..amount];
+                    let end_gap = TCP_STREAM_BUFFER_SIZE - self.incoming_stream_end;
+                    if end_gap > amount {
+                        self.incoming_stream
+                            [self.incoming_stream_end..self.incoming_stream_end + amount]
+                            .copy_from_slice(buf);
+                        self.incoming_stream_end =
+                            (self.incoming_stream_end + amount) % TCP_STREAM_BUFFER_SIZE;
+                    } else {
+                        let remainder = amount - end_gap;
+                        self.incoming_stream[self.incoming_stream_end..]
+                            .copy_from_slice(&buf[..end_gap]);
+                        self.incoming_stream[..remainder].copy_from_slice(&buf[end_gap..]);
+                        self.incoming_stream_end = remainder;
+                    }
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
@@ -85,7 +129,9 @@ impl TcpConnection {
         let read_result = self.read_from_network();
         TcpReadIter {
             read_error: read_result.err(),
-            incoming_stream: &mut self.incoming_stream,
+            incoming_stream: &self.incoming_stream,
+            incoming_stream_start: &mut self.incoming_stream_start,
+            incoming_stream_end: &mut self.incoming_stream_end,
             next_incoming_header: &mut self.next_incoming_header,
         }
     }
@@ -261,7 +307,9 @@ impl<U: UdpPacket> UdpConnection<U> {
 
 pub struct TcpReadIter<'a> {
     read_error: Option<CommsNetworkError>,
-    incoming_stream: &'a mut SliceDeque<u8>,
+    incoming_stream: &'a [u8],
+    incoming_stream_start: &'a mut usize,
+    incoming_stream_end: &'a mut usize,
     next_incoming_header: &'a mut Option<PacketHeader>,
 }
 
@@ -289,26 +337,66 @@ impl<'a> Iterator for TcpReadIter<'a> {
         let header = if let Some(header) = self.next_incoming_header.take() {
             header
         } else {
-            if self.incoming_stream.len() < PACKET_HEADER_SIZE {
+            let buffer_size: usize = if self.incoming_stream_end >= self.incoming_stream_start {
+                *self.incoming_stream_end - *self.incoming_stream_start
+            } else {
+                TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start + *self.incoming_stream_end
+            };
+
+            if buffer_size < PACKET_HEADER_SIZE {
                 return None;
             }
-            let bytes = &self.incoming_stream.as_slice()[0..PACKET_HEADER_SIZE];
-            let header = match PacketHeader::from_bytes(bytes) {
+
+            let header_result = if self.incoming_stream_end > self.incoming_stream_start {
+                let buffer =
+                    &self.incoming_stream[*self.incoming_stream_start..*self.incoming_stream_end];
+                PacketHeader::from_bytes(buffer)
+            } else {
+                let slices = &mut [
+                    &self.incoming_stream[*self.incoming_stream_start..],
+                    &self.incoming_stream[..PACKET_HEADER_SIZE - (TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start)],
+                ];
+                PacketHeader::from_multiple_byte_slices(slices)
+            };
+
+            let header = match header_result {
                 Ok(header) => header,
                 Err(e) => return Some(Err(e)),
             };
-            unsafe { self.incoming_stream.move_head(PACKET_HEADER_SIZE as isize) };
+            *self.incoming_stream_start =
+                (*self.incoming_stream_start + PACKET_HEADER_SIZE) % TCP_STREAM_BUFFER_SIZE;
             header
         };
 
-        if self.incoming_stream.len() < header.body_len as usize {
+        let buffer_size = if self.incoming_stream_end >= self.incoming_stream_start {
+            *self.incoming_stream_end - *self.incoming_stream_start
+        } else {
+            (TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start) + *self.incoming_stream_end
+        };
+
+        if buffer_size < header.body_len as usize {
             *self.next_incoming_header = Some(header);
             return None;
         }
 
-        let body_bytes: Vec<u8> =
-            self.incoming_stream.as_slice()[..header.body_len as usize].to_vec();
-        unsafe { self.incoming_stream.move_head(header.body_len as isize) };
+        let body_bytes = if self.incoming_stream_end > self.incoming_stream_start
+            || TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start > header.body_len as usize
+        {
+            let body_bytes = self.incoming_stream[*self.incoming_stream_start
+                ..*self.incoming_stream_start + header.body_len as usize]
+                .to_vec();
+            *self.incoming_stream_start += header.body_len as usize;
+            body_bytes
+        } else {
+            let mut body_bytes = Vec::with_capacity(header.body_len as usize);
+            body_bytes.extend_from_slice(
+                &self.incoming_stream[TCP_STREAM_BUFFER_SIZE..*self.incoming_stream_start],
+            );
+            body_bytes.extend_from_slice(&self.incoming_stream[..(header.body_len as usize) - TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start]);
+            *self.incoming_stream_start = (header.body_len as usize) - TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start;
+            body_bytes
+        };
+
         Some(Ok(IncomingPacketFrame::from_header_and_bytes(
             header, body_bytes,
         )))

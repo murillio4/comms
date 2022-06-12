@@ -23,7 +23,6 @@ path = "src/opus_drop_packets.rs"
 [dependencies]
 audiopus = "0.2.0"
 dasp = "0.11.0"
-slice-deque = "0.1"
 
 [dependencies.audio-device]
 path = "../audio-device"

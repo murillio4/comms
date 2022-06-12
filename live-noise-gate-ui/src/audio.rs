@@ -3,30 +3,36 @@ use audio_device::audio_connection::{create_minimal_event_loop, EventLoop};
 use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use audio_device::noise_gate::{GateNoiseFilter, State};
 use dasp::Sample;
-use slice_deque::SliceDeque;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::iter;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 
+pub const BUFFER_SIZE: usize = 4800;
 pub const SAMPLES_IN_CHUNK: usize = 480;
 pub const NOISE_GATE_CHUNK_LEN: usize = 128;
 
 pub struct MicForLoopback {
     playback_sender: Sender<Vec<f32>>,
-    pcm_samples: SliceDeque<f32>,
+    pcm_samples: [f32; BUFFER_SIZE],
+    pcm_samples_start: usize,
+    pcm_samples_end: usize,
 }
 
 impl MicSink for MicForLoopback {
     fn append_sample_from_mic(&mut self, sample: f32) {
-        self.pcm_samples.push_back(sample);
+        self.pcm_samples[self.pcm_samples_end] = sample;
+        self.pcm_samples_end = (self.pcm_samples_end + 1) % BUFFER_SIZE;
     }
 
     fn publish_chunks(&mut self) {
-        while self.pcm_samples.len() > SAMPLES_IN_CHUNK {
-            let buffer = self.pcm_samples.as_slice()[..SAMPLES_IN_CHUNK].to_vec();
-            self.playback_sender.send(buffer).unwrap();
-            unsafe { self.pcm_samples.move_head(SAMPLES_IN_CHUNK as isize) };
+        while self.pcm_samples_end < self.pcm_samples_start
+            || self.pcm_samples_end - self.pcm_samples_start >= SAMPLES_IN_CHUNK
+        {
+            let next_samples = &self.pcm_samples
+                [self.pcm_samples_start..self.pcm_samples_start + SAMPLES_IN_CHUNK];
+            self.playback_sender.send(next_samples.to_vec()).unwrap();
+            self.pcm_samples_start = (self.pcm_samples_start + 480) % BUFFER_SIZE;
         }
     }
 }
@@ -36,7 +42,9 @@ pub struct PlaybackForLoopback {
     command_rx: Receiver<Command>,
     audio_plot_sender: Sender<IncomingAudioPlotData>,
     gate: GateNoiseFilter,
-    pcm_samples: SliceDeque<f32>,
+    pcm_samples: [f32; BUFFER_SIZE],
+    pcm_samples_start: usize,
+    pcm_samples_end: usize,
     is_muted: bool,
     recording_file_buffer: Option<Vec<f32>>,
     playback_file_buffer: Option<Vec<f32>>,
@@ -89,65 +97,71 @@ impl PlaybackSource for PlaybackForLoopback {
             }
         }
 
-        let sample = match self.pcm_samples.pop_front() {
-            Some(sample) => sample,
-            None => {
-                // Always attempt to pull from receiver to keep it cleared.
-                let samples = match self.receiver.try_recv() {
-                    Ok(pcm_samples) => pcm_samples,
-                    Err(TryRecvError::Empty) => return Sample::EQUILIBRIUM,
-                    Err(TryRecvError::Disconnected) => unimplemented!("channel failed"),
-                };
-                let samples = if let Some(buffer) = &mut self.playback_file_buffer {
-                    buffer
-                        .drain(..SAMPLES_IN_CHUNK.min(buffer.len()))
-                        .chain(iter::repeat(Sample::EQUILIBRIUM))
-                        .take(SAMPLES_IN_CHUNK)
-                        .collect()
-                } else {
-                    samples
-                };
+        let sample = if self.pcm_samples_end != self.pcm_samples_start {
+            let sample = self.pcm_samples[self.pcm_samples_start];
+            self.pcm_samples_start = (self.pcm_samples_start + 1) % BUFFER_SIZE;
+            sample
+        } else {
+            // Always attempt to pull from receiver to keep it cleared.
+            let samples = match self.receiver.try_recv() {
+                Ok(pcm_samples) => pcm_samples,
+                Err(TryRecvError::Empty) => return Sample::EQUILIBRIUM,
+                Err(TryRecvError::Disconnected) => unimplemented!("channel failed"),
+            };
+            let samples = if let Some(buffer) = &mut self.playback_file_buffer {
+                buffer
+                    .drain(..SAMPLES_IN_CHUNK.min(buffer.len()))
+                    .chain(iter::repeat(Sample::EQUILIBRIUM))
+                    .take(SAMPLES_IN_CHUNK)
+                    .collect()
+            } else {
+                samples
+            };
 
-                self.audio_plot_sender
-                    .send(IncomingAudioPlotData::SampleChunk(samples.clone()))
-                    .unwrap();
+            self.audio_plot_sender
+                .send(IncomingAudioPlotData::SampleChunk(samples.clone()))
+                .unwrap();
 
-                let mut accumulator = 0f32;
-                for sample in &samples {
-                    accumulator += sample * sample;
-                }
-
-                let rms = (accumulator / samples.len() as f32).sqrt() as f32;
-                let max = samples
-                    .iter()
-                    .map(|s| s.abs())
-                    .max_by(|x, y| x.partial_cmp(y).unwrap())
-                    .unwrap();
-
-                self.gate.update_window(&samples);
-                self.audio_plot_sender
-                    .send(IncomingAudioPlotData::ChunkMax(max))
-                    .unwrap();
-                self.audio_plot_sender
-                    .send(IncomingAudioPlotData::ChunkRms(rms))
-                    .unwrap();
-                self.audio_plot_sender
-                    .send(IncomingAudioPlotData::StateChange(match self.gate.state {
-                        State::Off => 0,
-                        State::Attack(_) => 1,
-                        State::Active => 2,
-                        State::Hold(_) => 3,
-                        State::Release(_) => 4,
-                    }))
-                    .unwrap();
-                self.audio_plot_sender
-                    .send(IncomingAudioPlotData::NoiseGateThreshold(
-                        self.gate.threshold as f32,
-                    ))
-                    .unwrap();
-                self.pcm_samples.extend_from_slice(&samples[1..]);
-                samples[0]
+            let mut accumulator = 0f32;
+            for sample in &samples {
+                accumulator += sample * sample;
             }
+
+            let rms = (accumulator / samples.len() as f32).sqrt() as f32;
+            let max = samples
+                .iter()
+                .map(|s| s.abs())
+                .max_by(|x, y| x.partial_cmp(y).unwrap())
+                .unwrap();
+
+            self.gate.update_window(&samples);
+            self.audio_plot_sender
+                .send(IncomingAudioPlotData::ChunkMax(max))
+                .unwrap();
+            self.audio_plot_sender
+                .send(IncomingAudioPlotData::ChunkRms(rms))
+                .unwrap();
+            self.audio_plot_sender
+                .send(IncomingAudioPlotData::StateChange(match self.gate.state {
+                    State::Off => 0,
+                    State::Attack(_) => 1,
+                    State::Active => 2,
+                    State::Hold(_) => 3,
+                    State::Release(_) => 4,
+                }))
+                .unwrap();
+            self.audio_plot_sender
+                .send(IncomingAudioPlotData::NoiseGateThreshold(
+                    self.gate.threshold as f32,
+                ))
+                .unwrap();
+
+            for sample in &samples[1..] {
+                self.pcm_samples[self.pcm_samples_end] = *sample;
+                self.pcm_samples_end = (self.pcm_samples_end + 1) % BUFFER_SIZE;
+            }
+
+            samples[0]
         };
 
         if let Some(buffer) = &mut self.recording_file_buffer {
@@ -171,13 +185,17 @@ pub fn create_pipeline(
     (
         MicForLoopback {
             playback_sender: tx,
-            pcm_samples: SliceDeque::new(),
+            pcm_samples: [0f32; BUFFER_SIZE],
+            pcm_samples_start: 0,
+            pcm_samples_end: 0,
         },
         UnsharedPlaybackSource(PlaybackForLoopback {
             receiver: rx,
             command_rx,
             audio_plot_sender,
-            pcm_samples: SliceDeque::new(),
+            pcm_samples: [0f32; BUFFER_SIZE],
+            pcm_samples_start: 0,
+            pcm_samples_end: 0,
             gate: GateNoiseFilter::new(NOISE_GATE_CHUNK_LEN),
             is_muted: false,
             recording_file_buffer: None,

@@ -3,23 +3,30 @@ use audio_device::buffer::{MicSink, PlaybackSource, UnsharedPlaybackSource};
 use audiopus::coder::{Decoder, Encoder};
 use audiopus::{Application, Channels, SampleRate};
 use dasp::Sample;
-use slice_deque::SliceDeque;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+
+const BUFFER_SIZE: usize = 4800;
 
 pub struct Mic {
     sender: Sender<Vec<u8>>,
-    pcm_samples: SliceDeque<f32>,
+    pcm_samples: [f32; BUFFER_SIZE],
+    pcm_samples_start: usize,
+    pcm_samples_end: usize,
     encoder: Encoder,
 }
 
 impl MicSink for Mic {
     fn append_sample_from_mic(&mut self, sample: f32) {
-        self.pcm_samples.push_back(sample);
+        self.pcm_samples[self.pcm_samples_end] = sample;
+        self.pcm_samples_end = (self.pcm_samples_end + 1) % BUFFER_SIZE;
     }
 
     fn publish_chunks(&mut self) {
-        while self.pcm_samples.len() > 480 {
-            let pcm_buffer = &self.pcm_samples.as_slice()[0..480];
+        while self.pcm_samples_end < self.pcm_samples_start
+            || self.pcm_samples_end - self.pcm_samples_start >= 480
+        {
+            let pcm_buffer =
+                &self.pcm_samples[self.pcm_samples_start..self.pcm_samples_start + 480];
             let mut opus_buffer = [0u8; 2048];
             let size = self
                 .encoder
@@ -27,34 +34,44 @@ impl MicSink for Mic {
                 .unwrap();
             let opus_bytes = opus_buffer[..size].to_vec();
             self.sender.send(opus_bytes).unwrap();
-            unsafe { self.pcm_samples.move_head(480) };
+            self.pcm_samples_start = (self.pcm_samples_start + 480) % BUFFER_SIZE;
         }
     }
 }
 
 pub struct Playback {
     receiver: Receiver<Vec<u8>>,
-    pcm_samples: SliceDeque<f32>,
+    pcm_samples: [f32; BUFFER_SIZE],
+    pcm_samples_start: usize,
+    pcm_samples_end: usize,
     decoder: Decoder,
 }
 
 impl PlaybackSource for Playback {
     fn next_sample(&mut self) -> f32 {
-        match self.pcm_samples.pop_front() {
-            Some(sample) => sample,
-            None => match self.receiver.try_recv() {
+        if self.pcm_samples_end != self.pcm_samples_start {
+            let sample = self.pcm_samples[self.pcm_samples_start];
+            self.pcm_samples_start = (self.pcm_samples_start + 1) % BUFFER_SIZE;
+            sample
+        } else {
+            match self.receiver.try_recv() {
                 Ok(opus_bytes) => {
-                    let mut pcm_buffer = [0f32; 2048];
+                    let mut decode_buffer = [0f32; 480];
                     let size = self
                         .decoder
-                        .decode_float(Some(&opus_bytes), &mut pcm_buffer as &mut [f32], false)
+                        .decode_float(Some(&opus_bytes), &mut decode_buffer as &mut [f32], false)
                         .unwrap();
-                    self.pcm_samples.extend_from_slice(&pcm_buffer[..size]);
-                    self.pcm_samples.pop_front().unwrap()
+
+                    for sample in &decode_buffer[1..size] {
+                        self.pcm_samples[self.pcm_samples_end] = *sample;
+                        self.pcm_samples_end = (self.pcm_samples_end + 1) % BUFFER_SIZE;
+                    }
+
+                    decode_buffer[0]
                 }
                 Err(TryRecvError::Empty) => Sample::EQUILIBRIUM,
                 Err(TryRecvError::Disconnected) => unimplemented!("channel failed"),
-            },
+            }
         }
     }
 }
@@ -64,13 +81,17 @@ pub fn create_pipeline() -> (Mic, UnsharedPlaybackSource<Playback>) {
     (
         Mic {
             sender: tx,
-            pcm_samples: SliceDeque::with_capacity(4096),
+            pcm_samples: [0f32; BUFFER_SIZE],
+            pcm_samples_start: 0,
+            pcm_samples_end: 0,
             encoder: Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::LowDelay)
                 .unwrap(),
         },
         UnsharedPlaybackSource(Playback {
             receiver: rx,
-            pcm_samples: SliceDeque::with_capacity(4096),
+            pcm_samples: [0f32; BUFFER_SIZE],
+            pcm_samples_start: 0,
+            pcm_samples_end: 0,
             decoder: Decoder::new(SampleRate::Hz48000, Channels::Mono).unwrap(),
         }),
     )
