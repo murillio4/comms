@@ -10,6 +10,7 @@ use std::net::{TcpStream, UdpSocket};
 use std::num::NonZeroU64;
 use std::time::{Duration, SystemTime};
 use std::{env, io};
+use std::thread::sleep;
 use uuid::Uuid;
 
 fn read_next_tcp(tcp: &mut TcpStream) -> Result<IncomingPacketFrame, SerializeError> {
@@ -140,27 +141,39 @@ fn main() -> Result<(), BeepClientErr> {
         loop {
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
+            let start = SystemTime::now();
+            sample_count = 0;
 
             // One second is 48000 samples, hence we send 480 * 50 = 24000 samples (500ms) for one "press"
             for _ in 0..50 {
-                let mut chunk = [0f32; 480];
-                for sample in chunk.iter_mut() {
-                    *sample = next_value()
+                let now = SystemTime::now();
+                let diff = now.duration_since(start).unwrap();
+                let ms = diff.as_millis();
+                let samples_since_start_count = ms * 48;
+
+                while samples_since_start_count - sample_count >= 480 {
+                    sample_count += 480;
+                    let mut chunk = [0f32; 480];
+                    for sample in chunk.iter_mut() {
+                        *sample = next_value()
+                    }
+
+                    let mut opus_buffer = [0u8; 2048];
+                    let size = encoder.encode_float(&chunk, &mut opus_buffer)?;
+                    let opus_bytes = opus_buffer[..size].to_vec();
+                    udp.send(&serializer.serialize(&AudioFromClient {
+                        index: audio_id,
+                        bytes: opus_bytes,
+                    })?)?;
+                    audio_id = AudioIndex::new(audio_id.get() + 1).unwrap();
                 }
 
-                let mut opus_buffer = [0u8; 2048];
-                let size = encoder.encode_float(&chunk, &mut opus_buffer)?;
-                let opus_bytes = opus_buffer[..size].to_vec();
-                udp.send(&serializer.serialize(&AudioFromClient {
-                    index: audio_id,
-                    bytes: opus_bytes.clone(),
-                })?)?;
-                audio_id = AudioIndex::new(audio_id.get() + 1).unwrap();
+                sleep(Duration::from_millis(3));
             }
         }
     } else {
         loop {
-            std::thread::sleep(Duration::from_millis(3));
+            sleep(Duration::from_millis(3));
             let now = SystemTime::now();
             let diff = now.duration_since(start).unwrap();
             let ms = diff.as_millis();

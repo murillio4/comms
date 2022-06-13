@@ -15,7 +15,7 @@ const BUFFER_SIZE: usize = 4800;
 
 struct ClientQueue {
     decoder: Decoder,
-    sample_buffer: [f32; BUFFER_SIZE],
+    sample_buffer: Box<[f32; BUFFER_SIZE]>,
     sample_buffer_start: usize,
     sample_buffer_end: usize,
     current_volume: f32,
@@ -30,7 +30,7 @@ impl ClientQueue {
             // The capacity chosen here is a spit-ball number. The host usually asks for 400 or
             // 800 samples at a time, so it's unlikely to back up this much unless a burst of
             // audio arrives.
-            sample_buffer: [0f32; BUFFER_SIZE],
+            sample_buffer: Box::new([0f32; BUFFER_SIZE]),
             sample_buffer_start: 0,
             sample_buffer_end: 0,
             current_volume: 1.0,

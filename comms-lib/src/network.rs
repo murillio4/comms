@@ -17,10 +17,10 @@ const TCP_STREAM_BUFFER_SIZE: usize = 48_000;
 pub struct TcpConnection {
     stream: TcpStream,
     is_writable: bool,
-    incoming_stream: [u8; TCP_STREAM_BUFFER_SIZE],
+    incoming_stream: Box<[u8; TCP_STREAM_BUFFER_SIZE]>,
     incoming_stream_start: usize,
     incoming_stream_end: usize,
-    outgoing_stream: [u8; TCP_STREAM_BUFFER_SIZE],
+    outgoing_stream: Box<[u8; TCP_STREAM_BUFFER_SIZE]>,
     outgoing_stream_start: usize,
     outgoing_stream_end: usize,
     next_incoming_header: Option<PacketHeader>,
@@ -31,10 +31,10 @@ impl TcpConnection {
         Self {
             stream,
             is_writable: false,
-            incoming_stream: [0; TCP_STREAM_BUFFER_SIZE],
+            incoming_stream: Box::new([0; TCP_STREAM_BUFFER_SIZE]),
             incoming_stream_start: 0,
             incoming_stream_end: 0,
-            outgoing_stream: [0; TCP_STREAM_BUFFER_SIZE],
+            outgoing_stream: Box::new([0; TCP_STREAM_BUFFER_SIZE]),
             outgoing_stream_start: 0,
             outgoing_stream_end: 0,
             next_incoming_header: None,
@@ -129,7 +129,7 @@ impl TcpConnection {
         let read_result = self.read_from_network();
         TcpReadIter {
             read_error: read_result.err(),
-            incoming_stream: &self.incoming_stream,
+            incoming_stream: &*self.incoming_stream,
             incoming_stream_start: &mut self.incoming_stream_start,
             incoming_stream_end: &mut self.incoming_stream_end,
             next_incoming_header: &mut self.next_incoming_header,
