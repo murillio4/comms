@@ -13,7 +13,7 @@ use comms_lib::packet::{
     AudioFromClient, AudioToClient, ClientId, Hello, P2pAcknowledge, P2pAcknowledgeBack,
     P2pSynchronize, Packet, PacketBody,
 };
-use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
+use comms_lib::serialization::{IncomingPacketFrame, IncomingPacketFrameRef, OutgoingPacketFrame};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle};
 use crate::network::future::SendResponse;
@@ -165,7 +165,7 @@ fn handle_udp_packet(
 }
 
 fn handle_tcp_packet(
-    stream_packet: IncomingPacketFrame,
+    stream_packet: IncomingPacketFrameRef,
     reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacketFrame>>,
     client_id: &mut Option<ClientId>,
     await_hello: &mut Option<(
@@ -176,7 +176,7 @@ fn handle_tcp_packet(
 ) -> Result<(), CommsNetworkError> {
     if let Some(reply_to) = stream_packet.header.reply_to {
         if let Some(sender) = reply_map.remove(&reply_to) {
-            sender.done(stream_packet);
+            sender.done(stream_packet.into());
             return Ok(());
         }
     }
@@ -193,7 +193,7 @@ fn handle_tcp_packet(
         }
     } else {
         event_sender
-            .try_send(NetworkEvent::Packet(stream_packet))
+            .try_send(NetworkEvent::Packet(stream_packet.into()))
             .unwrap();
     }
     Ok(())

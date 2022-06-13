@@ -1,4 +1,4 @@
-use crate::serialization::{IncomingPacketFrame, SerializeError};
+use crate::serialization::{IncomingPacketFrame, IncomingPacketFrameRef, SerializeError};
 use crate::{PacketHeader, PACKET_HEADER_SIZE};
 use mio::net::{TcpStream, UdpSocket};
 use std::collections::VecDeque;
@@ -313,27 +313,28 @@ pub struct TcpReadIter<'a> {
     next_incoming_header: &'a mut Option<PacketHeader>,
 }
 
-impl TcpReadIter<'_> {
+impl<'a> TcpReadIter<'a> {
     pub fn try_process(
-        &mut self,
-        mut f: impl FnMut(IncomingPacketFrame) -> Result<(), CommsNetworkError>,
+        &'a mut self,
+        mut f: impl FnMut(IncomingPacketFrameRef) -> Result<(), CommsNetworkError>,
     ) -> Result<(), CommsNetworkError> {
         if let Some(e) = self.read_error.take() {
             return Err(e);
         }
-        for result in self {
-            if let Err(e) = result.map_err(|e| e.into()).and_then(&mut f) {
-                return Err(e);
+        loop {
+            let iter_option = self.next_frame();
+            if let Some(result) = iter_option {
+                if let Err(e) = result.map_err(|e| e.into()).and_then(&mut f) {
+                    return Err(e);
+                }
+            } else {
+                break;
             }
         }
         Ok(())
     }
-}
 
-impl<'a> Iterator for TcpReadIter<'a> {
-    type Item = Result<IncomingPacketFrame, SerializeError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next_frame(&mut self) -> Option<Result<IncomingPacketFrameRef, SerializeError>> {
         let header = if let Some(header) = self.next_incoming_header.take() {
             header
         } else {
@@ -348,8 +349,8 @@ impl<'a> Iterator for TcpReadIter<'a> {
             }
 
             let header_result = if self.incoming_stream_end > self.incoming_stream_start {
-                let buffer =
-                    &self.incoming_stream[*self.incoming_stream_start..*self.incoming_stream_end];
+                let buffer = &self.incoming_stream
+                    [*self.incoming_stream_start..*self.incoming_stream_start + PACKET_HEADER_SIZE];
                 PacketHeader::from_bytes(buffer)
             } else {
                 let slices = &mut [
@@ -379,26 +380,11 @@ impl<'a> Iterator for TcpReadIter<'a> {
             return None;
         }
 
-        let body_bytes = if self.incoming_stream_end > self.incoming_stream_start
-            || TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start > header.body_len as usize
-        {
-            let body_bytes = self.incoming_stream[*self.incoming_stream_start
-                ..*self.incoming_stream_start + header.body_len as usize]
-                .to_vec();
-            *self.incoming_stream_start += header.body_len as usize;
-            body_bytes
-        } else {
-            let mut body_bytes = Vec::with_capacity(header.body_len as usize);
-            body_bytes.extend_from_slice(
-                &self.incoming_stream[TCP_STREAM_BUFFER_SIZE..*self.incoming_stream_start],
-            );
-            body_bytes.extend_from_slice(&self.incoming_stream[..(header.body_len as usize) - TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start]);
-            *self.incoming_stream_start = (header.body_len as usize) - TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start;
-            body_bytes
-        };
-
-        Some(Ok(IncomingPacketFrame::from_header_and_bytes(
-            header, body_bytes,
+        Some(Ok(IncomingPacketFrameRef::new(
+            header,
+            self.incoming_stream,
+            self.incoming_stream_start,
+            TCP_STREAM_BUFFER_SIZE,
         )))
     }
 }

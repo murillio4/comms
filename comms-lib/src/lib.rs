@@ -23,7 +23,7 @@ pub struct PacketHeader {
 }
 pub const PACKET_HEADER_SIZE: usize = mem::size_of::<PacketHeader>();
 
-struct MultipleByteSlices<'a, 'b>(&'a mut [&'b [u8]]);
+pub struct MultipleByteSlices<'a, 'b>(&'a mut [&'b [u8]]);
 
 impl<'a, 'b> Read for MultipleByteSlices<'a, 'b> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {

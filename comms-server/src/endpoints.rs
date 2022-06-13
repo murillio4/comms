@@ -7,7 +7,7 @@ use comms_lib::packet::{
     DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, NetworkUser,
     P2pEstablished, Packet, PacketBody, PacketId, UserJoined, UserLeft,
 };
-use comms_lib::serialization::{IncomingPacketFrame, SerializeError};
+use comms_lib::serialization::{IncomingPacketFrame, IncomingPacketFrameRef, SerializeError};
 use futures::future;
 use std::cell::RefCell;
 use std::io;
@@ -230,7 +230,7 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> En
 fn tcp_packet_to_endpoint(
     spawner: &Spawner,
     context: Context,
-    packet: IncomingPacketFrame,
+    packet: IncomingPacketFrameRef,
 ) -> Result<(), CommsNetworkError> {
     let kind = packet.header.kind;
     match kind {
