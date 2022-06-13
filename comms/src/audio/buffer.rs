@@ -15,9 +15,7 @@ const BUFFER_SIZE: usize = 4800;
 
 struct ClientQueue {
     decoder: Decoder,
-    sample_buffer: Box<[f32; BUFFER_SIZE]>,
-    sample_buffer_start: usize,
-    sample_buffer_end: usize,
+    sample_buffer_offset: usize,
     current_volume: f32,
     current_index: AudioIndex,
     is_peer_to_peer: bool,
@@ -27,46 +25,22 @@ impl ClientQueue {
     fn new() -> Result<Self, audiopus::Error> {
         Ok(Self {
             decoder: Decoder::new(audiopus::SampleRate::Hz48000, Channels::Mono)?,
-            // The capacity chosen here is a spit-ball number. The host usually asks for 400 or
-            // 800 samples at a time, so it's unlikely to back up this much unless a burst of
-            // audio arrives.
-            sample_buffer: Box::new([0f32; BUFFER_SIZE]),
-            sample_buffer_start: 0,
-            sample_buffer_end: 0,
+            sample_buffer_offset: 0,
             current_volume: 1.0,
             current_index: AudioIndex::new(1).unwrap(),
             is_peer_to_peer: false,
         })
-    }
-
-    fn next_sample(&mut self) -> Result<f32, audiopus::Error> {
-        let sample = if self.sample_buffer_end != self.sample_buffer_start {
-            let sample = self.sample_buffer[self.sample_buffer_start];
-            self.sample_buffer_start = (self.sample_buffer_start + 1) % BUFFER_SIZE;
-            sample
-        } else {
-            let mut decode_buffer = [0f32; 480];
-            let size = self.decoder.decode_float(
-                None as Option<&[u8]>,
-                &mut decode_buffer as &mut [f32],
-                false,
-            )?;
-
-            for sample in &decode_buffer[1..size] {
-                self.sample_buffer[self.sample_buffer_end] = *sample;
-                self.sample_buffer_end = (self.sample_buffer_end + 1) % BUFFER_SIZE;
-            }
-
-            decode_buffer[0]
-        };
-
-        Ok(sample * self.current_volume)
     }
 }
 
 pub struct Multiplexer {
     client_queues: HashMap<ClientId, ClientQueue>,
     main_volume: f32,
+    // The capacity chosen here is a spit-ball number. The host usually asks for 400 or
+    // 800 samples at a time, so it's unlikely to back up this much unless a burst of
+    // audio arrives.
+    sample_buffer: Box<[f32; BUFFER_SIZE]>,
+    sample_buffer_start: usize,
 }
 
 impl Multiplexer {
@@ -74,6 +48,8 @@ impl Multiplexer {
         Multiplexer {
             client_queues: HashMap::new(),
             main_volume: 1.0,
+            sample_buffer: Box::new([Sample::EQUILIBRIUM; BUFFER_SIZE]),
+            sample_buffer_start: 0,
         }
     }
 
@@ -110,9 +86,16 @@ impl Multiplexer {
             false,
         )?;
 
-        for sample in &decode_buffer[..size] {
-            queue.sample_buffer[queue.sample_buffer_end] = *sample;
-            queue.sample_buffer_end = (queue.sample_buffer_end + 1) % BUFFER_SIZE;
+        for new_sample in &decode_buffer[..size] {
+            let sample_buffer_index = (self.sample_buffer_start + queue.sample_buffer_offset) % BUFFER_SIZE;
+            let existing_sample = self.sample_buffer[sample_buffer_index];
+            let sample = existing_sample.add_amp(*new_sample);
+            self.sample_buffer[sample_buffer_index] = if sample == f32::INFINITY {
+                f32::MAX
+            } else {
+                sample
+            };
+            queue.sample_buffer_offset = (queue.sample_buffer_offset + 1) % BUFFER_SIZE;
         }
 
         queue.current_index = data.index;
@@ -153,20 +136,14 @@ impl Multiplexer {
 
 impl PlaybackSource for Multiplexer {
     fn next_sample(&mut self) -> f32 {
-        let init: f32 = Sample::EQUILIBRIUM;
-        let init = init.to_signed_sample();
+        let sample = self.sample_buffer[self.sample_buffer_start];
+        self.sample_buffer[self.sample_buffer_start] = Sample::EQUILIBRIUM;
+        self.sample_buffer_start = (self.sample_buffer_start + 1) % BUFFER_SIZE;
 
-        let sample = self.client_queues.values_mut().fold(init, |acc, queue| {
-            let next_sample = queue
-                .next_sample()
-                .expect("Unsure how to handle opus decode error yet");
-            let acc = acc.add_amp(next_sample);
-            if acc == f32::INFINITY {
-                f32::MAX
-            } else {
-                acc
-            }
-        });
+        for queue in self.client_queues.values_mut() {
+            queue.sample_buffer_offset = queue.sample_buffer_offset.saturating_sub(1);
+        }
+
         sample * self.main_volume
     }
 }
