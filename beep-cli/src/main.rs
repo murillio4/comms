@@ -8,9 +8,9 @@ use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame, Seriali
 use std::io::{Read, Write};
 use std::net::{TcpStream, UdpSocket};
 use std::num::NonZeroU64;
+use std::thread::sleep;
 use std::time::{Duration, SystemTime};
 use std::{env, io};
-use std::thread::sleep;
 use uuid::Uuid;
 
 fn read_next_tcp(tcp: &mut TcpStream) -> Result<IncomingPacketFrame, SerializeError> {

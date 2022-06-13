@@ -355,7 +355,8 @@ impl<'a> TcpReadIter<'a> {
             } else {
                 let slices = &mut [
                     &self.incoming_stream[*self.incoming_stream_start..],
-                    &self.incoming_stream[..PACKET_HEADER_SIZE - (TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start)],
+                    &self.incoming_stream[..PACKET_HEADER_SIZE
+                        - (TCP_STREAM_BUFFER_SIZE - *self.incoming_stream_start)],
                 ];
                 PacketHeader::from_multiple_byte_slices(slices)
             };
