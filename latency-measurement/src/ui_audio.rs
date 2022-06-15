@@ -206,7 +206,7 @@ struct Beep {
 }
 
 impl PlaybackSource for Beep {
-    fn next_sample(&mut self) -> f32 {
+    fn next_samples(&mut self, count: usize, callback: impl FnOnce((&[f32], Option<&[f32]>))) {
         for command in self.command_rx.try_iter() {
             match command {
                 AudioCommand::DoMeasure {
@@ -224,66 +224,71 @@ impl PlaybackSource for Beep {
             }
         }
 
-        let mut state_ref = self.state.borrow_mut();
-        let mut state = state_ref.take().expect("State was unexpectedly empty");
-        let sample = match state {
-            State::Idle => 0f32,
-            State::DetectNoiseProfile { .. } => 0f32,
-            State::ReadyToMeasure {
-                noise_threshold,
-                remaining_measurements,
-                existing_measurements,
-            } => {
-                state = State::Measuring {
-                    start_time: Instant::now(),
+        let mut samples = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut state_ref = self.state.borrow_mut();
+            let mut state = state_ref.take().expect("State was unexpectedly empty");
+            let sample = match state {
+                State::Idle => 0f32,
+                State::DetectNoiseProfile { .. } => 0f32,
+                State::ReadyToMeasure {
                     noise_threshold,
                     remaining_measurements,
                     existing_measurements,
-                };
-                self.sample_clock = (self.sample_clock + 1.0) % SAMPLE_RATE;
-                ((self.sample_clock * 440.0 * 2.0 * std::f32::consts::PI / SAMPLE_RATE).sin())
-                    as f32
-            }
-            State::Measuring { .. } => {
-                self.sample_clock = (self.sample_clock + 1.0) % SAMPLE_RATE;
-                ((self.sample_clock * 440.0 * 2.0 * std::f32::consts::PI / SAMPLE_RATE).sin())
-                    as f32
-            }
-            State::WaitingForSilence { .. } => 0f32,
-        };
-        *state_ref = Some(state);
+                } => {
+                    state = State::Measuring {
+                        start_time: Instant::now(),
+                        noise_threshold,
+                        remaining_measurements,
+                        existing_measurements,
+                    };
+                    self.sample_clock = (self.sample_clock + 1.0) % SAMPLE_RATE;
+                    ((self.sample_clock * 440.0 * 2.0 * std::f32::consts::PI / SAMPLE_RATE).sin())
+                        as f32
+                }
+                State::Measuring { .. } => {
+                    self.sample_clock = (self.sample_clock + 1.0) % SAMPLE_RATE;
+                    ((self.sample_clock * 440.0 * 2.0 * std::f32::consts::PI / SAMPLE_RATE).sin())
+                        as f32
+                }
+                State::WaitingForSilence { .. } => 0f32,
+            };
+            *state_ref = Some(state);
 
-        if self.samples_since_last_send == SEND_EVERY_NTH_SAMPLE {
-            self.samples_since_last_send = 0;
-        }
+            if self.samples_since_last_send == SEND_EVERY_NTH_SAMPLE {
+                self.samples_since_last_send = 0;
+            }
 
-        if self.samples_since_last_send == 0 {
-            let now = Instant::now();
-            if let Some(last_send_time) = self.last_send_time {
-                if (now - last_send_time) < Duration::from_millis(1) {
-                    // This is from the same buffer, so use the time from the beginning of when
-                    // processing started on the buffer. let the plot properly pad each sample
-                    // as (1000 / TIME_PLOT_SAMPLES_PER_SECOND) milliseconds apart. This works
-                    // because we're send samples at TIME_PLOT_SAMPLES_PER_SECOND, so things
-                    // _should_ line up nice.
-                    self.audio_tx
-                        .send(AudioData::OutgoingSample(last_send_time, sample))
-                        .unwrap();
+            if self.samples_since_last_send == 0 {
+                let now = Instant::now();
+                if let Some(last_send_time) = self.last_send_time {
+                    if (now - last_send_time) < Duration::from_millis(1) {
+                        // This is from the same buffer, so use the time from the beginning of when
+                        // processing started on the buffer. let the plot properly pad each sample
+                        // as (1000 / TIME_PLOT_SAMPLES_PER_SECOND) milliseconds apart. This works
+                        // because we're send samples at TIME_PLOT_SAMPLES_PER_SECOND, so things
+                        // _should_ line up nice.
+                        self.audio_tx
+                            .send(AudioData::OutgoingSample(last_send_time, sample))
+                            .unwrap();
+                    } else {
+                        self.last_send_time = Some(now);
+                        self.audio_tx
+                            .send(AudioData::OutgoingSample(now, sample))
+                            .unwrap();
+                    }
                 } else {
                     self.last_send_time = Some(now);
                     self.audio_tx
                         .send(AudioData::OutgoingSample(now, sample))
                         .unwrap();
                 }
-            } else {
-                self.last_send_time = Some(now);
-                self.audio_tx
-                    .send(AudioData::OutgoingSample(now, sample))
-                    .unwrap();
             }
+            self.samples_since_last_send += 1;
+            samples.push(sample);
         }
-        self.samples_since_last_send += 1;
-        sample
+
+        callback((&samples, None));
     }
 }
 

@@ -20,8 +20,13 @@ pub struct PlaybackForLoopback {
 }
 
 impl PlaybackSource for PlaybackForLoopback {
-    fn next_sample(&mut self) -> f32 {
-        self.receiver.try_recv().unwrap_or(Sample::EQUILIBRIUM)
+    fn next_samples(&mut self, count: usize, callback: impl FnOnce((&[f32], Option<&[f32]>))) {
+        let mut samples = Vec::with_capacity(count);
+        for _ in 0..count {
+            samples.push(self.receiver.try_recv().unwrap_or(Sample::EQUILIBRIUM));
+        }
+
+        callback((&samples, None));
     }
 }
 

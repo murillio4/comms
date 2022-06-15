@@ -84,12 +84,21 @@ pub fn play<P: PlaybackSource>(
         let mut stream = stream_rc.borrow_mut();
         playback.with(|playback: &mut P| {
             let buffer = stream.begin_write(Some(bytes)).unwrap().unwrap();
-            for i in 0..buffer.len() / 2 {
-                let sample_f32 = playback.next_sample();
-                let le_bytes = sample_f32.to_sample::<i16>().to_le_bytes();
-                buffer[i * 2] = le_bytes[0];
-                buffer[i * 2 + 1] = le_bytes[1];
-            }
+            playback.next_samples(buffer.len() / 2, |(window_1, window_2)| {
+                for (i, sample) in window_1.iter().enumerate() {
+                    let le_bytes = sample.to_sample::<i16>().to_le_bytes();
+                    buffer[i * 2] = le_bytes[0];
+                    buffer[i * 2 + 1] = le_bytes[1];
+                }
+                if let Some(window_2) = window_2 {
+                    for (i, sample) in window_2.iter().enumerate() {
+                        let le_bytes = sample.to_sample::<i16>().to_le_bytes();
+                        buffer[(window_1.len() * 2) + i * 2] = le_bytes[0];
+                        buffer[(window_1.len() * 2) + i * 2 + 1] = le_bytes[1];
+                    }
+                }
+            });
+
             stream.write_copy(buffer, 0, SeekMode::Relative).unwrap();
         });
     })));

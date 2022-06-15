@@ -252,18 +252,12 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                     let buffer_data = raw_buffer as *mut f32;
                     let sample_buffer =
                         unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
-                    let sample_count = sample_buffer.len() / self.raw_stream.channel_count;
 
-                    for i in 0..sample_count {
-                        let sample = self
-                            .sample_rate_converter
-                            .get_next(playback_source)
-                            .to_sample();
-                        for channel_index in 0..self.raw_stream.channel_count {
-                            sample_buffer[(i * self.raw_stream.channel_count) + channel_index] =
-                                sample;
-                        }
-                    }
+                    self.sample_rate_converter.convert_f32(
+                        sample_buffer,
+                        playback_source,
+                        self.raw_stream.channel_count,
+                    );
 
                     unsafe { self.render_client.ReleaseBuffer(frames_available as u32, 0) }
                         .map_err(stream_error_from_win_error)?;
@@ -275,18 +269,12 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                     let buffer_data = raw_buffer as *mut i16;
                     let sample_buffer =
                         unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
-                    let sample_count = sample_buffer.len() / self.raw_stream.channel_count;
 
-                    for i in 0..sample_count {
-                        let sample = self
-                            .sample_rate_converter
-                            .get_next(playback_source)
-                            .to_sample();
-                        for channel_index in 0..self.raw_stream.channel_count {
-                            sample_buffer[(i * self.raw_stream.channel_count) + channel_index] =
-                                sample;
-                        }
-                    }
+                    self.sample_rate_converter.convert_i16(
+                        sample_buffer,
+                        playback_source,
+                        self.raw_stream.channel_count,
+                    );
 
                     unsafe { self.render_client.ReleaseBuffer(frames_available as u32, 0) }
                         .map_err(stream_error_from_win_error)?;

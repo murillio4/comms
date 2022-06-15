@@ -87,9 +87,10 @@ impl Multiplexer {
         )?;
 
         for new_sample in &decode_buffer[..size] {
-            let sample_buffer_index = (self.sample_buffer_start + queue.sample_buffer_offset) % BUFFER_SIZE;
+            let sample_buffer_index =
+                (self.sample_buffer_start + queue.sample_buffer_offset) % BUFFER_SIZE;
             let existing_sample = self.sample_buffer[sample_buffer_index];
-            let sample = existing_sample.add_amp(*new_sample);
+            let sample = existing_sample.add_amp(*new_sample * self.main_volume);
             self.sample_buffer[sample_buffer_index] = if sample == f32::INFINITY {
                 f32::MAX
             } else {
@@ -135,16 +136,25 @@ impl Multiplexer {
 }
 
 impl PlaybackSource for Multiplexer {
-    fn next_sample(&mut self) -> f32 {
-        let sample = self.sample_buffer[self.sample_buffer_start];
-        self.sample_buffer[self.sample_buffer_start] = Sample::EQUILIBRIUM;
-        self.sample_buffer_start = (self.sample_buffer_start + 1) % BUFFER_SIZE;
-
-        for queue in self.client_queues.values_mut() {
-            queue.sample_buffer_offset = queue.sample_buffer_offset.saturating_sub(1);
+    fn next_samples(&mut self, count: usize, callback: impl FnOnce((&[f32], Option<&[f32]>))) {
+        let end_index = (self.sample_buffer_start + count) % BUFFER_SIZE;
+        if end_index >= self.sample_buffer_start {
+            let windows = (
+                &self.sample_buffer[self.sample_buffer_start..end_index],
+                None,
+            );
+            callback(windows);
+        } else {
+            let windows = (
+                &self.sample_buffer[self.sample_buffer_start..],
+                Some(&self.sample_buffer[..end_index]),
+            );
+            callback(windows)
         }
-
-        sample * self.main_volume
+        self.sample_buffer_start = end_index;
+        for queue in self.client_queues.values_mut() {
+            queue.sample_buffer_offset = queue.sample_buffer_offset.saturating_sub(count);
+        }
     }
 }
 

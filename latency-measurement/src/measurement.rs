@@ -140,43 +140,48 @@ impl CalculateDelayPlayback {
 }
 
 impl PlaybackSource for CalculateDelayPlayback {
-    fn next_sample(&mut self) -> f32 {
-        let mut state = self.state.lock().unwrap();
+    fn next_samples(&mut self, count: usize, callback: impl FnOnce((&[f32], Option<&[f32]>))) {
+        let mut samples = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut state = self.state.lock().unwrap();
 
-        let sample_clock = &mut self.sample_clock;
-        let mut calc_sample = || {
-            let sample_rate = 48000f32;
+            let sample_clock = &mut self.sample_clock;
+            let mut calc_sample = || {
+                let sample_rate = 48000f32;
 
-            *sample_clock = (*sample_clock + 1.0) % sample_rate;
-            ((*sample_clock * 440.0 * 2.0 * std::f32::consts::PI / sample_rate).sin()) as f32
-        };
+                *sample_clock = (*sample_clock + 1.0) % sample_rate;
+                ((*sample_clock * 440.0 * 2.0 * std::f32::consts::PI / sample_rate).sin()) as f32
+            };
 
-        let (sample, next_state) = match *state {
-            MeasureState::Idle => (0f32, None),
-            MeasureState::DetectNoiseProfile => (0f32, None),
-            MeasureState::ReadyToMeasure { ready_time } => {
-                let now = SystemTime::now();
-                println!(
-                    "[{}ms] \tTook {}ms from prompt-to-beep",
-                    now.duration_since(self.start_time).unwrap().as_millis(),
-                    now.duration_since(ready_time).unwrap().as_millis()
-                );
-                (
-                    calc_sample(),
-                    Some(MeasureState::Measuring {
-                        measure_start_time: now,
-                    }),
-                )
+            let (sample, next_state) = match *state {
+                MeasureState::Idle => (0f32, None),
+                MeasureState::DetectNoiseProfile => (0f32, None),
+                MeasureState::ReadyToMeasure { ready_time } => {
+                    let now = SystemTime::now();
+                    println!(
+                        "[{}ms] \tTook {}ms from prompt-to-beep",
+                        now.duration_since(self.start_time).unwrap().as_millis(),
+                        now.duration_since(ready_time).unwrap().as_millis()
+                    );
+                    (
+                        calc_sample(),
+                        Some(MeasureState::Measuring {
+                            measure_start_time: now,
+                        }),
+                    )
+                }
+                MeasureState::Measuring { .. } => (calc_sample(), None),
+                MeasureState::FinishMeasuring => (0f32, None),
+            };
+
+            if let Some(next_state) = next_state {
+                *state = next_state;
             }
-            MeasureState::Measuring { .. } => (calc_sample(), None),
-            MeasureState::FinishMeasuring => (0f32, None),
-        };
 
-        if let Some(next_state) = next_state {
-            *state = next_state;
+            samples.push(sample);
         }
 
-        sample
+        callback((&samples, None));
     }
 }
 

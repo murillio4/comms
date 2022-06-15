@@ -51,7 +51,7 @@ pub struct PlaybackForLoopback {
 }
 
 impl PlaybackSource for PlaybackForLoopback {
-    fn next_sample(&mut self) -> f32 {
+    fn next_samples(&mut self, count: usize, callback: impl FnOnce((&[f32], Option<&[f32]>))) {
         for command in self.command_rx.try_iter() {
             match command {
                 Command::ToggleMute => {
@@ -97,83 +97,87 @@ impl PlaybackSource for PlaybackForLoopback {
             }
         }
 
-        let sample = if self.pcm_samples_end != self.pcm_samples_start {
-            let sample = self.pcm_samples[self.pcm_samples_start];
-            self.pcm_samples_start = (self.pcm_samples_start + 1) % BUFFER_SIZE;
-            sample
-        } else {
-            // Always attempt to pull from receiver to keep it cleared.
-            let samples = match self.receiver.try_recv() {
-                Ok(pcm_samples) => pcm_samples,
-                Err(TryRecvError::Empty) => return Sample::EQUILIBRIUM,
-                Err(TryRecvError::Disconnected) => unimplemented!("channel failed"),
-            };
-            let samples = if let Some(buffer) = &mut self.playback_file_buffer {
-                buffer
-                    .drain(..SAMPLES_IN_CHUNK.min(buffer.len()))
-                    .chain(iter::repeat(Sample::EQUILIBRIUM))
-                    .take(SAMPLES_IN_CHUNK)
-                    .collect()
+        let mut samples = Vec::with_capacity(count);
+        for _ in 0..count {
+            let sample = if self.pcm_samples_end != self.pcm_samples_start {
+                let sample = self.pcm_samples[self.pcm_samples_start];
+                self.pcm_samples_start = (self.pcm_samples_start + 1) % BUFFER_SIZE;
+                sample
             } else {
-                samples
+                // Always attempt to pull from receiver to keep it cleared.
+                let samples = match self.receiver.try_recv() {
+                    Ok(pcm_samples) => pcm_samples,
+                    Err(TryRecvError::Empty) => {
+                        samples.push(Sample::EQUILIBRIUM);
+                        return;
+                    }
+                    Err(TryRecvError::Disconnected) => unimplemented!("channel failed"),
+                };
+                let samples = if let Some(buffer) = &mut self.playback_file_buffer {
+                    buffer
+                        .drain(..SAMPLES_IN_CHUNK.min(buffer.len()))
+                        .chain(iter::repeat(Sample::EQUILIBRIUM))
+                        .take(SAMPLES_IN_CHUNK)
+                        .collect()
+                } else {
+                    samples
+                };
+
+                self.audio_plot_sender
+                    .send(IncomingAudioPlotData::SampleChunk(samples.clone()))
+                    .unwrap();
+
+                let mut accumulator = 0f32;
+                for sample in &samples {
+                    accumulator += sample * sample;
+                }
+
+                let rms = (accumulator / samples.len() as f32).sqrt() as f32;
+                let max = samples
+                    .iter()
+                    .map(|s| s.abs())
+                    .max_by(|x, y| x.partial_cmp(y).unwrap())
+                    .unwrap();
+
+                self.gate.update_window(&samples);
+                self.audio_plot_sender
+                    .send(IncomingAudioPlotData::ChunkMax(max))
+                    .unwrap();
+                self.audio_plot_sender
+                    .send(IncomingAudioPlotData::ChunkRms(rms))
+                    .unwrap();
+                self.audio_plot_sender
+                    .send(IncomingAudioPlotData::StateChange(match self.gate.state {
+                        State::Off => 0,
+                        State::Attack(_) => 1,
+                        State::Active => 2,
+                        State::Hold(_) => 3,
+                        State::Release(_) => 4,
+                    }))
+                    .unwrap();
+                self.audio_plot_sender
+                    .send(IncomingAudioPlotData::NoiseGateThreshold(
+                        self.gate.threshold as f32,
+                    ))
+                    .unwrap();
+
+                for sample in &samples[1..] {
+                    self.pcm_samples[self.pcm_samples_end] = *sample;
+                    self.pcm_samples_end = (self.pcm_samples_end + 1) % BUFFER_SIZE;
+                }
+
+                samples[0]
             };
 
-            self.audio_plot_sender
-                .send(IncomingAudioPlotData::SampleChunk(samples.clone()))
-                .unwrap();
-
-            let mut accumulator = 0f32;
-            for sample in &samples {
-                accumulator += sample * sample;
+            if let Some(buffer) = &mut self.recording_file_buffer {
+                buffer.push(sample);
             }
 
-            let rms = (accumulator / samples.len() as f32).sqrt() as f32;
-            let max = samples
-                .iter()
-                .map(|s| s.abs())
-                .max_by(|x, y| x.partial_cmp(y).unwrap())
-                .unwrap();
-
-            self.gate.update_window(&samples);
-            self.audio_plot_sender
-                .send(IncomingAudioPlotData::ChunkMax(max))
-                .unwrap();
-            self.audio_plot_sender
-                .send(IncomingAudioPlotData::ChunkRms(rms))
-                .unwrap();
-            self.audio_plot_sender
-                .send(IncomingAudioPlotData::StateChange(match self.gate.state {
-                    State::Off => 0,
-                    State::Attack(_) => 1,
-                    State::Active => 2,
-                    State::Hold(_) => 3,
-                    State::Release(_) => 4,
-                }))
-                .unwrap();
-            self.audio_plot_sender
-                .send(IncomingAudioPlotData::NoiseGateThreshold(
-                    self.gate.threshold as f32,
-                ))
-                .unwrap();
-
-            for sample in &samples[1..] {
-                self.pcm_samples[self.pcm_samples_end] = *sample;
-                self.pcm_samples_end = (self.pcm_samples_end + 1) % BUFFER_SIZE;
-            }
-
-            samples[0]
-        };
-
-        if let Some(buffer) = &mut self.recording_file_buffer {
-            buffer.push(sample);
+            let sample = self.gate.process(sample.to_sample()).to_sample();
+            samples.push(if self.is_muted { 0.0 } else { sample });
         }
 
-        let sample = self.gate.process(sample.to_sample()).to_sample();
-        if self.is_muted {
-            0.0
-        } else {
-            sample
-        }
+        callback((&samples, None));
     }
 }
 
