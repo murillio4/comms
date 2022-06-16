@@ -144,12 +144,21 @@ impl PlaybackSource for Multiplexer {
                 None,
             );
             callback(windows);
+            for i in self.sample_buffer_start..end_index {
+                self.sample_buffer[i] = Sample::EQUILIBRIUM;
+            }
         } else {
             let windows = (
                 &self.sample_buffer[self.sample_buffer_start..],
                 Some(&self.sample_buffer[..end_index]),
             );
-            callback(windows)
+            callback(windows);
+            for i in self.sample_buffer_start..BUFFER_SIZE {
+                self.sample_buffer[i] = Sample::EQUILIBRIUM;
+            }
+            for i in 0..end_index {
+                self.sample_buffer[i] = Sample::EQUILIBRIUM;
+            }
         }
         self.sample_buffer_start = end_index;
         for queue in self.client_queues.values_mut() {
