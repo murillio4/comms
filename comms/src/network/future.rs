@@ -5,7 +5,7 @@ use std::num::NonZeroU64;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_std::net::ToSocketAddrs;
 use futures::channel::mpsc::Sender;
@@ -20,7 +20,7 @@ use serde::Serialize;
 use comms_lib::network::CommsNetworkError;
 use comms_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted,
-    NetworkUser, P2pAcknowledge, P2pAcknowledgeBack, P2pSynchronize, Packet, PacketBody, UserId,
+    NetworkUser, P2pAcknowledgeBack, Packet, PacketBody, UserId,
 };
 use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
@@ -118,22 +118,19 @@ pub async fn attempt_p2p_without_timeout(
 ) -> Result<(Duration, SocketAddr), ()> {
     println!("Attempting P2P connection with {:?}!", destination);
     let timeout = Delay::new(Duration::from_secs(3));
-    let before_synchronize = Instant::now();
-    let acknowledge_local = request_expect(
-        &handle,
-        Protocol::UdpP2p(destination.local_udp_addr),
-        None,
-        P2pSynchronize(),
-    );
-    let acknowledge_public = request_expect(
-        &handle,
-        Protocol::UdpP2p(destination.public_udp_addr),
-        None,
-        P2pSynchronize(),
-    );
+
+    let acknowledge_local = NetworkFuture::new(&handle, |s| NetworkCommand::AttemptP2pSync {
+        udp_addr: destination.local_udp_addr,
+        send_response: s,
+    });
+    let acknowledge_public = NetworkFuture::new(&handle, |s| NetworkCommand::AttemptP2pSync {
+        udp_addr: destination.public_udp_addr,
+        send_response: s,
+    });
+
     pin_mut!(acknowledge_local);
     pin_mut!(acknowledge_public);
-    let (packet_result, addr) = match future::select(
+    let (result, addr) = match future::select(
         timeout,
         future::select(acknowledge_local, acknowledge_public),
     )
@@ -150,14 +147,13 @@ pub async fn attempt_p2p_without_timeout(
             (packet_result, destination.public_udp_addr)
         }
     };
-    let packet: Packet<P2pAcknowledge> = match packet_result {
-        Ok(p) => p,
+    let (round_trip_latency, packet) = match result {
+        Ok(o) => o,
         Err(e) => {
             eprintln!("Failed to parse P2P packet: {:?}", e);
             return Err(());
         }
     };
-    let round_trip_latency = before_synchronize.elapsed();
     if let Err(e) = send(
         &handle,
         Protocol::UdpP2p(addr),

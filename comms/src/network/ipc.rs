@@ -13,7 +13,7 @@ use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 use crate::audio::ipc::AudioHandle;
 use crate::network::future::{RequestError, SendResponse};
 use crate::network::{NextPollToken, WorkerInit};
-use comms_lib::packet::{ClientId, Hello};
+use comms_lib::packet::{ClientId, Hello, P2pAcknowledge, Packet};
 use comms_lib::OpusAudioFrame;
 
 #[derive(Debug)]
@@ -78,6 +78,10 @@ pub enum NetworkCommand {
         destination: SocketAddr,
         send_response: SendResponse<Result<ConnectSuccess, ConnectError>>,
     },
+    AttemptP2pSync {
+        udp_addr: SocketAddr,
+        send_response: SendResponse<Result<(Duration, Packet<P2pAcknowledge>), CommsNetworkError>>,
+    },
     Disconnect {
         send_response: SendResponse<()>,
     },
@@ -96,6 +100,7 @@ impl Display for NetworkCommand {
             Self::SendAudio { .. } => f.write_str("SendAudio"),
             Self::RegisterP2pClient { .. } => f.write_str("RegisterClient"),
             Self::RemoveP2pClient { .. } => f.write_str("RemoveP2pClient"),
+            Self::AttemptP2pSync { .. } => f.write_str("AttemptP2pSync"),
         }
     }
 }

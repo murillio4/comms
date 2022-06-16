@@ -3,6 +3,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::sync::mpsc::{Receiver, RecvError, SendError};
+use std::time::{Duration, Instant};
 
 use mio::net::TcpStream;
 use mio::net::UdpSocket;
@@ -26,6 +27,11 @@ use futures::channel::mpsc::Sender;
 pub mod future;
 pub mod ipc;
 
+type P2pReplyTo = (
+    Instant,
+    SendResponse<Result<(Duration, Packet<P2pAcknowledge>), CommsNetworkError>>,
+);
+
 pub struct Connection {
     udp: UdpConnection<ClientUdpPacket>,
     udp_token: Token,
@@ -36,7 +42,13 @@ pub struct Connection {
     known_peers: HashMap<ClientId, SocketAddr>,
     next_packet_id: NonZeroU64,
     client_id: Option<ClientId>,
-    reply_map: HashMap<NonZeroU64, SendResponse<IncomingPacketFrame>>,
+    reply_map: HashMap<
+        NonZeroU64,
+        (
+            Option<SendResponse<IncomingPacketFrame>>,
+            Option<P2pReplyTo>,
+        ),
+    >,
     connect_response: Option<(
         SocketAddr,
         SendResponse<Result<ConnectSuccess, ConnectError>>,
@@ -105,14 +117,27 @@ pub struct Worker {
 fn handle_udp_packet(
     parsed_packet: IncomingPacketFrame,
     addr: SocketAddr,
-    reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacketFrame>>,
+    reply_map: &mut HashMap<
+        NonZeroU64,
+        (
+            Option<SendResponse<IncomingPacketFrame>>,
+            Option<P2pReplyTo>,
+        ),
+    >,
     audio_handle: &mut AudioHandle,
     event_sender: &mut Sender<NetworkEvent>,
     network_handle: &NetworkHandle,
 ) -> Result<(), CommsNetworkError> {
     if let Some(reply_to) = parsed_packet.header.reply_to {
-        if let Some(sender) = reply_map.remove(&reply_to) {
+        if let Some((Some(sender), None)) = reply_map.remove(&reply_to) {
             sender.done(parsed_packet);
+            return Ok(());
+        }
+        if let Some((None, Some((start, sender)))) = reply_map.remove(&reply_to) {
+            match parsed_packet.finish_parse() {
+                Ok(p) => sender.done(Ok((start.elapsed(), p))),
+                Err(e) => sender.done(Err(e.into())),
+            }
             return Ok(());
         }
     }
@@ -166,7 +191,13 @@ fn handle_udp_packet(
 
 fn handle_tcp_packet(
     stream_packet: IncomingPacketFrameRef,
-    reply_map: &mut HashMap<NonZeroU64, SendResponse<IncomingPacketFrame>>,
+    reply_map: &mut HashMap<
+        NonZeroU64,
+        (
+            Option<SendResponse<IncomingPacketFrame>>,
+            Option<P2pReplyTo>,
+        ),
+    >,
     client_id: &mut Option<ClientId>,
     await_hello: &mut Option<(
         SocketAddr,
@@ -175,7 +206,7 @@ fn handle_tcp_packet(
     event_sender: &mut Sender<NetworkEvent>,
 ) -> Result<(), CommsNetworkError> {
     if let Some(reply_to) = stream_packet.header.reply_to {
-        if let Some(sender) = reply_map.remove(&reply_to) {
+        if let Some((Some(sender), None)) = reply_map.remove(&reply_to) {
             sender.done(stream_packet.into());
             return Ok(());
         }
@@ -273,7 +304,9 @@ impl Worker {
 
                                     if let Ok(raw) = outgoing.into_raw(id) {
                                         if let Some(send_response) = send_response {
-                                            connection.reply_map.insert(id, send_response);
+                                            connection
+                                                .reply_map
+                                                .insert(id, (Some(send_response), None));
                                         }
 
                                         match protocol {
@@ -418,6 +451,48 @@ impl Worker {
                             NetworkCommand::Disconnect { send_response } => {
                                 self.connection.take();
                                 send_response.done(());
+                            }
+                            NetworkCommand::AttemptP2pSync {
+                                udp_addr,
+                                send_response,
+                            } => {
+                                let packet = P2pSynchronize();
+                                match OutgoingPacketFrame::from_packet(None, &packet) {
+                                    Ok(outgoing) => {
+                                        if let Some(connection) = &mut self.connection {
+                                            let id = connection.next_packet_id();
+
+                                            if let Ok(raw) = outgoing.into_raw(id) {
+                                                connection.reply_map.insert(
+                                                    id,
+                                                    (None, Some((Instant::now(), send_response))),
+                                                );
+
+                                                match connection.udp.push_outgoing(
+                                                    ClientUdpPacket::new(raw, udp_addr),
+                                                ) {
+                                                    Ok(_) => (),
+                                                    Err(e)
+                                                        if e.kind()
+                                                            == io::ErrorKind::ConnectionRefused =>
+                                                    {
+                                                        if let Some((_, send_response)) =
+                                                            connection.connect_response.take()
+                                                        {
+                                                            send_response.done(Err(
+                                                                ConnectError::NetworkError,
+                                                            ));
+                                                        }
+                                                    }
+                                                    Err(e) => return Err(e.into()),
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        send_response.done(Err(e.into()));
+                                    }
+                                }
                             }
                             NetworkCommand::RegisterP2pClient {
                                 client_id,
