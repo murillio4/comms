@@ -129,11 +129,13 @@ fn handle_udp_packet(
     network_handle: &NetworkHandle,
 ) -> Result<(), CommsNetworkError> {
     if let Some(reply_to) = parsed_packet.header.reply_to {
-        if let Some((Some(sender), None)) = reply_map.remove(&reply_to) {
+        let send_response_tuple = reply_map.remove(&reply_to);
+        if let Some((Some(sender), None)) = send_response_tuple {
             sender.done(parsed_packet);
             return Ok(());
         }
-        if let Some((None, Some((start, sender)))) = reply_map.remove(&reply_to) {
+        if let Some((None, Some((start, sender)))) = send_response_tuple {
+            println!("Found reply_to for P2P sync");
             match parsed_packet.finish_parse() {
                 Ok(p) => sender.done(Ok((start.elapsed(), p))),
                 Err(e) => sender.done(Err(e.into())),
