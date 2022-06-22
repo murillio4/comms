@@ -5,10 +5,10 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::audio::{NOISE_GATE_CHUNK_LEN, SAMPLES_IN_CHUNK};
+use eframe::egui;
 use eframe::egui::plot::{Legend, Polygon, Value, Values};
 use eframe::egui::Context;
-use eframe::epi::Frame;
-use eframe::{egui, epi};
+use eframe::Frame;
 use egui::plot::{HLine, Line, Plot};
 use egui::*;
 
@@ -251,8 +251,8 @@ struct App {
     command_tx: Sender<Command>,
 }
 
-impl epi::App for App {
-    fn update(&mut self, ctx: &Context, frame: &Frame) {
+impl eframe::App for App {
+    fn update(&mut self, ctx: &Context, frame: &mut Frame) {
         let Self {
             time,
             is_muted,
@@ -343,21 +343,22 @@ impl epi::App for App {
             ui.add_sized([ui.available_width(), ui.available_height()], time);
         });
     }
-
-    fn name(&self) -> &str {
-        "live noise gate ui"
-    }
 }
 
 pub fn run(command_tx: Sender<Command>, time_plot_receiver: Receiver<IncomingAudioPlotData>) {
-    let app = App {
-        time: AudioPlot::new(time_plot_receiver),
-        is_muted: false,
-        recording_path: None,
-        last_playback_recording: None,
-        playback_source_is_loopback: true,
-        command_tx,
-    };
     let native_options = eframe::NativeOptions::default();
-    eframe::run_native(Box::new(app), native_options);
+    eframe::run_native(
+        "Live noise gate UI",
+        native_options,
+        Box::new(|_| {
+            Box::new(App {
+                time: AudioPlot::new(time_plot_receiver),
+                is_muted: false,
+                recording_path: None,
+                last_playback_recording: None,
+                playback_source_is_loopback: true,
+                command_tx,
+            })
+        }),
+    );
 }

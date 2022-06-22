@@ -3,9 +3,9 @@ mod ui_audio;
 use crate::egui::plot::{Legend, Line, Plot, Value, Values};
 use crate::egui::{Button, Color32, ProgressBar, Response, Ui, Widget};
 use crate::ui_audio::AudioCommand;
+use eframe::egui;
 use eframe::egui::Context;
-use eframe::epi::Frame;
-use eframe::{egui, epi};
+use eframe::Frame;
 use std::ops::Neg;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -144,8 +144,8 @@ struct App {
     command_tx: Sender<AudioCommand>,
 }
 
-impl epi::App for App {
-    fn update(&mut self, ctx: &Context, _: &Frame) {
+impl eframe::App for App {
+    fn update(&mut self, ctx: &Context, _: &mut Frame) {
         for data in self.audio_rx.try_iter() {
             match data {
                 AudioData::IncomingSample(when, sample) => {
@@ -390,10 +390,6 @@ impl epi::App for App {
             })
         });
     }
-
-    fn name(&self) -> &str {
-        "Latency Measurement UI"
-    }
 }
 
 fn main() {
@@ -402,19 +398,24 @@ fn main() {
     std::thread::spawn(|| {
         ui_audio::run(audio_tx, command_rx);
     });
-    let app = App {
-        time_plot: TimePlot {
-            incoming_samples: Vec::new(),
-            outgoing_samples: Vec::new(),
-            noise_threshold: None,
-        },
-        ui_state: UiState::Initial,
-        audio_rx,
-        command_tx,
-    };
     let native_options = eframe::NativeOptions {
         initial_window_size: Some(egui::Vec2::new(500.0, 270.0)),
         ..Default::default()
     };
-    eframe::run_native(Box::new(app), native_options);
+    eframe::run_native(
+        "Latency Measurement UI",
+        native_options,
+        Box::new(|_| {
+            Box::new(App {
+                time_plot: TimePlot {
+                    incoming_samples: Vec::new(),
+                    outgoing_samples: Vec::new(),
+                    noise_threshold: None,
+                },
+                ui_state: UiState::Initial,
+                audio_rx,
+                command_tx,
+            })
+        }),
+    );
 }
