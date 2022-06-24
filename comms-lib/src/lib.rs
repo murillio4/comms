@@ -16,10 +16,10 @@ pub struct OpusAudioFrame {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PacketHeader {
-    pub id: PacketId,
-    pub reply_to: Option<PacketId>,
     pub kind: PacketKind,
+    pub id: PacketId,
     pub body_len: u16,
+    pub reply_to: Option<PacketId>,
 }
 pub const PACKET_HEADER_SIZE: usize = mem::size_of::<PacketHeader>();
 

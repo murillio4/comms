@@ -70,3 +70,18 @@ linker = "lld-link.exe"
 5. Run `cargo clean`, then `cargo build --bin comms`
 
 The only behavioural difference I found between the "GNU" and "MSVC" builds is the theming of the title bar.
+5. Tell Rust to use the `gnu` toolchain so it can find GTK and opus: `rustup default stable-x86_64-pc-windows-gnu`
+6. From `comms`, run `cargo run`
+
+## Wireshark Decoder
+See `extras/comms-dissector.lua` for a script that can be used in Wireshark to parse the internet traffic.
+
+Put the `comms-dissector.lua` script in `<Path to Wireshark folder>\Wireshark\plugins`
+
+On Windows it is typically `C:\Program Files\Wireshark\plugins`.
+
+Use (if tshark is in your paths) `tshark -G plugins` to see currently installed plugins and their respective paths.
+
+To use the Plugin one should be able to right click on the COMMS.
+
+ Right click on packet (with e.g. port 18847) -> Decode As -> Current -> COMMS -> Save
