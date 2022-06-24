@@ -176,16 +176,9 @@ impl IAudioClientWrapper {
     fn from_immdevice(
         immdevice: &Audio::IMMDevice,
     ) -> Result<IAudioClientWrapper, windows::core::Error> {
-        let mut audio_client: Option<Audio::IAudioClient3> = None;
-        unsafe {
-            immdevice.Activate(
-                &Audio::IAudioClient3::IID,
-                Com::CLSCTX_ALL,
-                ptr::null(),
-                &mut audio_client as *mut _ as _,
-            )
-        }?;
-        Ok(IAudioClientWrapper(audio_client.unwrap()))
+        let audio_client: Audio::IAudioClient3 =
+            unsafe { immdevice.Activate(Com::CLSCTX_ALL, ptr::null()) }?;
+        Ok(IAudioClientWrapper(audio_client))
     }
 }
 
@@ -248,7 +241,7 @@ impl IMMDeviceWrapper {
                 .GetDefaultAudioEndpoint(data_flow, Audio::eConsole)
         } {
             Ok(device) => device,
-            Err(ref e) if e.win32_error() == Some(Foundation::ERROR_NOT_FOUND) => {
+            Err(ref e) if e.code().0 == Foundation::ERROR_NOT_FOUND.0 as i32 => {
                 // TODO test that !mic doesn't fail here due to no default device existing
                 return None;
             }
