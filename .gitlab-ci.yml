@@ -4,8 +4,8 @@ stages:
 
 build_linux:
   stage: build
-  except:
-    - main
+  only:
+    - merge_requests
   script:
     - cargo fmt --all -- --check
     - cargo clippy --locked --all-targets --all-features -- -D warnings
@@ -16,8 +16,8 @@ build_linux:
 
 build_windows:
   stage: build
-  except:
-    - main
+  only:
+    - merge_requests
   script:
     - cargo fmt --all -- --check
     - cargo clippy --locked --all-targets --all-features -- -D warnings
