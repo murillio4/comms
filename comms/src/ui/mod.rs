@@ -797,7 +797,7 @@ pub fn run(
                         let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
                         let label_text = match is_current_user {
-                            true => "Your Volume",
+                            true => "Headphone Volume",
                             false => "Volume",
                         };
                         popover_box.add(&gtk::builders::LabelBuilder::new()
