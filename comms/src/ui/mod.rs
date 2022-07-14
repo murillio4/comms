@@ -604,7 +604,15 @@ pub fn run(
     {
         let self_path = std::env::current_exe().unwrap();
         let pixbuf_module_path = self_path.parent().unwrap().join("loaders.cache");
-        std::env::set_var("GDK_PIXBUF_MODULE_FILE", pixbuf_module_path.as_os_str());
+
+        // Comms in run in "release mode" in two contexts:
+        // 1. When actually bundled with its other warp-packer files
+        // 2. When run with "cargo build --release"
+        // To avoid breaking the second use case, only specify GDK_PIXBUF_MODULE_FILE
+        // when our custom pixbuf file exists (which it will for the warp-packed use case).
+        if pixbuf_module_path.exists() {
+            std::env::set_var("GDK_PIXBUF_MODULE_FILE", pixbuf_module_path.as_os_str());
+        }
     }
 
     let command = ui_receiver.recv().unwrap();
