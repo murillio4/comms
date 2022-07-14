@@ -13,20 +13,19 @@ mod ui;
 // const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 
 fn main() {
-    // Don't use Sentry until Comms has a Sentry server available again.
-    // #[cfg(not(debug_assertions))]
-    // {
-    //     use std::borrow::Cow;
-    //     let _guard = sentry::init((
-    //         "https://3fb3d81f3fed453198dcd46fa47971ff@sentry.fuzzlesoft.ca/2",
-    //         sentry::ClientOptions {
-    //             release: std::option_env!("CI_COMMIT_SHA").map(Cow::from),
-    //             send_default_pii: true,
-    //             environment: std::option_env!("CI_COMMIT_SHA").map(|_| Cow::from("production")),
-    //             ..Default::default()
-    //         },
-    //     ));
-    // }
+    #[cfg(not(debug_assertions))]
+    let _guard = {
+        use std::borrow::Cow;
+        sentry::init((
+            "https://acf304e45177402c94af33eecfc31ded@o1316575.ingest.sentry.io/6569253",
+            sentry::ClientOptions {
+                release: std::option_env!("CI_COMMIT_SHA").map(Cow::from),
+                send_default_pii: true,
+                environment: std::option_env!("CI_COMMIT_SHA").map(|_| Cow::from("production")),
+                ..Default::default()
+            },
+        ))
+    };
 
     let orig_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
