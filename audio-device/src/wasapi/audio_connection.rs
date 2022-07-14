@@ -1,6 +1,6 @@
 use crate::audio_connection::{AudioConnection, DeviceInfo, FoundDevices};
 use crate::buffer::{InterruptReceiver, MaybeSharedPlaybackSource, MicSink, PlaybackSource};
-use crate::wasapi::device::{InputDevice, OutputDevice};
+use crate::wasapi::device::{BuildStreamError, DefaultFormatError, InputDevice, OutputDevice};
 use crate::wasapi::event_loop::{WasapiEventLoopBuilder, WasapiEventLoopRegistration};
 use crate::wasapi::sample_rate_conversion::{
     create_mic_sample_rate_converter, create_playback_sample_rate_converter,
@@ -16,21 +16,48 @@ pub struct WasapiAudioConnection<M: MicSink, P: PlaybackSource, SP: MaybeSharedP
     pub mic_sink: M,
 }
 
+#[derive(Debug)]
+pub enum WasapiCreationError {
+    NoInputDevice,
+    NoOutputDevice,
+    NoInputFormat(DefaultFormatError),
+    NoOutputFormat(DefaultFormatError),
+    InputInitializationFailure(BuildStreamError),
+    OutputInitializationFailure(BuildStreamError),
+}
+
 impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>>
     WasapiAudioConnection<M, P, SP>
 {
     pub fn create<I: InterruptReceiver<WasapiEventLoopRegistration>>(
         mic_sink: M,
         playback_source: SP,
-    ) -> WasapiEventLoopBuilder<M, P, SP, I> {
-        let input_device = InputDevice::default().unwrap();
-        let output_device = OutputDevice::default().unwrap();
+    ) -> Result<WasapiEventLoopBuilder<M, P, SP, I>, WasapiCreationError> {
+        let input_device = match InputDevice::default() {
+            Some(d) => d,
+            None => return Err(WasapiCreationError::NoInputDevice),
+        };
+        let output_device = match OutputDevice::default() {
+            Some(d) => d,
+            None => return Err(WasapiCreationError::NoOutputDevice),
+        };
 
-        let input_format = input_device.default_format().unwrap();
-        let output_format = output_device.default_format().unwrap();
+        let input_format = match input_device.default_format() {
+            Ok(f) => f,
+            Err(e) => return Err(WasapiCreationError::NoInputFormat(e)),
+        };
+        let output_format = match output_device.default_format() {
+            Ok(f) => f,
+            Err(e) => return Err(WasapiCreationError::NoOutputFormat(e)),
+        };
 
         let mic_converter = create_mic_sample_rate_converter(input_format.sample_rate.0, 48000);
-        let waveformatex = input_device.audio_client.initialize(&input_format).unwrap();
+
+        let waveformatex = match input_device.audio_client.initialize(&input_format) {
+            Ok(w) => w,
+            Err(e) => return Err(WasapiCreationError::InputInitializationFailure(e)),
+        };
+
         let mic_stream = WasapiMicStream::new(
             mic_converter,
             input_device.create_client().unwrap(),
@@ -41,10 +68,10 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>>
 
         let playback_converter =
             create_playback_sample_rate_converter(48000, output_format.sample_rate.0);
-        let waveformatex = output_device
-            .audio_client
-            .initialize(&output_format)
-            .unwrap();
+        let waveformatex = match output_device.audio_client.initialize(&output_format) {
+            Ok(w) => w,
+            Err(e) => return Err(WasapiCreationError::OutputInitializationFailure(e)),
+        };
         let playback_stream = WasapiPlaybackStream::new(
             playback_converter,
             output_device.create_client().unwrap(),
@@ -52,12 +79,12 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>>
             RawWasapiStream::new(waveformatex, output_device.audio_client, output_format),
         );
         playback_stream.raw_stream.start();
-        WasapiEventLoopBuilder::new(Self {
+        Ok(WasapiEventLoopBuilder::new(Self {
             mic_stream,
             playback_stream,
             playback_source,
             mic_sink,
-        })
+        }))
     }
 }
 

@@ -11,16 +11,19 @@ use gio::prelude::*;
 use gio::ApplicationFlags;
 use glib::object::ObjectRef;
 use gtk::prelude::*;
-use gtk::{CellRendererText, Orientation, PositionType, TreeView, TreeViewColumn};
+use gtk::{
+    CellRendererText, DialogFlags, Orientation, PositionType, ResponseType, TreeView,
+    TreeViewColumn,
+};
 use serde::{Deserialize, Serialize};
 
 use comms_lib::packet::{ClientId, Packet, PacketBody, UserId, UserJoined, UserLeft};
 
-use crate::audio::ipc::{AudioCommand, AudioHandle};
+use crate::audio::ipc::{AudioCommand, AudioHandle, EventLoopCreationError};
 use crate::network;
 use crate::network::future::{attempt_p2p, P2pDestination};
 use crate::network::ipc::{ConnectError, NetworkCommand, NetworkEvent, NetworkHandle};
-use crate::ui::ipc::UICommand;
+use crate::ui::ipc::{AudioIPCInitStatus, UICommand};
 use comms_lib::network::CommsNetworkError;
 use glib::timeout_add_local;
 use uuid::Uuid;
@@ -615,21 +618,6 @@ pub fn run(
         }
     }
 
-    let command = ui_receiver.recv().unwrap();
-    match command {
-        UICommand::AudioIPCReady => (),
-        _ => panic!("Expected first UICommand to be 'AudioIPCReady'"),
-    };
-    audio.send(AudioCommand::ListDevices).unwrap();
-    let ui_cmd_from_audio: UICommand = ui_receiver.recv().unwrap();
-    let (input_devices, output_devices) = match ui_cmd_from_audio {
-        UICommand::DevicesFound {
-            input_devices,
-            output_devices,
-        } => (input_devices, output_devices),
-        _ => panic!("Expected second UICommand to be 'DevicesFound'"),
-    };
-
     let initial_local_storage: Option<LocalStorage> = ProjectDirs::from("", "Comms", "Comms")
         .and_then(|project_dirs| {
             std::fs::read_to_string(project_dirs.data_dir().join("local_storage")).ok()
@@ -655,6 +643,52 @@ pub fn run(
     }
 
     gtk_start(move |app| {
+        let window = gtk::ApplicationWindow::new(app);
+
+        let command = ui_receiver.recv().unwrap();
+        let audio_status = match command {
+            UICommand::AudioIPCInitStatus(s) => s,
+            _ => panic!("Expected first UICommand to be 'AudioIPCInitStatus'"),
+        };
+        if let AudioIPCInitStatus::Error(e) = audio_status {
+            let error_message = match e {
+                EventLoopCreationError::NoInputDevice => "No microphone was detected".to_string(),
+                EventLoopCreationError::NoOutputDevice => {
+                    "No headphones/speakers were detected".to_string()
+                }
+                EventLoopCreationError::InputDeviceError(m) => {
+                    format!("Failed to set up microphone: {}", m)
+                }
+                EventLoopCreationError::OutputDeviceError(m) => {
+                    format!("Failed to set up headphones/speakers: {}", m)
+                }
+            };
+
+            let dialog = gtk::Dialog::with_buttons(
+                Some(&error_message),
+                Some(&window),
+                DialogFlags::USE_HEADER_BAR.union(DialogFlags::DESTROY_WITH_PARENT),
+                &[("_Close", ResponseType::Close)],
+            );
+            dialog.set_position(gtk::WindowPosition::Center);
+            let app = app.clone();
+            dialog.connect_response(move |_, _| {
+                app.quit();
+            });
+            dialog.show();
+            return;
+        }
+
+        audio.send(AudioCommand::ListDevices).unwrap();
+        let ui_cmd_from_audio: UICommand = ui_receiver.recv().unwrap();
+        let (input_devices, output_devices) = match ui_cmd_from_audio {
+            UICommand::DevicesFound {
+                input_devices,
+                output_devices,
+            } => (input_devices, output_devices),
+            _ => panic!("Expected second UICommand to be 'DevicesFound'"),
+        };
+
         let stack = gtk::Stack::new();
         stack.set_visible(true);
         let raw_app_ui = RESOURCES_DIR
@@ -688,7 +722,6 @@ pub fn run(
             gdk_pixbuf::Pixbuf::from_stream(&stream, None as Option<&gio::Cancellable>).unwrap()
         };
 
-        let window = gtk::ApplicationWindow::new(app);
         window.set_title("Comms");
         window.set_default_size(280, 250);
         window.set_position(gtk::WindowPosition::Center);

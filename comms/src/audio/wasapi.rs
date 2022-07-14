@@ -1,7 +1,9 @@
 use crate::audio::buffer::{MicBuffer, Multiplexer, RcMultiplexer};
-use crate::audio::ipc::AudioReceiver;
+use crate::audio::ipc::{AudioReceiver, EventLoopCreationError};
 use crate::audio::platform::AudioPlatform;
-use audio_device::wasapi::audio_connection::{WasapiAudioConnection, WasapiParameters};
+use audio_device::wasapi::audio_connection::{
+    WasapiAudioConnection, WasapiCreationError, WasapiParameters,
+};
 use audio_device::wasapi::event_loop::{
     WasapiEventLoop, WasapiEventLoopNotify, WasapiEventLoopRegistration,
 };
@@ -35,9 +37,34 @@ impl AudioPlatform for WasapiAudioPlatform {
         receiver: AudioReceiver<Self::Registration>,
         mic_buffer: MicBuffer,
         multiplexer: RcMultiplexer,
-    ) -> Self::EventLoop {
-        WasapiAudioConnection::create(mic_buffer, multiplexer)
+    ) -> Result<Self::EventLoop, EventLoopCreationError> {
+        Ok(
+            match WasapiAudioConnection::create(mic_buffer, multiplexer) {
+                Ok(c) => c,
+                Err(e) => {
+                    let e = match e {
+                        WasapiCreationError::NoInputDevice => EventLoopCreationError::NoInputDevice,
+                        WasapiCreationError::NoOutputDevice => {
+                            EventLoopCreationError::NoOutputDevice
+                        }
+                        WasapiCreationError::NoInputFormat(e) => {
+                            EventLoopCreationError::InputDeviceError(format!("{:?}", e))
+                        }
+                        WasapiCreationError::NoOutputFormat(e) => {
+                            EventLoopCreationError::OutputDeviceError(format!("{:?}", e))
+                        }
+                        WasapiCreationError::InputInitializationFailure(e) => {
+                            EventLoopCreationError::InputDeviceError(format!("{:?}", e))
+                        }
+                        WasapiCreationError::OutputInitializationFailure(e) => {
+                            EventLoopCreationError::OutputDeviceError(format!("{:?}", e))
+                        }
+                    };
+                    return Err(e);
+                }
+            }
             .with_interrupt(receiver)
-            .create_event_loop()
+            .create_event_loop(),
+        )
     }
 }

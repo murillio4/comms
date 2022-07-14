@@ -1,5 +1,5 @@
 use crate::audio::buffer::{MicBuffer, RcMultiplexer};
-use crate::audio::ipc::AudioReceiver;
+use crate::audio::ipc::{AudioReceiver, EventLoopCreationError};
 use crate::audio::platform::AudioPlatform;
 use audio_device::pulseaudio::audio_connection::{PulseAudioConnection, PulseParameters};
 use audio_device::pulseaudio::event_loop::{
@@ -34,9 +34,11 @@ impl AudioPlatform for PulseAudioPlatform {
         receiver: AudioReceiver<Self::Registration>,
         mic_buffer: MicBuffer,
         multiplexer: RcMultiplexer,
-    ) -> Self::EventLoop {
-        PulseAudioConnection::create(parameters, mic_buffer, multiplexer)
-            .with_interrupt(receiver)
-            .create_event_loop()
+    ) -> Result<Self::EventLoop, EventLoopCreationError> {
+        Ok(
+            PulseAudioConnection::create(parameters, mic_buffer, multiplexer)
+                .with_interrupt(receiver)
+                .create_event_loop(),
+        )
     }
 }

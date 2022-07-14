@@ -7,7 +7,7 @@ use crate::audio::ipc::{AudioCommand, AudioReceiver};
 pub use crate::audio::platform::AudioPlatform;
 use crate::network::ipc::NetworkHandle;
 use crate::network::SendToNetworkThreadError;
-use crate::ui::ipc::UICommand;
+use crate::ui::ipc::{AudioIPCInitStatus, UICommand};
 use audio_device::audio_connection::EventLoop;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -38,8 +38,18 @@ pub fn run(
     );
     let mic_buffer = MicBuffer::new(network_handle)?;
     let event_loop =
-        AudioPlatformImpl::create_event_loop(parameters, receiver, mic_buffer, multiplexer);
-    ui_handle.send(UICommand::AudioIPCReady).unwrap();
+        match AudioPlatformImpl::create_event_loop(parameters, receiver, mic_buffer, multiplexer) {
+            Ok(l) => l,
+            Err(e) => {
+                ui_handle
+                    .send(UICommand::AudioIPCInitStatus(AudioIPCInitStatus::Error(e)))
+                    .unwrap();
+                return Ok(());
+            }
+        };
+    ui_handle
+        .send(UICommand::AudioIPCInitStatus(AudioIPCInitStatus::Ready))
+        .unwrap();
     event_loop.run();
     Ok(())
 }

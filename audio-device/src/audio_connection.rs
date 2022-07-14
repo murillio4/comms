@@ -51,5 +51,6 @@ pub fn create_minimal_event_loop(
     priority::bump_priority().unwrap();
     use crate::wasapi::audio_connection::WasapiAudioConnection;
     WasapiAudioConnection::create::<crate::buffer::NoopInterruptReceiver>(mic, playback)
+        .unwrap()
         .create_event_loop()
 }

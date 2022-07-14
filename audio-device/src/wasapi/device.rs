@@ -13,6 +13,7 @@ use std::{ptr, slice};
 use windows::core::Interface;
 use windows::Win32::Devices::Properties;
 use windows::Win32::Foundation;
+use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::Media::Audio;
 use windows::Win32::System::Com::StructuredStorage;
 use windows::Win32::System::{Com, Ole, Threading};
@@ -241,7 +242,7 @@ impl IMMDeviceWrapper {
                 .GetDefaultAudioEndpoint(data_flow, Audio::eConsole)
         } {
             Ok(device) => device,
-            Err(ref e) if e.code().0 == Foundation::ERROR_NOT_FOUND.0 as i32 => {
+            Err(ref e) if WIN32_ERROR::from_error(e) == Some(Foundation::ERROR_NOT_FOUND) => {
                 // TODO test that !mic doesn't fail here due to no default device existing
                 return None;
             }

@@ -1,5 +1,5 @@
 use crate::audio::buffer::{MicBuffer, RcMultiplexer};
-use crate::audio::ipc::AudioReceiver;
+use crate::audio::ipc::{AudioReceiver, EventLoopCreationError};
 use audio_device::audio_connection::{EventLoop, EventLoopNotify};
 
 pub trait AudioPlatform {
@@ -15,5 +15,5 @@ pub trait AudioPlatform {
         receiver: AudioReceiver<Self::Registration>,
         mic_buffer: MicBuffer,
         multiplexer: RcMultiplexer,
-    ) -> Self::EventLoop;
+    ) -> Result<Self::EventLoop, EventLoopCreationError>;
 }

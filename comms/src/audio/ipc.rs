@@ -12,6 +12,15 @@ use audio_device::audio_connection::{AudioConnection, EventLoopNotify};
 use audio_device::buffer::{InterruptReceiver, MaybeSharedPlaybackSource};
 use comms_lib::OpusAudioFrame;
 
+#[cfg_attr(unix, allow(dead_code))]
+#[derive(Debug)]
+pub enum EventLoopCreationError {
+    NoInputDevice,
+    NoOutputDevice,
+    InputDeviceError(String),
+    OutputDeviceError(String),
+}
+
 pub enum AudioCommand {
     NewClient(ClientId),
     DropClient(ClientId),
