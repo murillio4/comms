@@ -19,9 +19,10 @@ fn main() {
         sentry::init((
             "https://acf304e45177402c94af33eecfc31ded@o1316575.ingest.sentry.io/6569253",
             sentry::ClientOptions {
-                release: std::option_env!("CI_COMMIT_SHA").map(Cow::from),
+                release: std::option_env!("CI_COMMIT_SHA")
+                    .map(|sha| Cow::from(format!("commit-{}", sha))),
                 send_default_pii: true,
-                environment: std::option_env!("CI_COMMIT_SHA").map(|_| Cow::from("production")),
+                environment: Some(Cow::from("production")),
                 ..Default::default()
             },
         ))

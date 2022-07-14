@@ -36,6 +36,9 @@ build_release_linux:
     - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo test
     - cargo build --all --release
+    - sentry-cli releases new "commit-$CI_COMMIT_SHA" --org comms --project comms-app
+    - sentry-cli releases set-commits "commit-$CI_COMMIT_SHA" --auto --org comms --project comms-app
+    - sentry-cli releases finalize "commit-$CI_COMMIT_SHA" --org comms --project comms-app
   artifacts:
     paths:
       - target/release/beep-cli
