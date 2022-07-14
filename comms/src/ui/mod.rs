@@ -800,9 +800,8 @@ pub fn run(
                             true => "Headphone Volume",
                             false => "Volume",
                         };
-                        popover_box.add(&gtk::builders::LabelBuilder::new()
-                            .label(label_text)
-                            .build());
+                        popover_box
+                            .add(&gtk::builders::LabelBuilder::new().label(label_text).build());
 
                         let adjustment =
                             gtk::Adjustment::new(volume as f64, 0.0, 400.0, 2.0, 10.0, 0.0);
