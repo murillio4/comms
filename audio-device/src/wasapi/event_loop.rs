@@ -137,23 +137,24 @@ impl<
 
         loop {
             match handles.select() {
-                Err(_) => todo!("failed to select WASAPI handle"),
+                Err(e) => {
+                    unimplemented!("Failed to select WASAPI handle: {:?}", e)
+                }
                 Ok(WasapiHandle::MicStream(_)) => {
-                    if self
+                    if let Err(e) = self
                         .connection
                         .mic_stream
                         .invoke(&mut self.connection.mic_sink)
-                        .is_err()
                     {
-                        unimplemented!("mic error - change device?");
+                        unimplemented!("Mic error: {:?}", e);
                     }
                 }
                 Ok(WasapiHandle::PlaybackStream(_)) => {
                     let source = &mut self.connection.playback_source;
                     let stream = &mut self.connection.playback_stream;
                     source.with(|playback| {
-                        if stream.invoke(playback).is_err() {
-                            unimplemented!("playback error - change device?");
+                        if let Err(e) = stream.invoke(playback) {
+                            unimplemented!("Playback error: {:?}", e);
                         }
                     });
                 }
