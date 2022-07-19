@@ -97,7 +97,8 @@ fn convert<T: FromSample<f64>, P: PlaybackSource>(
         let mut source_samples = window_1.iter().chain(window_2.unwrap_or_default().iter());
         let mut sample_index: usize = 0;
 
-        while sample_index <= destination_sample_count {
+        while sample_index < destination_sample_count {
+            *interpolation_value += source_to_target_ratio;
             while *interpolation_value >= 1.0 {
                 interpolator.next_source_frame([source_samples
                     .next()
@@ -111,7 +112,6 @@ fn convert<T: FromSample<f64>, P: PlaybackSource>(
                     interpolator.interpolate(*interpolation_value)[0].to_sample();
             }
             sample_index += 1;
-            *interpolation_value += source_to_target_ratio;
         }
     });
 }
@@ -191,4 +191,36 @@ pub fn create_playback_sample_rate_converter<P: PlaybackSource>(
         interpolation_value: 0.0,
         source_to_target_ratio: source_hz as f64 / target_hz as f64,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockPlaybackSource(Vec<f32>);
+
+    impl PlaybackSource for MockPlaybackSource {
+        fn next_samples(&mut self, count: usize, callback: impl FnOnce((&[f32], Option<&[f32]>))) {
+            callback((&self.0[..1], Some(&self.0[1..(count - 1)])));
+        }
+    }
+
+    #[test]
+    fn test_convert() {
+        let mut interpolator = Linear::new([1f64; 1], [1f64; 1]);
+        let mut interpolator_value = 0f64;
+        let source_to_target_ratio = 48000f64 / 44100f64;
+
+        let mut destination = [0f64; 44100];
+        let mut source = MockPlaybackSource([1f32; 24000].to_vec());
+        convert(
+            &mut interpolator,
+            &mut interpolator_value,
+            source_to_target_ratio,
+            &mut destination,
+            &mut source,
+            2,
+        );
+        assert_eq!(destination, [1f64; 44100]);
+    }
 }
