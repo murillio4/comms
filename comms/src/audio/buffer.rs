@@ -90,7 +90,8 @@ impl Multiplexer {
             let sample_buffer_index =
                 (self.sample_buffer_start + queue.sample_buffer_offset) % BUFFER_SIZE;
             let existing_sample = self.sample_buffer[sample_buffer_index];
-            let sample = existing_sample.add_amp(*new_sample * self.main_volume);
+            let sample =
+                existing_sample.add_amp(*new_sample * self.main_volume * queue.current_volume);
             self.sample_buffer[sample_buffer_index] = if sample == f32::INFINITY {
                 f32::MAX
             } else {
