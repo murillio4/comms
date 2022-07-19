@@ -1,7 +1,8 @@
+use crate::packet::ClientId;
 use crate::serialization::{IncomingPacketFrame, IncomingPacketFrameRef, SerializeError};
 use crate::{PacketHeader, PACKET_HEADER_SIZE};
 use mio::net::{TcpStream, UdpSocket};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -291,17 +292,17 @@ impl<U: UdpPacket> UdpConnection<U> {
                 Ok(None) => return Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    eprintln!("Encountered generic error during UDP reading: {:?}", e);
+                    continue;
+                }
             }
         }
     }
 
-    pub fn read_new_packets(&mut self) -> UdpReadIter<U> {
+    pub fn read_new_packets<'a, I: UdpReadIter<'a, U>>(&'a mut self) -> I {
         let read_result = self.read_from_network();
-        UdpReadIter {
-            read_error: read_result.err(),
-            incoming_packets: &mut self.incoming_packets,
-        }
+        I::from(read_result.err(), &mut self.incoming_packets)
     }
 }
 
@@ -390,16 +391,86 @@ impl<'a> TcpReadIter<'a> {
     }
 }
 
-pub struct UdpReadIter<'a, U> {
-    read_error: Option<CommsNetworkError>,
-    incoming_packets: &'a mut VecDeque<U>,
+pub trait UdpReadIter<'a, U: UdpPacket> {
+    fn from(read_error: Option<CommsNetworkError>, incoming_packets: &'a mut VecDeque<U>) -> Self;
 }
 
-impl<U: UdpPacket> UdpReadIter<'_, U> {
-    // TODO join with TCP impl into a trait
+pub struct ClientUdpReadIter<'a> {
+    read_error: Option<CommsNetworkError>,
+    incoming_packets: &'a mut VecDeque<ClientUdpPacket>,
+}
+
+impl ClientUdpReadIter<'_> {
     pub fn try_process(
         &mut self,
-        mut f: impl FnMut(U::IncomingPacket, SocketAddr) -> Result<(), CommsNetworkError>,
+        server_addr: &SocketAddr,
+        known_sockets: &HashMap<SocketAddr, ClientId>,
+        mut f: impl FnMut(
+            <ClientUdpPacket as UdpPacket>::IncomingPacket,
+            SocketAddr,
+        ) -> Result<(), CommsNetworkError>,
+    ) -> Result<(), CommsNetworkError> {
+        if let Some(e) = self.read_error.take() {
+            return Err(e);
+        }
+        for (result, addr) in self {
+            if let Err(e) = result.map_err(|e| e.into()).and_then(|p| f(p, addr)) {
+                if *server_addr == addr {
+                    return Err(e);
+                } else if let Some(client_id) = known_sockets.get(&addr) {
+                    eprintln!(
+                        "Encountered error while communicating with client {}: {:?}",
+                        client_id, e
+                    );
+                } else {
+                    eprintln!(
+                        "Encountered error while communicating with unknown client {}: {:?}",
+                        addr, e
+                    );
+                };
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> UdpReadIter<'a, ClientUdpPacket> for ClientUdpReadIter<'a> {
+    fn from(
+        read_error: Option<CommsNetworkError>,
+        incoming_packets: &'a mut VecDeque<ClientUdpPacket>,
+    ) -> Self {
+        Self {
+            read_error,
+            incoming_packets,
+        }
+    }
+}
+
+impl Iterator for ClientUdpReadIter<'_> {
+    type Item = (
+        Result<<ClientUdpPacket as UdpPacket>::IncomingPacket, SerializeError>,
+        SocketAddr,
+    );
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.incoming_packets
+            .pop_front()
+            .map(|udp_packet| udp_packet.into_incoming_packet())
+    }
+}
+
+pub struct ServerUdpReadIter<'a> {
+    read_error: Option<CommsNetworkError>,
+    incoming_packets: &'a mut VecDeque<ServerUdpPacket>,
+}
+
+impl ServerUdpReadIter<'_> {
+    pub fn try_process(
+        &mut self,
+        mut f: impl FnMut(
+            <ServerUdpPacket as UdpPacket>::IncomingPacket,
+            SocketAddr,
+        ) -> Result<(), CommsNetworkError>,
     ) -> Result<(), CommsNetworkError> {
         if let Some(e) = self.read_error.take() {
             return Err(e);
@@ -413,8 +484,23 @@ impl<U: UdpPacket> UdpReadIter<'_, U> {
     }
 }
 
-impl<'a, U: UdpPacket> Iterator for UdpReadIter<'a, U> {
-    type Item = (Result<U::IncomingPacket, SerializeError>, SocketAddr);
+impl<'a> UdpReadIter<'a, ServerUdpPacket> for ServerUdpReadIter<'a> {
+    fn from(
+        read_error: Option<CommsNetworkError>,
+        incoming_packets: &'a mut VecDeque<ServerUdpPacket>,
+    ) -> Self {
+        Self {
+            read_error,
+            incoming_packets,
+        }
+    }
+}
+
+impl<'a> Iterator for ServerUdpReadIter<'a> {
+    type Item = (
+        Result<<ServerUdpPacket as UdpPacket>::IncomingPacket, SerializeError>,
+        SocketAddr,
+    );
 
     fn next(&mut self) -> Option<Self::Item> {
         self.incoming_packets

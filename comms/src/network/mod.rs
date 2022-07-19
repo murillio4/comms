@@ -9,7 +9,9 @@ use mio::net::TcpStream;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token};
 
-use comms_lib::network::{ClientUdpPacket, CommsNetworkError, TcpConnection, UdpConnection};
+use comms_lib::network::{
+    ClientUdpPacket, ClientUdpReadIter, CommsNetworkError, TcpConnection, UdpConnection,
+};
 use comms_lib::packet::{
     AudioFromClient, AudioToClient, ClientId, Hello, P2pAcknowledge, P2pAcknowledgeBack,
     P2pSynchronize, Packet, PacketBody,
@@ -40,6 +42,7 @@ pub struct Connection {
     local_addr: SocketAddr,
     server_addr: SocketAddr,
     known_peers: HashMap<ClientId, SocketAddr>,
+    known_sockets: HashMap<SocketAddr, ClientId>,
     next_packet_id: NonZeroU64,
     client_id: Option<ClientId>,
     reply_map: HashMap<
@@ -72,6 +75,7 @@ impl Connection {
             local_addr,
             server_addr,
             known_peers: HashMap::new(),
+            known_sockets: HashMap::new(),
             next_packet_id: NonZeroU64::new(1).unwrap(),
             client_id: None,
             reply_map: HashMap::new(),
@@ -502,11 +506,13 @@ impl Worker {
                             } => {
                                 if let Some(connection) = &mut self.connection {
                                     connection.known_peers.insert(client_id, udp_addr);
+                                    connection.known_sockets.insert(udp_addr, client_id);
                                 }
                             }
                             NetworkCommand::RemoveP2pClient { client_id } => {
                                 if let Some(connection) = &mut self.connection {
                                     connection.known_peers.remove(&client_id);
+                                    connection.known_sockets.retain(|_, v| *v != client_id);
                                 }
                             }
                         }
@@ -517,24 +523,28 @@ impl Worker {
                             let reply_map = &mut connection.reply_map;
                             match connection
                                 .udp
-                                .read_new_packets()
-                                .try_process(|packet, addr| {
-                                    handle_udp_packet(
-                                        packet,
-                                        addr,
-                                        reply_map,
-                                        &mut audio_handle,
-                                        &mut event_sender,
-                                        &network_handle,
-                                    )
-                                }) {
+                                .read_new_packets::<'_, ClientUdpReadIter>()
+                                .try_process(
+                                    &connection.server_addr,
+                                    &connection.known_sockets,
+                                    |packet, addr| {
+                                        handle_udp_packet(
+                                            packet,
+                                            addr,
+                                            reply_map,
+                                            &mut audio_handle,
+                                            &mut event_sender,
+                                            &network_handle,
+                                        )
+                                    },
+                                ) {
                                 Err(CommsNetworkError::Closed) => {
                                     event_sender.try_send(NetworkEvent::SocketClosed).unwrap();
                                 }
                                 Err(_) => {
                                     event_sender.try_send(NetworkEvent::NetworkError).unwrap();
                                 }
-                                _ => {}
+                                Ok(_) => (),
                             }
                         }
                         if event.is_writable() && connection.udp.notify_writable().is_err() {

@@ -13,7 +13,7 @@ use crate::endpoints::{
 };
 use crate::network::{NetworkHandle, SendPacket, Target};
 use crate::task::EndpointResult;
-use comms_lib::network::{CommsNetworkError, UdpConnection};
+use comms_lib::network::{CommsNetworkError, ServerUdpReadIter, UdpConnection};
 use comms_lib::packet;
 use comms_lib::packet::ClientId;
 use mio::net::TcpListener;
@@ -92,7 +92,7 @@ fn main() -> Result<(), CommsServerError> {
                 }
             } else if token == udp_token {
                 if event.is_readable() {
-                    udp.read_new_packets()
+                    udp.read_new_packets::<'_, ServerUdpReadIter>()
                         .try_process(|packet, addr| {
                             handle_udp_packet(
                                 addr,
