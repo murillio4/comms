@@ -33,16 +33,16 @@ pub struct LinearSampleRateConverter {
 
 impl<M: MicSink> MicSampleRateConverter<M> for LinearSampleRateConverter {
     fn feed_next(&mut self, sample: f64, mic_sink: &mut M) {
-        if self.interpolation_value >= self.source_rate {
+        if self.interpolation_value >= self.destination_rate {
             self.interpolator.next_source_frame([sample]);
-            self.interpolation_value -= self.source_rate;
+            self.interpolation_value -= self.destination_rate;
         }
 
-        while self.interpolation_value < self.source_rate {
+        while self.interpolation_value < self.destination_rate {
             let sample = self
                 .interpolator
-                .interpolate(self.interpolation_value as f64 / self.source_rate as f64);
-            self.interpolation_value += self.destination_rate;
+                .interpolate(self.interpolation_value as f64 / self.destination_rate as f64);
+            self.interpolation_value += self.source_rate;
             mic_sink.append_sample_from_mic(sample[0].to_sample());
         }
     }
@@ -84,7 +84,7 @@ impl<P: PlaybackSource> PlaybackSampleRateConverter<P> for LinearSampleRateConve
     }
 }
 
-fn convert<T: FromSample<f64>, P: PlaybackSource>(
+fn convert<T: FromSample<f64> + Copy, P: PlaybackSource>(
     interpolator: &mut Linear<[f64; 1]>,
     interpolation_value: &mut u32,
     destination: &mut [T],
@@ -96,7 +96,7 @@ fn convert<T: FromSample<f64>, P: PlaybackSource>(
     let source_to_target_ratio = (source_rate as f64) / (destination_rate as f64);
     let destination_sample_count = destination.len() / channel_count;
     let samples_to_fetch_count = (destination_sample_count as f64 * source_to_target_ratio
-        - (*interpolation_value as f64 / source_rate as f64))
+        - (1f64 - (*interpolation_value as f64 / destination_rate as f64)))
         .ceil()
         .max(0f64) as usize;
 
@@ -105,20 +105,21 @@ fn convert<T: FromSample<f64>, P: PlaybackSource>(
         let mut sample_index: usize = 0;
 
         while sample_index < destination_sample_count {
-            *interpolation_value += destination_rate;
-            while *interpolation_value >= source_rate {
+            while *interpolation_value >= destination_rate {
                 interpolator.next_source_frame([source_samples
                     .next()
                     .expect("Should always have loaded enough samples")
                     .to_sample()]);
-                *interpolation_value -= source_rate;
+                *interpolation_value -= destination_rate;
             }
 
+            let sample: T = interpolator
+                .interpolate(*interpolation_value as f64 / destination_rate as f64)[0]
+                .to_sample();
             for channel_index in 0..channel_count {
-                destination[sample_index * channel_count + channel_index] = interpolator
-                    .interpolate(*interpolation_value as f64 / source_rate as f64)[0]
-                    .to_sample();
+                destination[sample_index * channel_count + channel_index] = sample;
             }
+            *interpolation_value += source_rate;
             sample_index += 1;
         }
     });
@@ -211,12 +212,12 @@ mod tests {
 
     impl PlaybackSource for MockPlaybackSource {
         fn next_samples(&mut self, count: usize, callback: impl FnOnce((&[f32], Option<&[f32]>))) {
-            callback((&self.0[..1], Some(&self.0[1..(count - 1)])));
+            callback((&self.0[..1], Some(&self.0[1..count])));
         }
     }
 
     #[test]
-    fn test_convert() {
+    fn test_convert_e2e() {
         let mut interpolator = Linear::new([1f64; 1], [1f64; 1]);
         let mut interpolator_value = 0u32;
 
@@ -232,5 +233,24 @@ mod tests {
             2,
         );
         assert_eq!(destination, [1f64; 44100]);
+    }
+
+    #[test]
+    fn test_convert_values() {
+        let mut interpolator = Linear::new([-1f64; 1], [0f64; 1]);
+        let mut interpolator_value = 3u32;
+
+        let mut destination = [0f64; 3];
+        let mut source = MockPlaybackSource(vec![3f32, 6f32]);
+        convert(
+            &mut interpolator,
+            &mut interpolator_value,
+            &mut destination,
+            &mut source,
+            2,
+            3,
+            1,
+        );
+        assert_eq!(destination, [0f64, 2f64, 4f64]);
     }
 }
