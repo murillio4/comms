@@ -60,3 +60,9 @@ foreach ($line in $ldd_output) {
     }
 }
 warp-packer --arch windows-x64 --input_dir $package_dir --exec comms.exe --output comms.exe
+$editbin = [Environment]::GetEnvironmentVariable('EDITBIN_PATH')
+if (-not $editbin) {
+    echo "Not hiding startup console window as 'EDITBIN_PATH' environment variable isn't set"
+} else {
+    &$editbin /subsystem:windows comms.exe
+}
