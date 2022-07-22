@@ -177,6 +177,6 @@ fn wait_for_handle_signal(handles: &[HANDLE]) -> Result<usize, String> {
         return Err(description);
     }
 
-    let handle_idx = (result - Threading::WAIT_OBJECT_0) as usize;
+    let handle_idx = (result - Foundation::WAIT_OBJECT_0.0) as usize;
     Ok(handle_idx)
 }
