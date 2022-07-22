@@ -11,8 +11,8 @@
       <object class="GtkFrame">
         <property name="visible">True</property>
         <property name="can-focus">False</property>
-        <property name="margin-left">10</property>
-        <property name="margin-right">10</property>
+        <property name="margin-start">10</property>
+        <property name="margin-end">10</property>
         <property name="margin-top">10</property>
         <property name="label-xalign">0</property>
         <property name="shadow-type">none</property>
@@ -41,8 +41,8 @@
       <object class="GtkFrame">
         <property name="visible">True</property>
         <property name="can-focus">False</property>
-        <property name="margin-left">10</property>
-        <property name="margin-right">10</property>
+        <property name="margin-start">10</property>
+        <property name="margin-end">10</property>
         <property name="label-xalign">0</property>
         <property name="shadow-type">none</property>
         <child>
@@ -90,8 +90,8 @@
         <property name="can-focus">True</property>
         <property name="receives-default">True</property>
         <property name="valign">end</property>
-        <property name="margin-left">10</property>
-        <property name="margin-right">10</property>
+        <property name="margin-start">10</property>
+        <property name="margin-end">10</property>
         <property name="margin-top">10</property>
       </object>
       <packing>
@@ -104,8 +104,8 @@
       <object class="GtkStack" id="connect_progress_stack">
         <property name="visible">True</property>
         <property name="can-focus">False</property>
-        <property name="margin-left">10</property>
-        <property name="margin-right">10</property>
+        <property name="margin-start">10</property>
+        <property name="margin-end">10</property>
         <property name="margin-bottom">5</property>
         <child>
           <object class="GtkBox">
@@ -174,7 +174,6 @@
         </child>
         <child>
           <object class="GtkMenuItem" id="devices_menu">
-            <property name="visible">False</property>
             <property name="can-focus">False</property>
             <property name="label" translatable="yes">_Devices</property>
             <property name="use-underline">True</property>
