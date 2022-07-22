@@ -139,39 +139,6 @@
             </child>
           </object>
         </child>
-        <child>
-          <object class="GtkMenuItem" id="devices_menu">
-            <property name="label" translatable="yes">_Devices</property>
-            <property name="use-underline">1</property>
-            <child type="submenu">
-              <object class="GtkMenu">
-                <property name="visible">1</property>
-                <child>
-                  <object class="GtkMenuItem" id="inputs_menu_item">
-                    <property name="visible">1</property>
-                    <property name="label">Input</property>
-                    <child type="submenu">
-                      <object class="GtkMenu" id="inputs_submenu">
-                        <property name="visible">1</property>
-                      </object>
-                    </child>
-                  </object>
-                </child>
-                <child>
-                  <object class="GtkMenuItem" id="outputs_menu_item">
-                    <property name="visible">1</property>
-                    <property name="label">Output</property>
-                    <child type="submenu">
-                      <object class="GtkMenu" id="outputs_submenu">
-                        <property name="visible">1</property>
-                      </object>
-                    </child>
-                  </object>
-                </child>
-              </object>
-            </child>
-          </object>
-        </child>
       </object>
     </child>
     <child>

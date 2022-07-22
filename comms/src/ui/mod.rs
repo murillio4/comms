@@ -667,7 +667,7 @@ pub fn run(
 
         audio.send(AudioCommand::ListDevices).unwrap();
         let ui_cmd_from_audio: UICommand = ui_receiver.recv().unwrap();
-        let (input_devices, output_devices) = match ui_cmd_from_audio {
+        match ui_cmd_from_audio {
             UICommand::DevicesFound {
                 input_devices,
                 output_devices,
@@ -901,31 +901,6 @@ pub fn run(
                 audio.clone(),
             ));
         });
-
-        let inputs_submenu: gtk::Menu = builder.object("inputs_submenu").unwrap();
-        let outputs_submenu: gtk::Menu = builder.object("outputs_submenu").unwrap();
-
-        for (device_count, device) in input_devices.into_iter().enumerate() {
-            let input_menu_item: gtk::MenuItem = gtk::builders::MenuItemBuilder::new()
-                .label(&device.label)
-                .build();
-            input_menu_item.connect_activate(|_| {
-                //send command switch device
-            });
-            let device_count = device_count as u32;
-            inputs_submenu.attach(&input_menu_item, 0, 1, device_count, device_count + 1);
-        }
-
-        for (device_count, device) in output_devices.into_iter().enumerate() {
-            let output_menu_item: gtk::MenuItem = gtk::builders::MenuItemBuilder::new()
-                .label(&device.label)
-                .build();
-            output_menu_item.connect_activate(|_| {
-                println!("Clicked output menu item button.");
-            });
-            let device_count = device_count as u32;
-            outputs_submenu.attach(&output_menu_item, 0, 1, device_count, device_count + 1);
-        }
 
         let status_box: gtk::Box = builder.object("status_box").unwrap();
         stack.add_named(&status_box, "status");
