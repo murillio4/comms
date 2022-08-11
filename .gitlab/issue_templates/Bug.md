@@ -13,7 +13,6 @@
 ## Additional Info
 <!-- Provide any information that can help replicate the issue as closely as possible !-->
 <!-- Print OS info 
-Linux: "uname -s -r -m"
-Windows: "winver" or "systeminfo"
+Linux: "uname -srm"
+Windows: "ver" (in cmd, not PowerShell)
 !-->
-- **Operating System:**
