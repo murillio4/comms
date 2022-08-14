@@ -509,7 +509,6 @@ impl<'a> Iterator for ServerUdpReadIter<'a> {
     }
 }
 
-#[derive(PartialEq)]
 pub enum UpdateFromStream {
     Success,
     ConnectionClosed,
