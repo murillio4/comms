@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::audio::{NOISE_GATE_CHUNK_LEN, SAMPLES_IN_CHUNK};
 use eframe::egui;
-use eframe::egui::plot::{Legend, Polygon, Value, Values};
+use eframe::egui::plot::{Legend, PlotPoints, Polygon};
 use eframe::egui::Context;
 use eframe::Frame;
 use egui::plot::{HLine, Line, Plot};
@@ -36,7 +36,7 @@ pub enum Command {
 }
 
 fn samples_to_line(samples: &VecDeque<(Instant, f32)>) -> Line {
-    Line::new(Values::from_parametric_callback(
+    Line::new(PlotPoints::from_parametric_callback(
         move |t| {
             let (instant, sample) = samples.get(t as usize).copied().unwrap();
             (
@@ -141,7 +141,7 @@ impl AudioPlot {
         let buckets = &self.buckets;
 
         if buckets.is_empty() {
-            return Line::new(Values::default());
+            return Line::new(PlotPoints::default());
         }
 
         samples_to_line(buckets)
@@ -153,7 +153,7 @@ impl AudioPlot {
         let chunks = &self.chunk_rmses;
 
         if chunks.is_empty() {
-            return Line::new(Values::default());
+            return Line::new(PlotPoints::default());
         }
 
         samples_to_line(chunks)
@@ -165,7 +165,7 @@ impl AudioPlot {
         let chunks = &self.chunk_maxes;
 
         if chunks.is_empty() {
-            return Line::new(Values::default());
+            return Line::new(PlotPoints::default());
         }
 
         samples_to_line(chunks)
@@ -200,20 +200,20 @@ impl AudioPlot {
             if start_x == end_x {
                 // Beginning and end are equivalent (such as when recording happened before
                 // beginning of current window) - don't show a polygon at all.
-                Polygon::new(Values::default())
+                Polygon::new(PlotPoints::default())
             } else {
-                Polygon::new(Values::from_values_iter(
+                Polygon::new(PlotPoints::from_iter(
                     [
-                        Value::new(start_x, 0),
-                        Value::new(start_x, 1),
-                        Value::new(end_x, 1),
-                        Value::new(end_x, 0),
+                        [start_x, 0f64],
+                        [start_x, 1f64],
+                        [end_x, 1f64],
+                        [end_x, 0f64],
                     ]
                     .into_iter(),
                 ))
             }
         } else {
-            Polygon::new(Values::default())
+            Polygon::new(PlotPoints::default())
         }
         .color(Color32::from_rgba_unmultiplied(180, 120, 120, 128))
         .name("Recording")
@@ -267,7 +267,7 @@ impl eframe::App for App {
             egui::menu::bar(ui, |ui| {
                 egui::menu::menu_button(ui, "File", |ui| {
                     if ui.button("Quit").clicked() {
-                        frame.quit();
+                        frame.close();
                     }
                 });
             });

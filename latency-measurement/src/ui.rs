@@ -1,6 +1,6 @@
 mod ui_audio;
 
-use crate::egui::plot::{Legend, Line, Plot, Value, Values};
+use crate::egui::plot::{Legend, Line, Plot, PlotPoint, PlotPoints};
 use crate::egui::{Button, Color32, ProgressBar, Response, Ui, Widget};
 use crate::ui_audio::AudioCommand;
 use eframe::egui;
@@ -55,7 +55,7 @@ struct TimePlot {
     noise_threshold: Option<(Instant, f32)>,
 }
 
-fn samples_to_values(now: &Instant, samples: &[(Instant, f32)]) -> Vec<Value> {
+fn samples_to_values(now: &Instant, samples: &[(Instant, f32)]) -> Vec<PlotPoint> {
     let mut time_marker: Option<Instant> = None;
     let mut existing_samples_at_same_time = 0u128;
     let ms_between_samples = (1000 / TIME_PLOT_SAMPLES_PER_SECOND) as u128;
@@ -69,15 +69,15 @@ fn samples_to_values(now: &Instant, samples: &[(Instant, f32)]) -> Vec<Value> {
                     existing_samples_at_same_time += 1;
                     let millis = (*now - *instant).as_millis() as f64
                         - (existing_samples_at_same_time * ms_between_samples) as f64;
-                    Value::new(millis.neg(), sample)
+                    PlotPoint::new(millis.neg(), sample)
                 } else {
                     existing_samples_at_same_time = 0;
                     time_marker = Some(*instant);
-                    Value::new(((*now - *instant).as_millis() as f64).neg(), sample)
+                    PlotPoint::new(((*now - *instant).as_millis() as f64).neg(), sample)
                 }
             } else {
                 time_marker = Some(*instant);
-                Value::new(((*now - *instant).as_millis() as f64).neg(), sample)
+                PlotPoint::new(((*now - *instant).as_millis() as f64).neg(), sample)
             }
         })
         .collect()
@@ -104,27 +104,23 @@ impl Widget for &mut TimePlot {
             .legend(Legend::default())
             .show(ui, |plot| {
                 plot.line(
-                    Line::new(Values::from_values_iter(
-                        incoming_samples_plot_points.into_iter(),
-                    ))
-                    .name("Incoming Audio")
-                    .color(Color32::from_rgba_unmultiplied(0, 255, 0, 32)),
+                    Line::new(PlotPoints::Owned(incoming_samples_plot_points.clone()))
+                        .name("Incoming Audio")
+                        .color(Color32::from_rgba_unmultiplied(0, 255, 0, 32)),
                 );
                 plot.line(
-                    Line::new(Values::from_values_iter(
-                        outgoing_samples_plot_points.into_iter(),
-                    ))
-                    .name("Outgoing Audio")
-                    .color(Color32::from_rgba_unmultiplied(255, 0, 0, 32)),
+                    Line::new(PlotPoints::Owned(outgoing_samples_plot_points.clone()))
+                        .name("Outgoing Audio")
+                        .color(Color32::from_rgba_unmultiplied(255, 0, 0, 32)),
                 );
                 if let Some((instant, noise_threshold)) = self.noise_threshold {
                     let millis = ((now - instant).as_millis() as f64).neg();
 
                     plot.line(
-                        Line::new(Values::from_values_iter(
+                        Line::new(PlotPoints::from_iter(
                             [
-                                Value::new(millis, noise_threshold),
-                                Value::new(0, noise_threshold),
+                                [millis, noise_threshold as f64],
+                                [0f64, noise_threshold as f64],
                             ]
                             .into_iter(),
                         ))
