@@ -297,6 +297,7 @@ async fn try_connect(
                 ui.pane_stack
                     .set_transition_type(gtk::StackTransitionType::SlideUp);
                 ui.pane_stack.set_visible_child_name("status");
+                ui.window.set_show_menubar(true);
                 ui.state = UiState::Main {
                     user_list_model,
                     client_id,
@@ -345,6 +346,7 @@ async fn disconnect_from_server(
             let pane_stack = &ui.borrow().pane_stack;
             pane_stack.set_transition_type(gtk::StackTransitionType::SlideDown);
             pane_stack.set_visible_child_name("connect");
+            ui.borrow().window.set_show_menubar(false);
         }
         user_list_model.clear();
         audio.send(AudioCommand::ServerDisconnect).unwrap();
@@ -375,6 +377,7 @@ struct UiModel {
     state: UiState,
     pane_stack: gtk::Stack,
     builder: gtk::Builder,
+    window: gtk::ApplicationWindow,
     network_latency_column_ref: Option<ObjectRef>,
 }
 
@@ -689,6 +692,7 @@ pub fn run(
                 saved_volumes: initial_local_storage.volumes,
             },
             pane_stack: stack.clone(),
+            window: window.clone(),
             builder: builder.clone(),
             network_latency_column_ref: None,
         }));
@@ -893,20 +897,29 @@ pub fn run(
             });
         }
 
-        let disconnect_menu_item: gtk::MenuItem = builder.object("disconnect_menu_item").unwrap();
-        disconnect_menu_item.connect_activate(move |_| {
+        let menu = gio::Menu::new();
+        let server_section = gio::Menu::new();
+        menu.append_submenu(Some("_Server"), &server_section);
+        let disconnect_item = gio::MenuItem::new(Some("_Disconnect"), Some("app.disconnect"));
+        server_section.append_item(&disconnect_item);
+
+        app.set_menubar(Some(&menu));
+        window.set_show_menubar(false);
+        let action_disconnect = gio::SimpleAction::new("disconnect", None);
+        action_disconnect.connect_activate(move |_, _| {
             glib_context.spawn_local(disconnect_from_server(
                 ui.clone(),
                 network.clone(),
                 audio.clone(),
             ));
         });
+        app.add_action(&action_disconnect);
 
-        let status_box: gtk::Box = builder.object("status_box").unwrap();
+        let status_box: gtk::ScrolledWindow = builder.object("status_box").unwrap();
         stack.add_named(&status_box, "status");
 
         window.add(&stack);
-        window.show();
+        window.present();
     });
 }
 

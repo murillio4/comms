@@ -114,55 +114,22 @@
       </packing>
     </child>
   </object>
-  <object class="GtkBox" id="status_box">
+  <object class="GtkScrolledWindow" id="status_box">
     <property name="visible">1</property>
-    <property name="orientation">vertical</property>
+    <property name="can-focus">1</property>
+    <property name="hscrollbar-policy">never</property>
+    <property name="shadow-type">etched-in</property>
     <child>
-      <object class="GtkMenuBar">
-        <property name="visible">1</property>
-        <child>
-          <object class="GtkMenuItem">
-            <property name="visible">1</property>
-            <property name="label" translatable="yes">_Server</property>
-            <property name="use-underline">1</property>
-            <child type="submenu">
-              <object class="GtkMenu">
-                <property name="visible">1</property>
-                <child>
-                  <object class="GtkMenuItem" id="disconnect_menu_item">
-                    <property name="visible">1</property>
-                    <property name="label" translatable="yes">_Disconnect</property>
-                    <property name="use-underline">1</property>
-                  </object>
-                </child>
-              </object>
-            </child>
-          </object>
-        </child>
-      </object>
-    </child>
-    <child>
-      <object class="GtkScrolledWindow">
+      <object class="GtkTreeView" id="status_treeview">
         <property name="visible">1</property>
         <property name="can-focus">1</property>
-        <property name="hscrollbar-policy">never</property>
-        <property name="shadow-type">etched-in</property>
-        <child>
-          <object class="GtkTreeView" id="status_treeview">
-            <property name="visible">1</property>
-            <property name="can-focus">1</property>
-            <property name="vexpand">1</property>
-            <property name="headers-visible">0</property>
-            <property name="enable-search">0</property>
-            <child internal-child="selection">
-              <object class="GtkTreeSelection"/>
-            </child>
-          </object>
+        <property name="vexpand">1</property>
+        <property name="headers-visible">0</property>
+        <property name="enable-search">0</property>
+        <child internal-child="selection">
+          <object class="GtkTreeSelection"/>
         </child>
       </object>
-      <packing>
-        <property name="position">1</property>
-      </packing>
     </child>
   </object>
 </interface>
