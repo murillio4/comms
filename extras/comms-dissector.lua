@@ -2,11 +2,12 @@
 -- option in Right click on message -> Decode As -> COMMS
 
 local comms_protocol = Proto("Comms", "Comms Package Data")
-local kind_field = ProtoField.uint8("comms.kind", "kind", base.DEC)
-local id_field = ProtoField.uint64("comms.id", "id", base.DEC)
-local body_len_field = ProtoField.new("comms.body_len", "body_len", ftypes.UINT16)
-local reply_to_field = ProtoField.new("comms.reply_to", "reply_to", ftypes.BYTES)
-
+local kind_field = ProtoField.new("kind", "comms.kind", ftypes.UINT8)
+local id_field = ProtoField.new("id", "comms.id", ftypes.UINT64)
+local body_len_field = ProtoField.new("body_len", "comms.body_len", ftypes.UINT16)
+local reply_to = ProtoField.new("reply_to", "comms.reply_to", ftypes.BYTES)
+local padding = ProtoField.new("padding", "comms.padding", ftypes.BYTES)
+local body = ProtoField.new("body", "comms.body", ftypes.BYTES)
 
 local expert_unknown_kind = ProtoExpert.new("comms.unknown_kind", "Package Kind is not known",
     expert.group.MALFORMED,
@@ -26,7 +27,7 @@ local expert_tcp_kind_id_used_in_udp = ProtoExpert.new("comms.tcp_kind_id_used_i
     expert.group.MALFORMED,
     expert.severity.ERROR);
 
-comms_protocol.fields = { kind_field, id_field, body_len_field, reply_to_field }
+comms_protocol.fields = { kind_field, id_field, body_len_field, reply_to, padding, body }
 comms_protocol.experts = { expert_bad_port_type, expert_unknown_kind, expert_udp_kind_id_used_in_tcp,
     expert_tcp_kind_id_used_in_udp }
 
@@ -104,10 +105,20 @@ function comms_protocol.dissector(buffer, pinfo, tree)
     elseif port_type == "TCP" and message_kind_id_expected_port_type[kind_id] == "UDP" then
         subtree:add_proto_expert_info(expert_udp_kind_id_used_in_tcp)
     end
-    subtree:add_le(kind_field, buffer(0, 1))
-    subtree:add_le(id_field, buffer(1, 8))
-    subtree:add_le(body_len_field, buffer(9, 2))
-    subtree:add(reply_to_field, buffer(11))
+    local header_subtree = subtree:add(comms_protocol, buffer(0, 24),
+        "Header")
+    header_subtree:add_le(kind_field, buffer(0, 1))
+    header_subtree:add_le(id_field, buffer(1, 8))
+    header_subtree:add_le(body_len_field, buffer(9, 2))
+
+    if buffer(11, 1):uint() == 0 then
+        header_subtree:add(reply_to, buffer(11, 1))
+        header_subtree:add(padding, buffer(12, 12))
+    else
+        header_subtree:add(reply_to, buffer(11, 9))
+        header_subtree:add(padding, buffer(20, 4))
+    end
+    subtree:add(body, buffer(24))
 
 end
 
