@@ -604,21 +604,6 @@ pub fn run(
     ui_receiver: std::sync::mpsc::Receiver<UICommand>,
     audio: AudioHandle,
 ) {
-    #[cfg(not(debug_assertions))]
-    {
-        let self_path = std::env::current_exe().unwrap();
-        let pixbuf_module_path = self_path.parent().unwrap().join("loaders.cache");
-
-        // Comms in run in "release mode" in two contexts:
-        // 1. When actually bundled with its other warp-packer files
-        // 2. When run with "cargo build --release"
-        // To avoid breaking the second use case, only specify GDK_PIXBUF_MODULE_FILE
-        // when our custom pixbuf file exists (which it will for the warp-packed use case).
-        if pixbuf_module_path.exists() {
-            std::env::set_var("GDK_PIXBUF_MODULE_FILE", pixbuf_module_path.as_os_str());
-        }
-    }
-
     let initial_local_storage: Option<LocalStorage> = ProjectDirs::from("", "Comms", "Comms")
         .and_then(|project_dirs| {
             std::fs::read_to_string(project_dirs.data_dir().join("local_storage")).ok()

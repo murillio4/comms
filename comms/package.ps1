@@ -1,12 +1,8 @@
+# Expects the following environment variables to be set:
+# DUMPBIN_PATH: path to the VS Build Tools "dumpbin.exe" binary
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-
-$msys_dir = "C:\msys64"
-if (-not (Test-Path -Path $msys_dir)) {
-    echo "MSYS2 is required to package comms (MSYS2 is not installed)"
-    exit 1
-}
-$msys_bin_dir = Join-Path $msys_dir -ChildPath "usr\bin"
 
 $repo_dir = (Get-Item $MyInvocation.MyCommand.Path).Directory.Parent.FullName
 Push-Location $repo_dir
@@ -26,39 +22,43 @@ if (-not (Test-Path -Path $comms_path)) {
 $package_dir = Join-Path -Path $repo_dir -ChildPath "package"
 Remove-Item $package_dir -Recurse -ErrorAction Ignore
 [void](mkdir $package_dir)
-cp $comms_path $package_dir
-cp (Join-Path -Path $msys_dir -ChildPath "mingw64\bin\gdbus.exe") $package_dir
-cp (Join-Path -Path $msys_dir -ChildPath "mingw64\lib\gdk-pixbuf-2.0\2.10.0\loaders\libpixbufloader-png.dll") $package_dir
 
-[void](New-Item (Join-Path -Path $package_dir -ChildPath "loaders.cache") -ItemType File -Value @"
-# GdkPixbuf Image Loader Modules file
-# Automatically generated file, do not edit
-# Created by gdk-pixbuf-query-loaders from gdk-pixbuf-2.42.2
-#
-# LoaderDir = C:\msys64\mingw64\lib\gdk-pixbuf-2.0\2.10.0\loaders
-#
-"libpixbufloader-png.dll"
-"png" 5 "gdk-pixbuf" "PNG" "LGPL"
-"image/png" ""
-"png" ""
-"\211PNG\r\n\032\n" "" 100
+$dumpbin = [Environment]::GetEnvironmentVariable('DUMPBIN_PATH')
+$global:handled_dependencies = @()
+function CopyWithDependencies {
+    param (
+        $resource_path
+    )
 
+    echo "Copying $resource_path"
+    cp $resource_path $package_dir
 
-"@)
+    $dumpbin_output = & $dumpbin /dependents $resource_path
+    foreach ($line in $dumpbin_output) {
+        if ((-not $line.EndsWith(".dll")) -or (-not $line.StartsWith("    "))) {
+            continue
+        }
 
-$ldd = Join-Path -Path $msys_bin_dir -ChildPath "ldd.exe"
-$cygpath = Join-Path -Path $msys_bin_dir -ChildPath "cygpath.exe"
-$ldd_output = & $ldd $comms_path
-$ldd_output += & $ldd (Join-Path -Path $package_dir -ChildPath "gdbus.exe")
-foreach ($line in $ldd_output) {
-    $dll_path_with_address = ($line.Trim() -split " => ", 2)[1]
-    $dll_path_cygwin = ($dll_path_with_address.Trim() -split " ")[0]
-    if (-not $dll_path_cygwin.StartsWith("/c/")) {
-        $dll_path = & $cygpath -w $dll_path_cygwin
-        echo "Copying $dll_path"
-        cp $dll_path $package_dir
+        $dll_name = $line.Trim()
+        if ($global:handled_dependencies.Contains($dll_name)) {
+            continue
+        }
+
+        $global:handled_dependencies += $dll_name
+        $dll_path = where.exe $dll_name
+
+        if (-not $dll_path.Contains("gtk-build\gtk\x64")) {
+            continue
+        }
+
+        CopyWithDependencies $dll_path
     }
 }
+
+CopyWithDependencies $comms_path
+CopyWithDependencies (where.exe gdbus.exe)
+
+Remove-Item comms.exe -ErrorAction Ignore
 warp-packer --arch windows-x64 --input_dir $package_dir --exec comms.exe --output comms.exe
 $editbin = [Environment]::GetEnvironmentVariable('EDITBIN_PATH')
 if (-not $editbin) {
