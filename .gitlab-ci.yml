@@ -59,6 +59,7 @@ build_release_windows:
     - cargo build --all --release
     - comms/package.ps1
     - comms/sign.ps1
+    - sentry-cli upload-dif .\target\release\comms.pdb --org comms --project comms-app --include-sources
   when: manual
   artifacts:
     paths:
