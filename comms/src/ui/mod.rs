@@ -706,22 +706,8 @@ pub fn run(
             ui.clone(),
         ));
 
-        let create_icon = |name| {
-            let stream =
-                gio::ReadInputStream::new(RESOURCES_DIR.get_file(name).unwrap().contents());
-            gdk_pixbuf::Pixbuf::from_stream(&stream, None as Option<&gio::Cancellable>).unwrap()
-        };
-
         window.set_title("Comms");
         window.set_default_size(280, 250);
-        window.set_position(gtk::WindowPosition::Center);
-        window.set_icon_list(&[
-            create_icon("logo-16.png"),
-            create_icon("logo-32.png"),
-            create_icon("logo-48.png"),
-            create_icon("logo-256.png"),
-        ]);
-
         stack.set_transition_duration(300);
 
         // --- Setup for connect-to-server state
