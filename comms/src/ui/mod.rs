@@ -12,8 +12,8 @@ use gio::ApplicationFlags;
 use glib::object::ObjectRef;
 use gtk::prelude::*;
 use gtk::{
-    CellRendererText, DialogFlags, Orientation, PositionType, ResponseType, TreeView,
-    TreeViewColumn,
+    gdk, CellRendererText, DialogFlags, Orientation, PositionType, ResponseType, StyleContext,
+    TreeView, TreeViewColumn,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +26,7 @@ use crate::network::ipc::{ConnectError, NetworkCommand, NetworkEvent, NetworkHan
 use crate::ui::ipc::{AudioIPCInitStatus, UICommand};
 use comms_lib::network::CommsNetworkError;
 use glib::timeout_add_local;
+use gtk::gdk::Display;
 use uuid::Uuid;
 
 pub mod ipc;
@@ -170,7 +171,7 @@ async fn try_connect(
                     status_treeview.connect_query_tooltip(
                         move |treeview, x, y, keyboard_mode, tooltip| {
                             let (path, column) = if keyboard_mode {
-                                treeview.cursor()
+                                TreeViewExt::cursor(treeview)
                             } else {
                                 let (bin_x, bin_y) =
                                     treeview.convert_widget_to_bin_window_coords(x, y);
@@ -211,13 +212,13 @@ async fn try_connect(
                                 Ok(one_way_latency),
                             ) = (
                                 user_list_model
-                                    .value(&iter, Columns::IsPeerToPeer as i32)
+                                    .get_value(&iter, Columns::IsPeerToPeer as i32)
                                     .get::<bool>(),
                                 user_list_model
-                                    .value(&iter, Columns::IsCurrentUser as i32)
+                                    .get_value(&iter, Columns::IsCurrentUser as i32)
                                     .get::<bool>(),
                                 user_list_model
-                                    .value(&iter, Columns::NetworkLatency as i32)
+                                    .get_value(&iter, Columns::NetworkLatency as i32)
                                     .get::<String>(),
                             ) {
                                 let text = match (is_peer_to_peer, is_current_user) {
@@ -425,7 +426,7 @@ async fn handle_network_events(
                     let iter = user_list_model.iter_first().unwrap();
                     let iter = loop {
                         if let Ok(row_client_id) = user_list_model
-                            .value(&iter, Columns::Id as i32)
+                            .get_value(&iter, Columns::Id as i32)
                             .get::<u32>()
                         {
                             if row_client_id == client_id as u32 {
@@ -440,7 +441,7 @@ async fn handle_network_events(
 
                     if let Some(iter) = iter {
                         if let Ok(is_already_peer_to_peer) = user_list_model
-                            .value(&iter, Columns::IsPeerToPeer as i32)
+                            .get_value(&iter, Columns::IsPeerToPeer as i32)
                             .get::<bool>()
                         {
                             if !is_already_peer_to_peer || is_from_lead_client {
@@ -551,7 +552,7 @@ async fn handle_network_events(
                                 let iter = user_list_model.iter_first().unwrap();
                                 loop {
                                     let value = user_list_model
-                                        .value(&iter, Columns::Id as i32)
+                                        .get_value(&iter, Columns::Id as i32)
                                         .get::<u32>()
                                         .unwrap();
                                     if value == id {
@@ -632,6 +633,15 @@ pub fn run(
     }
 
     gtk_start(move |app| {
+        let css_provider = gtk::CssProvider::new();
+        css_provider.load_from_data(RESOURCES_DIR.get_file("theme.css").unwrap().contents());
+
+        StyleContext::add_provider_for_display(
+            &Display::default().unwrap(),
+            &css_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+
         let window = gtk::ApplicationWindow::new(app);
 
         let command = ui_receiver.recv().unwrap();
@@ -659,7 +669,6 @@ pub fn run(
                 DialogFlags::USE_HEADER_BAR.union(DialogFlags::DESTROY_WITH_PARENT),
                 &[("_Close", ResponseType::Close)],
             );
-            dialog.set_position(gtk::WindowPosition::Center);
             let app = app.clone();
             dialog.connect_response(move |_, _| {
                 app.quit();
@@ -706,7 +715,7 @@ pub fn run(
             ui.clone(),
         ));
 
-        window.set_title("Comms");
+        window.set_title(Some("Comms"));
         window.set_default_size(280, 250);
         stack.set_transition_duration(300);
 
@@ -756,10 +765,12 @@ pub fn run(
             submit_fn();
         });
         let connect_form: gtk::Box = builder.object("connect_form").unwrap();
-        stack.add_named(&connect_form, "connect");
+        stack.add_named(&connect_form, Some("connect"));
 
         // --- Setup for main state
 
+        let box_containing_treeview: gtk::Box =
+            builder.object("box_containing_status_treeview").unwrap();
         let treeview: gtk::TreeView = builder.object("status_treeview").unwrap();
         let username_column = TreeViewColumn::with_attributes(
             "Users",
@@ -784,102 +795,109 @@ pub fn run(
             let audio = audio.clone();
             let ui = ui.clone();
 
-            treeview.connect_button_press_event(move |treeview, event| {
-                if event.event_type() == gtk::gdk::EventType::ButtonPress && event.button() == 3 {
-                    let position = (event.position().0 as i32, event.position().1 as i32);
-                    if let Some(user) = treeview.path_at_pos(position.0, position.1) {
-                        let model = treeview.model().unwrap();
-                        let iter = model.iter(user.0.as_ref().unwrap()).unwrap();
+            let click_gesture = gtk::GestureClick::new();
+            click_gesture.set_button(3);
+            treeview.add_controller(&click_gesture);
+            click_gesture.connect_pressed(move |_, _, x, y| {
+                let x = x.round() as i32;
+                let y = y.round() as i32;
+                if let Some(user) = treeview.path_at_pos(x, y) {
+                    let model = treeview.model().unwrap();
+                    let iter = model.iter(user.0.as_ref().unwrap()).unwrap();
 
-                        let client_id =
-                            model.value(&iter, Columns::Id as i32).get::<u32>().unwrap();
-                        let user_id: UserId = UserId::from_str(
-                            &model
-                                .value(&iter, Columns::UserId as i32)
-                                .get::<String>()
-                                .unwrap(),
-                        )
+                    let client_id = model
+                        .get_value(&iter, Columns::Id as i32)
+                        .get::<u32>()
+                        .unwrap();
+                    let user_id: UserId = UserId::from_str(
+                        &model
+                            .get_value(&iter, Columns::UserId as i32)
+                            .get::<String>()
+                            .unwrap(),
+                    )
+                    .unwrap();
+
+                    let volume = model
+                        .get_value(&iter, Columns::Volume as i32)
+                        .get::<u32>()
+                        .unwrap();
+                    let is_current_user = model
+                        .get_value(&iter, Columns::IsCurrentUser as i32)
+                        .get::<bool>()
                         .unwrap();
 
-                        let volume = model
-                            .value(&iter, Columns::Volume as i32)
-                            .get::<u32>()
-                            .unwrap();
-                        let is_current_user = model
-                            .value(&iter, Columns::IsCurrentUser as i32)
-                            .get::<bool>()
-                            .unwrap();
+                    let popover = gtk::Popover::new();
+                    let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-                        let popover = gtk::Popover::new(Some(treeview));
-                        let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                    let label_text = match is_current_user {
+                        true => "Headphone Volume",
+                        false => "Volume",
+                    };
 
-                        let label_text = match is_current_user {
-                            true => "Headphone Volume",
-                            false => "Volume",
+                    let adjustment =
+                        gtk::Adjustment::new(volume as f64, 0.0, 400.0, 2.0, 10.0, 0.0);
+                    let scale = gtk::builders::ScaleBuilder::new()
+                        .adjustment(&adjustment)
+                        .value_pos(PositionType::Left)
+                        .orientation(Orientation::Horizontal)
+                        .digits(0)
+                        .draw_value(true)
+                        .build();
+
+                    scale.add_mark(100.0, gtk::PositionType::Bottom, None);
+                    scale.add_mark(200.0, gtk::PositionType::Bottom, None);
+                    scale.add_mark(300.0, gtk::PositionType::Bottom, None);
+                    scale.set_width_request(200);
+
+                    popover_box.insert_child_after(&scale, None::<&gtk::Widget>);
+                    popover_box.insert_child_after(
+                        &gtk::builders::LabelBuilder::new().label(label_text).build(),
+                        None::<&gtk::Widget>,
+                    );
+
+                    let audio = audio.clone();
+                    let ui = ui.clone();
+                    scale.connect_value_changed(move |scale| {
+                        let state = &mut ui.borrow_mut().state;
+                        let (user_list_model, saved_volumes) = if let UiState::Main {
+                            user_list_model,
+                            saved_volumes,
+                            ..
+                        } = state
+                        {
+                            (user_list_model, saved_volumes)
+                        } else {
+                            return;
                         };
-                        popover_box
-                            .add(&gtk::builders::LabelBuilder::new().label(label_text).build());
 
-                        let adjustment =
-                            gtk::Adjustment::new(volume as f64, 0.0, 400.0, 2.0, 10.0, 0.0);
-                        let scale = gtk::builders::ScaleBuilder::new()
-                            .adjustment(&adjustment)
-                            .value_pos(PositionType::Left)
-                            .orientation(Orientation::Horizontal)
-                            .digits(0)
-                            .build();
-
-                        scale.add_mark(100.0, gtk::PositionType::Bottom, None);
-                        scale.add_mark(200.0, gtk::PositionType::Bottom, None);
-                        scale.add_mark(300.0, gtk::PositionType::Bottom, None);
-
-                        scale.set_width_request(200);
-                        popover_box.add(&scale);
-
-                        let audio = audio.clone();
-                        let ui = ui.clone();
-                        scale.connect_value_changed(move |scale| {
-                            let state = &mut ui.borrow_mut().state;
-                            let (user_list_model, saved_volumes) = if let UiState::Main {
-                                user_list_model,
-                                saved_volumes,
-                                ..
-                            } = state
-                            {
-                                (user_list_model, saved_volumes)
+                        let new_volume = scale.adjustment().value() as u16;
+                        audio
+                            .send(if is_current_user {
+                                AudioCommand::ChangeMainVolume(new_volume)
                             } else {
-                                return;
-                            };
+                                AudioCommand::ChangeClientVolume(client_id as ClientId, new_volume)
+                            })
+                            .unwrap();
 
-                            let new_volume = scale.adjustment().value() as u16;
-                            audio
-                                .send(if is_current_user {
-                                    AudioCommand::ChangeMainVolume(new_volume)
-                                } else {
-                                    AudioCommand::ChangeClientVolume(
-                                        client_id as ClientId,
-                                        new_volume,
-                                    )
-                                })
-                                .unwrap();
+                        let values: [(u32, &dyn ToValue); 1] =
+                            [(Columns::Volume as u32, &(new_volume as u32))];
+                        user_list_model.set(&iter, &values);
 
-                            let values: [(u32, &dyn ToValue); 1] =
-                                [(Columns::Volume as u32, &(new_volume as u32))];
-                            user_list_model.set(&iter, &values);
+                        saved_volumes.insert(user_id, new_volume);
+                        let glib_context = glib::MainContext::default();
+                        glib_context.spawn_local(update_saved_volumes(saved_volumes.clone()));
+                    });
 
-                            saved_volumes.insert(user_id, new_volume);
-                            let glib_context = glib::MainContext::default();
-                            glib_context.spawn_local(update_saved_volumes(saved_volumes.clone()));
-                        });
+                    let rectangle = gdk::Rectangle::new(x, y, 0, 0);
+                    popover.set_pointing_to(Some(&rectangle));
+                    box_containing_treeview.insert_child_after(&popover, None::<&gtk::Widget>);
+                    popover.set_child(Some(&popover_box));
+                    popover.popup();
 
-                        let rectangle = gtk::Rectangle::new(position.0, position.1, 0, 0);
-                        popover.set_pointing_to(&rectangle);
-                        popover.add(&popover_box);
-                        popover.popup();
-                        popover.show_all();
-                    }
+                    popover.connect_closed(|popover| {
+                        popover.unparent();
+                    });
                 }
-                Inhibit(false)
             });
         }
 
@@ -902,9 +920,9 @@ pub fn run(
         app.add_action(&action_disconnect);
 
         let status_box: gtk::ScrolledWindow = builder.object("status_box").unwrap();
-        stack.add_named(&status_box, "status");
+        stack.add_named(&status_box, Some("status"));
 
-        window.add(&stack);
+        window.set_child(Some(&stack));
         window.present();
     });
 }
