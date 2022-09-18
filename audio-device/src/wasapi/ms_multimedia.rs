@@ -21,7 +21,7 @@ pub fn is_format_supported(
         client.IsFormatSupported(
             Audio::AUDCLNT_SHAREMODE_SHARED,
             waveformatex,
-            &mut closest_waveformatex.as_mut_ptr(),
+            Some(&mut closest_waveformatex.as_mut_ptr()),
         )
     } {
         Foundation::S_OK => Ok(None),

@@ -9,14 +9,14 @@ use crate::wasapi::stream::Format;
 use std::ffi::OsString;
 use std::ops::Deref;
 use std::os::windows::ffi::OsStringExt;
-use std::{ptr, slice};
+use std::slice;
 use windows::core::Interface;
 use windows::Win32::Devices::Properties;
 use windows::Win32::Foundation;
 use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::Media::Audio;
 use windows::Win32::System::Com::StructuredStorage;
-use windows::Win32::System::{Com, Ole, Threading};
+use windows::Win32::System::{Com, Threading};
 
 pub struct InputDevice {
     device: IMMDeviceWrapper,
@@ -77,7 +77,7 @@ impl IAudioClientWrapper {
                 Audio::AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                 min_period,
                 &format_attempt.Format,
-                ptr::null(),
+                None,
             )
         } {
             Err(ref e) if e.code() == Audio::AUDCLNT_E_DEVICE_INVALIDATED => {
@@ -107,7 +107,7 @@ impl IAudioClientWrapper {
     }
 
     pub fn create_notify(&self) -> Result<WasapiEventLoopRegistration, BuildStreamError> {
-        let event = match unsafe { Threading::CreateEventA(ptr::null(), false, false, None) } {
+        let event = match unsafe { Threading::CreateEventA(None, false, false, None) } {
             Ok(event) => event,
             Err(err) => {
                 return Err(BuildStreamError::BackendSpecific(format!(
@@ -178,7 +178,7 @@ impl IAudioClientWrapper {
         immdevice: &Audio::IMMDevice,
     ) -> Result<IAudioClientWrapper, windows::core::Error> {
         let audio_client: Audio::IAudioClient3 =
-            unsafe { immdevice.Activate(Com::CLSCTX_ALL, ptr::null()) }?;
+            unsafe { immdevice.Activate(Com::CLSCTX_ALL, None) }?;
         Ok(IAudioClientWrapper(audio_client))
     }
 }
@@ -192,8 +192,7 @@ pub struct DeviceNameError {
 
 impl IMMDeviceWrapper {
     fn name(&self) -> Result<String, DeviceNameError> {
-        let property_store =
-            unsafe { self.0.OpenPropertyStore(StructuredStorage::STGM_READ) }.unwrap();
+        let property_store = unsafe { self.0.OpenPropertyStore(Com::STGM_READ) }.unwrap();
 
         let mut property_value = match unsafe {
             property_store.GetValue(&std::mem::transmute(
@@ -207,7 +206,7 @@ impl IMMDeviceWrapper {
             }
         };
 
-        if unsafe { property_value.Anonymous.Anonymous.vt } != Ole::VT_LPWSTR.0 as u16 {
+        if unsafe { property_value.Anonymous.Anonymous.vt } != Com::VT_LPWSTR {
             let description = format!("property store produced invalid data: {:?}", unsafe {
                 property_value.Anonymous.Anonymous.vt
             });

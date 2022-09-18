@@ -1,7 +1,6 @@
 use crate::audio_connection::{EventLoop, EventLoopNotify};
 use crate::buffer::{InterruptReceiver, MaybeSharedPlaybackSource, MicSink, PlaybackSource};
 use crate::wasapi::audio_connection::WasapiAudioConnection;
-use std::ptr;
 use windows::Win32::Foundation;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::{SystemServices, Threading};
@@ -28,7 +27,7 @@ impl EventLoopNotify for WasapiEventLoopNotify {
 }
 
 pub fn event_loop_channel() -> (WasapiEventLoopRegistration, WasapiEventLoopNotify) {
-    let win_handle = unsafe { Threading::CreateEventA(ptr::null(), false, false, None) }.unwrap();
+    let win_handle = unsafe { Threading::CreateEventA(None, false, false, None) }.unwrap();
     (
         WasapiEventLoopRegistration { win_handle },
         WasapiEventLoopNotify { win_handle },
@@ -171,12 +170,12 @@ impl<
 fn wait_for_handle_signal(handles: &[HANDLE]) -> Result<usize, String> {
     debug_assert!(handles.len() <= SystemServices::MAXIMUM_WAIT_OBJECTS as usize);
     let result = unsafe { Threading::WaitForMultipleObjectsEx(handles, false, u32::MAX, false) };
-    if result == Foundation::WAIT_FAILED.0 {
+    if result == Foundation::WAIT_FAILED {
         let err = unsafe { Foundation::GetLastError() };
         let description = format!("WaitForMultipleObjectsEx failed: {:?}", err);
         return Err(description);
     }
 
-    let handle_idx = (result - Foundation::WAIT_OBJECT_0.0) as usize;
+    let handle_idx = (result.0 - Foundation::WAIT_OBJECT_0.0) as usize;
     Ok(handle_idx)
 }

@@ -4,7 +4,7 @@ use crate::wasapi::event_loop::WasapiEventLoopRegistration;
 use crate::wasapi::sample_rate_conversion::{MicSampleRateConverter, PlaybackSampleRateConverter};
 use dasp::Sample;
 use std::mem::MaybeUninit;
-use std::{mem, ptr, slice};
+use std::{mem, slice};
 use windows::Win32::Media::Audio;
 
 #[derive(Debug, Clone, Copy)]
@@ -94,8 +94,7 @@ impl<M: MicSink> WasapiMicStream<M> {
 
     pub fn invoke(&mut self, mic_buffer: &mut M) -> Result<(), StreamError> {
         let mut buffer = MaybeUninit::<*mut u8>::uninit();
-        // TODO remove flags? Maybe ptr::null_mut instead?
-        let mut flags = MaybeUninit::<_>::uninit();
+        let mut flags = 0u32;
 
         loop {
             let mut frames_available = match unsafe { self.capture_client.GetNextPacketSize() } {
@@ -109,11 +108,11 @@ impl<M: MicSink> WasapiMicStream<M> {
 
             match unsafe {
                 self.capture_client.GetBuffer(
-                    buffer.as_mut_ptr(),
+                    &mut *buffer.as_mut_ptr(),
                     &mut frames_available,
-                    flags.as_mut_ptr(),
-                    ptr::null_mut(),
-                    ptr::null_mut(),
+                    &mut flags,
+                    None,
+                    None,
                 )
             } {
                 Ok(()) => {}

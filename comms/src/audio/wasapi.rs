@@ -7,7 +7,6 @@ use audio_device::wasapi::audio_connection::{
 use audio_device::wasapi::event_loop::{
     WasapiEventLoop, WasapiEventLoopNotify, WasapiEventLoopRegistration,
 };
-use std::ptr;
 use windows::Win32::System::Threading;
 
 pub struct WasapiAudioPlatform;
@@ -24,8 +23,7 @@ impl AudioPlatform for WasapiAudioPlatform {
     }
 
     fn create_channel() -> (Self::Registration, Self::Notify) {
-        let win_handle =
-            unsafe { Threading::CreateEventA(ptr::null(), false, false, None) }.unwrap();
+        let win_handle = unsafe { Threading::CreateEventA(None, false, false, None) }.unwrap();
         (
             WasapiEventLoopRegistration { win_handle },
             WasapiEventLoopNotify { win_handle },
