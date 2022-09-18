@@ -66,3 +66,13 @@ if (-not $editbin) {
 } else {
     &$editbin /subsystem:windows comms.exe
 }
+
+if (Get-Command "ResourceHacker.exe" -ErrorAction SilentlyContinue) {
+    ResourceHacker.exe -open comms.exe -save comms.exe -action addskip -res comms\resources\logo.ico -mask "ICONGROUP,MAINICON,"
+    # ResourceHacker forks and dumps output after, which dirties the terminal. This "sleep and echo" ensures that
+    # a clean prompt is available afterwards.
+    sleep 1
+    echo ""
+} else {
+    echo "Not setting packed executable's icon as 'ResourceHacker.exe' isn't in the $PATH"
+}

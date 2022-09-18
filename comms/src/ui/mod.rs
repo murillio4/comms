@@ -594,7 +594,8 @@ fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
     application.run();
 }
 
-static RESOURCES_DIR: include_dir::Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/resources");
+static RESOURCES_DIR: include_dir::Dir =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/resources/embedded");
 
 pub fn run(
     network: NetworkHandle,
