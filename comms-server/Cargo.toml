@@ -1,7 +1,7 @@
 [package]
 name = "comms-server"
 version = "0.1.0"
-authors = ["Mitchell Hentges <mitch9654@mozilla.com>"]
+authors = ["Mitchell Hentges <mitch9654@gmail.com>"]
 edition = "2021"
 
 [dependencies]
