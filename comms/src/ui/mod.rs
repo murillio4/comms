@@ -583,9 +583,9 @@ async fn handle_network_events(
     }
 }
 
-fn gtk_start(f: impl FnOnce(&gtk::Application) + 'static) {
+fn gtk_start(f: impl FnOnce(&adw::Application) + 'static) {
     let application =
-        gtk::Application::new(Some("ca.mitchhentges.comms"), ApplicationFlags::NON_UNIQUE);
+        adw::Application::new(Some("ca.mitchhentges.comms"), ApplicationFlags::NON_UNIQUE);
 
     let o = RefCell::new(Some(f));
     application.connect_startup(move |a| {

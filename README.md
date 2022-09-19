@@ -28,7 +28,7 @@ Round-trip audio latency, as casually measured from residential internet:
 
 ## Linux Build Instructions
 
-1. Install `rust`, GTK3 libs, opus libs
+1. Install `rust`, GTK4 libs, Libadwaita, and opus libs
 2. From `comms`, run `cargo run`
 
 ## Windows Build Instructions
@@ -37,8 +37,16 @@ Round-trip audio latency, as casually measured from residential internet:
 2. Follow the [`gvsbuild` steps to build GTK3 with MSVC tools](https://github.com/wingtk/gvsbuild)
     * When adding `C:\gtk-build\gtk\x64\release\bin` to your `PATH`, do it from the "System Properties" menu:
       `$env:Path` (as recommended in the `gvsbuild` docs) only affects the shell that runs that command
-3. Ensure Rust is using the `msvc` toolchain, if it isn't already: `rustup default stable-msvc`
-4. From `comms`, run `cargo run --bin comms`
+3. Build Libadwaita:
+   1. From the Windows start menu, run `x64 Native Tools Command Prompt for VS 2019`
+   2. `cd C:\gtk-build\github`
+   3. `git clone https://gitlab.gnome.org/GNOME/libadwaita.git`
+   4. `git checkout libadwaita-1-2`
+   5. `cd libadwaita`
+   6. `meson setup builddir -Dprefix=C:\gtk-build\gtk\x64\release -Dintrospection=disabled -Dvapi=false -Dexamples=false -Dtests=false`
+   7. `meson install -C builddir`
+4. Ensure Rust is using the `msvc` toolchain, if it isn't already: `rustup default stable-msvc`
+5From `comms`, run `cargo run --bin comms`
 
 ### Windows _Faster_ Build Instructions
 
