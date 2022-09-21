@@ -30,6 +30,13 @@ fn main() {
         ))
     };
 
+    #[cfg(windows)]
+    {
+        // Memory usage on Windows with the opengl/gl/vulkan renderers are much higher,
+        // so explicitly fall back to tried 'n true "cairo".
+        std::env::set_var("GSK_RENDERER", "cairo");
+    }
+
     let orig_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
         orig_hook(panic_info);
