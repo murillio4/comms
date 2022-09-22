@@ -23,7 +23,6 @@ build_windows:
     - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo test
     - cargo build --all
-  when: manual
   tags:
     - windows
 
@@ -60,7 +59,6 @@ build_release_windows:
     - comms/package.ps1
     - comms/sign.ps1
     - sentry-cli upload-dif .\target\release\comms.pdb --org comms --project comms-app --include-sources
-  when: manual
   artifacts:
     paths:
       - comms.exe
