@@ -325,9 +325,7 @@ impl<'a> TcpReadIter<'a> {
         loop {
             let iter_option = self.next_frame();
             if let Some(result) = iter_option {
-                if let Err(e) = result.map_err(|e| e.into()).and_then(&mut f) {
-                    return Err(e);
-                }
+                result.map_err(|e| e.into()).and_then(&mut f)?
             } else {
                 break;
             }
@@ -476,9 +474,7 @@ impl ServerUdpReadIter<'_> {
             return Err(e);
         }
         for (result, addr) in self {
-            if let Err(e) = result.map_err(|e| e.into()).and_then(|p| f(p, addr)) {
-                return Err(e);
-            }
+            result.map_err(|e| e.into()).and_then(|p| f(p, addr))?
         }
         Ok(())
     }
