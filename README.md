@@ -35,20 +35,22 @@ Round-trip audio latency, as casually measured from residential internet:
 
 1. Install [`rust`](https://rustup.rs/). Follow the directions and install the Visual Studio tools Rust recommends.
 2. Follow the [`gvsbuild` steps to build GTK3 with MSVC tools](https://github.com/wingtk/gvsbuild)
-    * When adding `C:\gtk-build\gtk\x64\release\bin` to your `PATH`, do it from the "System Properties" menu:
-      `$env:Path` (as recommended in the `gvsbuild` docs) only affects the shell that runs that command
+   * When the `gvsbuild` steps recommend setting `$env:Path`, make it a permanent change by doing the following:
+      1. From the Start menu, go to the Control Panel entry for “Edit environment variables for your account”.
+      2. Double-click the `Path` row in the top list of variables. Click “New” to add a new item to the list.
+      3. Paste in `C:\gtk-build\gtk\x64\release\bin`
+      4. Click "OK" twice.
 3. Build Libadwaita:
-   1. From the Windows start menu, run `x64 Native Tools Command Prompt for VS 2019`
-   2. `cd C:\gtk-build\github`
-   3. `git clone https://gitlab.gnome.org/GNOME/libadwaita.git --depth=1 --branch libadwaita-1-2`
-   4. `cd libadwaita`
-   5. `pip install meson`
-      * If `pip` tells you that the `Scripts` directory isn't in your `PATH`, then add it now and restart the
-        Command Prompt
-   6. `meson setup builddir -Dprefix=C:\gtk-build\gtk\x64\release -Dintrospection=disabled -Dvapi=false -Dexamples=false -Dtests=false`
-   7. `meson install -C builddir`
+   1. From the Windows start menu, run `x64 Native Tools Command Prompt`
+   2. `mkdir C:\gtk-build\github`
+   3. `cd C:\gtk-build\github`
+   4. `git clone https://gitlab.gnome.org/GNOME/libadwaita.git --depth=1 --branch libadwaita-1-2`
+   5. `cd libadwaita`
+   6. `pipx install meson`
+   7. `meson setup builddir -Dprefix=C:\gtk-build\gtk\x64\release -Dintrospection=disabled -Dvapi=false -Dexamples=false -Dtests=false`
+   8. `meson install -C builddir`
 4. Ensure Rust is using the `msvc` toolchain, if it isn't already: `rustup default stable-msvc`
-5From `comms`, run `cargo run --bin comms`
+5. From `comms`, run `cargo run --bin comms`
 
 ### Windows _Faster_ Build Instructions
 
