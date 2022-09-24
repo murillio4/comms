@@ -22,10 +22,6 @@ pub fn run() {
         .unwrap();
     }
 
-    if disposition == Registry::REG_OPENED_EXISTING_KEY {
-        return;
-    }
-
     unsafe {
         Registry::RegSetValueA(
             key,
@@ -65,7 +61,6 @@ pub fn run() {
         let comms_path = std::env::current_exe()
             .unwrap()
             .as_path()
-            .to_owned()
             .to_string_lossy()
             .replace(r"\\?\", "");
 
