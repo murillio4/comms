@@ -28,8 +28,9 @@ Round-trip audio latency, as casually measured from residential internet:
 
 ## Linux Build Instructions
 
-1. Install `rust`, GTK4 libs, Libadwaita, and opus libs
-2. From `comms`, run `cargo run`
+1. Install `rust`, GTK4 and opus libs
+2. Install Libadwaita 1.2 (likely by building it from source)
+3. From `comms`, run `cargo run`
 
 ## Windows Build Instructions
 
