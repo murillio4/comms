@@ -39,6 +39,7 @@ version = "0.40.0"
 features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_Registry",
     "Win32_System_Threading",
 ]
 

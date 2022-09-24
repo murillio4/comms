@@ -10,6 +10,8 @@ use crate::network::{NetworkError, SendToNetworkThreadError, Worker};
 
 mod audio;
 mod network;
+#[cfg(windows)]
+mod register_protocol;
 mod ui;
 
 // const OPUS_PACKET_MAX_LENGTH: usize = 1276;
@@ -67,6 +69,11 @@ fn main() {
             process::exit(1);
         }
     });
+
+    #[cfg(windows)]
+    {
+        std::thread::spawn(register_protocol::run);
+    }
 
     {
         let parameters = AudioPlatformImpl::create_parameters();

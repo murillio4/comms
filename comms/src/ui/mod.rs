@@ -623,6 +623,10 @@ pub fn run(
         volumes: HashMap::new(),
     });
 
+    let server_parameter = std::env::args()
+        .nth(1)
+        .map(|p| p.replace("comms:", "").replace('/', ""));
+
     if let Some(initial_main_volume) = initial_local_storage
         .volumes
         .get(&initial_local_storage.user_id)
@@ -722,7 +726,8 @@ pub fn run(
         // --- Setup for connect-to-server state
 
         let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
-        server_entry.set_text(&initial_local_storage.server);
+        server_entry.set_text(&server_parameter.unwrap_or(initial_local_storage.server));
+
         let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
         username_entry.set_text(&initial_local_storage.username);
 
