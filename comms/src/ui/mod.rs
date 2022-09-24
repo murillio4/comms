@@ -80,15 +80,14 @@ async fn try_connect(
     } = old_state
     {
         let builder = ui.borrow().builder.clone();
-        let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
-        let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
+        let username_entry: adw::EntryRow = builder.object("username_entry").unwrap();
+        let server_entry: adw::EntryRow = builder.object("server_entry").unwrap();
         let connect_button: gtk::Button = builder.object("connect_button").unwrap();
-        let connect_progress_stack: gtk::Stack = builder.object("connect_progress_stack").unwrap();
         let connect_progress: gtk::ProgressBar = builder.object("connect_progress").unwrap();
         let connect_failure_status: gtk::Label = builder.object("connect_failure_status").unwrap();
 
-        let username: String = username_entry.buffer().text();
-        let server: String = server_entry.buffer().text();
+        let username: String = username_entry.text().into();
+        let server: String = server_entry.text().into();
         if username.is_empty() || server.is_empty() {
             connect_failure_status.set_text("Set both username and server");
             return;
@@ -98,11 +97,12 @@ async fn try_connect(
 
         ui.borrow_mut().state = UiState::Connecting;
         connect_button.set_sensitive(false);
-        connect_progress_stack.set_visible_child_name("progress");
+        connect_progress.set_opacity(1f64);
 
         let finished = Rc::new(Cell::new(false));
         {
             let finished = finished.clone();
+            let connect_progress = connect_progress.clone();
             timeout_add_local(Duration::from_millis(80), move || {
                 if !finished.get() {
                     connect_progress.pulse();
@@ -135,7 +135,7 @@ async fn try_connect(
             network::future::connect(&network_handle, server, username.clone(), user_id).await;
 
         finished.replace(true);
-        connect_progress_stack.set_visible_child_name("hidden_progress");
+        connect_progress.set_opacity(0f64);
         connect_button.set_sensitive(true);
 
         match connect_result {
@@ -347,7 +347,10 @@ async fn disconnect_from_server(
             let pane_stack = &ui.borrow().pane_stack;
             pane_stack.set_transition_type(gtk::StackTransitionType::SlideDown);
             pane_stack.set_visible_child_name("connect");
-            ui.borrow().window.set_show_menubar(false);
+            let ui = ui.borrow();
+            let connect_button: gtk::Button = ui.builder.object("connect_button").unwrap();
+            ui.window.set_default_widget(Some(&connect_button));
+            ui.window.set_show_menubar(false);
         }
         user_list_model.clear();
         audio.send(AudioCommand::ServerDisconnect).unwrap();
@@ -720,15 +723,14 @@ pub fn run(
         ));
 
         window.set_title(Some("Comms"));
-        window.set_default_size(280, 250);
         stack.set_transition_duration(300);
 
         // --- Setup for connect-to-server state
 
-        let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
+        let server_entry: adw::EntryRow = builder.object("server_entry").unwrap();
         server_entry.set_text(&server_parameter.unwrap_or(initial_local_storage.server));
 
-        let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
+        let username_entry: adw::EntryRow = builder.object("username_entry").unwrap();
         username_entry.set_text(&initial_local_storage.username);
 
         let submit_connection_form = {
@@ -747,6 +749,7 @@ pub fn run(
         };
 
         let connect_button: gtk::Button = builder.object("connect_button").unwrap();
+        window.set_default_widget(Some(&connect_button));
         {
             let submit_connection_form = submit_connection_form.clone();
             connect_button.connect_clicked(move |_| {
@@ -755,7 +758,7 @@ pub fn run(
             });
         }
 
-        let username_entry: gtk::Entry = builder.object("username_entry").unwrap();
+        let username_entry: adw::EntryRow = builder.object("username_entry").unwrap();
         {
             let submit_connection_form = submit_connection_form.clone();
             username_entry.connect_activate(move |_| {
@@ -764,7 +767,7 @@ pub fn run(
             });
         }
 
-        let server_entry: gtk::Entry = builder.object("server_entry").unwrap();
+        let server_entry: adw::EntryRow = builder.object("server_entry").unwrap();
         server_entry.connect_activate(move |_| {
             let submit_fn = &mut *submit_connection_form.borrow_mut();
             submit_fn();

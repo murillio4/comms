@@ -5,3 +5,7 @@ scale {
 scale value {
     transform: translate(0, -6px);
 }
+
+.edit-icon {
+    opacity: 0;
+}
