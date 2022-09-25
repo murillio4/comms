@@ -74,8 +74,10 @@ Put the `comms-dissector.lua` script in `<Path to Wireshark folder>\Wireshark\pl
 
 On Windows it is typically `C:\Program Files\Wireshark\plugins`.
 
-Use (if tshark is in your paths) `tshark -G plugins` to see currently installed plugins and their respective paths.
+Use (if tshark is in your paths) `tshark -G plugins` to see currently installed plugins and their respective paths. If the Comms lua decoder is properly installed it should show up in the list as e.g:
+```
+comms-dissector.lua             lua script      C:\Program Files\Wireshark\plugins\comms-dissector.lua
+```
+This plugin should also show up in Wireshark: Help -> About Wireshark -> Plugins.
 
-To use the Plugin one should be able to right click on the COMMS.
-
- Right click on packet (with e.g. port 18847) -> Decode As -> Current -> COMMS -> Save
+To decode a packet, right click on packet (with e.g. port 18847) -> Decode As -> Current -> COMMS -> Save
