@@ -12,8 +12,8 @@ use gio::ApplicationFlags;
 use glib::object::ObjectRef;
 use gtk::prelude::*;
 use gtk::{
-    gdk, CellRendererText, DialogFlags, Orientation, PositionType, ResponseType, StyleContext,
-    TreeView, TreeViewColumn,
+    gdk, CellRendererText, DialogFlags, Orientation, PositionType, ResponseType,
+    RevealerTransitionType, StyleContext, TreeView, TreeViewColumn,
 };
 use serde::{Deserialize, Serialize};
 
@@ -298,7 +298,7 @@ async fn try_connect(
                 ui.pane_stack
                     .set_transition_type(gtk::StackTransitionType::SlideUp);
                 ui.pane_stack.set_visible_child_name("status");
-                ui.window.set_show_menubar(true);
+                ui.disconnect_button_revealer.set_reveal_child(true);
                 ui.state = UiState::Main {
                     user_list_model,
                     client_id,
@@ -350,7 +350,7 @@ async fn disconnect_from_server(
             let ui = ui.borrow();
             let connect_button: gtk::Button = ui.builder.object("connect_button").unwrap();
             ui.window.set_default_widget(Some(&connect_button));
-            ui.window.set_show_menubar(false);
+            ui.disconnect_button_revealer.set_reveal_child(false);
         }
         user_list_model.clear();
         audio.send(AudioCommand::ServerDisconnect).unwrap();
@@ -382,6 +382,7 @@ struct UiModel {
     pane_stack: gtk::Stack,
     builder: gtk::Builder,
     window: gtk::ApplicationWindow,
+    disconnect_button_revealer: gtk::Revealer,
     network_latency_column_ref: Option<ObjectRef>,
 }
 
@@ -651,6 +652,19 @@ pub fn run(
 
         let window = gtk::ApplicationWindow::new(app);
 
+        let disconnect_button = gtk::Button::builder().label("Disconnect").build();
+
+        let disconnect_button_revealer = gtk::Revealer::builder()
+            .transition_type(RevealerTransitionType::Crossfade)
+            .transition_duration(100)
+            .child(&disconnect_button)
+            .reveal_child(false)
+            .build();
+
+        let header_bar = adw::HeaderBar::new();
+        header_bar.pack_start(&disconnect_button_revealer);
+        window.set_titlebar(Some(&header_bar));
+
         let command = ui_receiver.recv().unwrap();
         let audio_status = match command {
             UICommand::AudioIPCInitStatus(s) => s,
@@ -708,6 +722,7 @@ pub fn run(
                 saved_volumes: initial_local_storage.volumes,
             },
             pane_stack: stack.clone(),
+            disconnect_button_revealer,
             window: window.clone(),
             builder: builder.clone(),
             network_latency_column_ref: None,
@@ -723,7 +738,7 @@ pub fn run(
         ));
 
         window.set_title(Some("Comms"));
-        stack.set_transition_duration(300);
+        stack.set_transition_duration(100);
 
         // --- Setup for connect-to-server state
 
@@ -909,23 +924,13 @@ pub fn run(
             });
         }
 
-        let menu = gio::Menu::new();
-        let server_section = gio::Menu::new();
-        menu.append_submenu(Some("_Server"), &server_section);
-        let disconnect_item = gio::MenuItem::new(Some("_Disconnect"), Some("app.disconnect"));
-        server_section.append_item(&disconnect_item);
-
-        app.set_menubar(Some(&menu));
-        window.set_show_menubar(false);
-        let action_disconnect = gio::SimpleAction::new("disconnect", None);
-        action_disconnect.connect_activate(move |_, _| {
+        disconnect_button.connect_clicked(move |_| {
             glib_context.spawn_local(disconnect_from_server(
                 ui.clone(),
                 network.clone(),
                 audio.clone(),
             ));
         });
-        app.add_action(&action_disconnect);
 
         let status_box: gtk::ScrolledWindow = builder.object("status_box").unwrap();
         stack.add_named(&status_box, Some("status"));
