@@ -38,7 +38,6 @@ build_release_linux:
     - sentry-cli releases new "commit-$CI_COMMIT_SHA" --org comms --project comms-app
     - sentry-cli releases set-commits "commit-$CI_COMMIT_SHA" --auto --org comms --project comms-app
     - sentry-cli releases finalize "commit-$CI_COMMIT_SHA" --org comms --project comms-app
-  when: manual
   artifacts:
     paths:
       - target/release/beep-cli
