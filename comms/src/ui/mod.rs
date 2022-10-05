@@ -73,295 +73,287 @@ async fn try_connect(
     network_event_sender: Sender<NetworkEvent>,
     ui: Rc<RefCell<UiModel>>,
 ) {
-    let old_state = ui.borrow().state.clone();
-    if let UiState::ChooseServer {
-        user_id,
-        saved_volumes,
-    } = old_state
-    {
-        let builder = ui.borrow().builder.clone();
-        let username_entry: adw::EntryRow = builder.object("username_entry").unwrap();
-        let server_entry: adw::EntryRow = builder.object("server_entry").unwrap();
-        let connect_button: gtk::Button = builder.object("connect_button").unwrap();
-        let connect_progress: gtk::ProgressBar = builder.object("connect_progress").unwrap();
-        let connect_failure_status: gtk::Label = builder.object("connect_failure_status").unwrap();
-
-        let username: String = username_entry.text().into();
-        let server: String = server_entry.text().into();
-        if username.is_empty() || server.is_empty() {
-            connect_failure_status.set_text("Set both username and server");
-            return;
+    let (user_id, saved_volumes) = match ui.borrow_mut().use_state(|state| {
+        if let UiState::ChooseServer {
+            user_id,
+            saved_volumes,
+            ..
+        } = state
+        {
+            (UiState::Connecting, Some((user_id, saved_volumes)))
         } else {
-            connect_failure_status.set_text("");
+            (state, None)
         }
+    }) {
+        Some(m) => m,
+        None => return,
+    };
 
-        ui.borrow_mut().state = UiState::Connecting;
-        connect_button.set_sensitive(false);
-        connect_progress.set_opacity(1f64);
+    let builder = ui.borrow().builder.clone();
+    let username_entry: adw::EntryRow = builder.object("username_entry").unwrap();
+    let server_entry: adw::EntryRow = builder.object("server_entry").unwrap();
+    let connect_button: gtk::Button = builder.object("connect_button").unwrap();
+    let connect_progress: gtk::ProgressBar = builder.object("connect_progress").unwrap();
+    let connect_failure_status: gtk::Label = builder.object("connect_failure_status").unwrap();
 
-        let finished = Rc::new(Cell::new(false));
-        {
-            let finished = finished.clone();
-            let connect_progress = connect_progress.clone();
-            timeout_add_local(Duration::from_millis(80), move || {
-                if !finished.get() {
-                    connect_progress.pulse();
-                    Continue(true)
-                } else {
-                    Continue(false)
-                }
-            });
-        }
+    let username: String = username_entry.text().into();
+    let server: String = server_entry.text().into();
+    if username.is_empty() || server.is_empty() {
+        connect_failure_status.set_text("Set both username and server");
+        ui.borrow_mut().set_state(UiState::ChooseServer {
+            user_id,
+            saved_volumes,
+        });
+        return;
+    } else {
+        connect_failure_status.set_text("");
+    }
 
-        if let Some((project_dirs, storage)) =
-            ProjectDirs::from("", "Comms", "Comms").and_then(|project_dirs| {
-                let local_storage = LocalStorage {
-                    username: username.clone(),
-                    server: server.clone(),
-                    user_id,
-                    volumes: saved_volumes.clone(),
-                };
-                serde_json::to_string(&local_storage)
-                    .ok()
-                    .map(|storage| (project_dirs, storage))
-            })
-        {
-            let _ = async_std::fs::create_dir_all(project_dirs.data_dir()).await;
-            let _ =
-                async_std::fs::write(project_dirs.data_dir().join("local_storage"), storage).await;
-        }
+    connect_button.set_sensitive(false);
+    connect_progress.set_opacity(1f64);
 
-        let connect_result =
-            network::future::connect(&network_handle, server, username.clone(), user_id).await;
+    let finished = Rc::new(Cell::new(false));
+    {
+        let finished = finished.clone();
+        let connect_progress = connect_progress.clone();
+        timeout_add_local(Duration::from_millis(80), move || {
+            if !finished.get() {
+                connect_progress.pulse();
+                Continue(true)
+            } else {
+                Continue(false)
+            }
+        });
+    }
 
-        finished.replace(true);
-        connect_progress.set_opacity(0f64);
-        connect_button.set_sensitive(true);
+    if let Some((project_dirs, storage)) =
+        ProjectDirs::from("", "Comms", "Comms").and_then(|project_dirs| {
+            let local_storage = LocalStorage {
+                username: username.clone(),
+                server: server.clone(),
+                user_id,
+                volumes: saved_volumes.clone(),
+            };
+            serde_json::to_string(&local_storage)
+                .ok()
+                .map(|storage| (project_dirs, storage))
+        })
+    {
+        let _ = async_std::fs::create_dir_all(project_dirs.data_dir()).await;
+        let _ = async_std::fs::write(project_dirs.data_dir().join("local_storage"), storage).await;
+    }
 
-        match connect_result {
-            Ok((client_id, users, round_trip_latency)) => {
-                let glib_context = glib::MainContext::default();
+    let connect_result =
+        network::future::connect(&network_handle, server, username.clone(), user_id).await;
 
-                for user in users.iter() {
-                    audio_handle
-                        .send(AudioCommand::NewClient(user.client_id))
-                        .unwrap();
+    finished.replace(true);
+    connect_progress.set_opacity(0f64);
+    connect_button.set_sensitive(true);
 
-                    glib_context.spawn_local(attempt_p2p(
-                        network_handle.clone(),
-                        network_event_sender.clone(),
-                        client_id,
-                        P2pDestination {
-                            client_id: user.client_id,
-                            local_udp_addr: user.local_udp_addr,
-                            public_udp_addr: user.public_udp_addr,
-                        },
-                        true,
-                    ));
-                }
+    match connect_result {
+        Ok((client_id, users, round_trip_latency)) => {
+            let glib_context = glib::MainContext::default();
 
-                let mut ui = ui.borrow_mut();
-                let status_treeview: TreeView = ui.builder.object("status_treeview").unwrap();
-                let network_latency_column_ref = ui.network_latency_column_ref.clone();
-                let user_list_model = initialize_user_list(&status_treeview);
+            for user in users.iter() {
+                audio_handle
+                    .send(AudioCommand::NewClient(user.client_id))
+                    .unwrap();
 
-                status_treeview.set_property("has-tooltip", true);
-                {
-                    let user_list_model = user_list_model.clone();
-                    status_treeview.connect_query_tooltip(
-                        move |treeview, x, y, keyboard_mode, tooltip| {
-                            let (path, column) = if keyboard_mode {
-                                TreeViewExt::cursor(treeview)
-                            } else {
-                                let (bin_x, bin_y) =
-                                    treeview.convert_widget_to_bin_window_coords(x, y);
-                                if let Some(r) = treeview.path_at_pos(bin_x, bin_y) {
-                                    let (path, column, _, _) = r;
-                                    (path, column)
-                                } else {
-                                    return false;
-                                }
-                            };
+                glib_context.spawn_local(attempt_p2p(
+                    network_handle.clone(),
+                    network_event_sender.clone(),
+                    client_id,
+                    P2pDestination {
+                        client_id: user.client_id,
+                        local_udp_addr: user.local_udp_addr,
+                        public_udp_addr: user.public_udp_addr,
+                    },
+                    true,
+                ));
+            }
 
-                            let (path, column) = if let (Some(path), Some(column)) = (path, column)
-                            {
+            let mut ui = ui.borrow_mut();
+            let status_treeview: TreeView = ui.builder.object("status_treeview").unwrap();
+            let network_latency_column_ref = ui.network_latency_column_ref.clone();
+            let user_list_model = initialize_user_list(&status_treeview);
+
+            status_treeview.set_property("has-tooltip", true);
+            {
+                let user_list_model = user_list_model.clone();
+                status_treeview.connect_query_tooltip(
+                    move |treeview, x, y, keyboard_mode, tooltip| {
+                        let (path, column) = if keyboard_mode {
+                            TreeViewExt::cursor(treeview)
+                        } else {
+                            let (bin_x, bin_y) = treeview.convert_widget_to_bin_window_coords(x, y);
+                            if let Some(r) = treeview.path_at_pos(bin_x, bin_y) {
+                                let (path, column, _, _) = r;
                                 (path, column)
                             } else {
                                 return false;
-                            };
+                            }
+                        };
 
-                            if let Some(network_latency_column_ref) =
-                                network_latency_column_ref.as_ref()
-                            {
-                                if network_latency_column_ref != column.as_object_ref() {
-                                    return false;
+                        let (path, column) = if let (Some(path), Some(column)) = (path, column) {
+                            (path, column)
+                        } else {
+                            return false;
+                        };
+
+                        if let Some(network_latency_column_ref) =
+                            network_latency_column_ref.as_ref()
+                        {
+                            if network_latency_column_ref != column.as_object_ref() {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+
+                        let iter = if let Some(iter) = user_list_model.iter(&path) {
+                            iter
+                        } else {
+                            return false;
+                        };
+
+                        if let (Ok(is_peer_to_peer), Ok(is_current_user), Ok(one_way_latency)) = (
+                            user_list_model
+                                .get_value(&iter, Columns::IsPeerToPeer as i32)
+                                .get::<bool>(),
+                            user_list_model
+                                .get_value(&iter, Columns::IsCurrentUser as i32)
+                                .get::<bool>(),
+                            user_list_model
+                                .get_value(&iter, Columns::NetworkLatency as i32)
+                                .get::<String>(),
+                        ) {
+                            let text = match (is_peer_to_peer, is_current_user) {
+                                (_, true) => {
+                                    format!("Latency to server is {}", one_way_latency)
                                 }
-                            } else {
-                                return false;
-                            }
-
-                            let iter = if let Some(iter) = user_list_model.iter(&path) {
-                                iter
-                            } else {
-                                return false;
+                                (true, _) => format!(
+                                    "Latency to other client (direct) is {}",
+                                    one_way_latency
+                                ),
+                                (false, _) => format!(
+                                    "Latency to other client (via server) is {}",
+                                    one_way_latency
+                                ),
                             };
+                            tooltip.set_text(Some(&text));
+                            treeview.set_tooltip_cell(
+                                tooltip,
+                                Some(&path),
+                                Some(&column),
+                                None as Option<&CellRendererText>,
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    },
+                );
+            }
 
-                            if let (
-                                Ok(is_peer_to_peer),
-                                Ok(is_current_user),
-                                Ok(one_way_latency),
-                            ) = (
-                                user_list_model
-                                    .get_value(&iter, Columns::IsPeerToPeer as i32)
-                                    .get::<bool>(),
-                                user_list_model
-                                    .get_value(&iter, Columns::IsCurrentUser as i32)
-                                    .get::<bool>(),
-                                user_list_model
-                                    .get_value(&iter, Columns::NetworkLatency as i32)
-                                    .get::<String>(),
-                            ) {
-                                let text = match (is_peer_to_peer, is_current_user) {
-                                    (_, true) => {
-                                        format!("Latency to server is {}", one_way_latency)
-                                    }
-                                    (true, _) => format!(
-                                        "Latency to other client (direct) is {}",
-                                        one_way_latency
-                                    ),
-                                    (false, _) => format!(
-                                        "Latency to other client (via server) is {}",
-                                        one_way_latency
-                                    ),
-                                };
-                                tooltip.set_text(Some(&text));
-                                treeview.set_tooltip_cell(
-                                    tooltip,
-                                    Some(&path),
-                                    Some(&column),
-                                    None as Option<&CellRendererText>,
-                                );
-                                true
-                            } else {
-                                false
-                            }
-                        },
-                    );
-                }
-
-                let values: [(u32, &dyn ToValue); 7] = [
-                    (Columns::Id as u32, &(client_id as u32)),
-                    (Columns::Username as u32, &username),
-                    (
-                        Columns::Volume as u32,
-                        &(*saved_volumes.get(&user_id).unwrap_or(&100u16) as u32),
+            let values: [(u32, &dyn ToValue); 7] = [
+                (Columns::Id as u32, &(client_id as u32)),
+                (Columns::Username as u32, &username),
+                (
+                    Columns::Volume as u32,
+                    &(*saved_volumes.get(&user_id).unwrap_or(&100u16) as u32),
+                ),
+                (Columns::IsCurrentUser as u32, &true),
+                (
+                    Columns::NetworkLatency as u32,
+                    &format!(
+                        "{:.1}ms",
+                        (round_trip_latency.as_micros() as f64) / 1000.0 / 2.0
                     ),
-                    (Columns::IsCurrentUser as u32, &true),
+                ),
+                (Columns::IsPeerToPeer as u32, &false),
+                (Columns::UserId as u32, &user_id.to_string()),
+            ];
+            user_list_model.insert_with_values(None, &values);
+            for user in users.iter() {
+                let one_way_latency =
+                    user.round_trip_latency.saturating_add(round_trip_latency) / 2;
+
+                let volume = if let Some(volume) = saved_volumes.get(&user.user_id) {
+                    audio_handle
+                        .send(AudioCommand::ChangeClientVolume(user.client_id, *volume))
+                        .unwrap();
+                    *volume
+                } else {
+                    100u16
+                };
+
+                let values: [(u32, &dyn ToValue); 6] = [
+                    (Columns::Id as u32, &(user.client_id as u32)),
+                    (Columns::Username as u32, &user.name),
+                    (Columns::Volume as u32, &(volume as u32)),
                     (
                         Columns::NetworkLatency as u32,
-                        &format!(
-                            "{:.1}ms",
-                            (round_trip_latency.as_micros() as f64) / 1000.0 / 2.0
-                        ),
+                        &format!("{:.1}ms", (one_way_latency.as_micros() as f64) / 1000.0),
                     ),
                     (Columns::IsPeerToPeer as u32, &false),
-                    (Columns::UserId as u32, &user_id.to_string()),
+                    (Columns::UserId as u32, &user.user_id.to_string()),
                 ];
                 user_list_model.insert_with_values(None, &values);
-                for user in users.iter() {
-                    let one_way_latency =
-                        user.round_trip_latency.saturating_add(round_trip_latency) / 2;
+            }
 
-                    let volume = if let Some(volume) = saved_volumes.get(&user.user_id) {
-                        audio_handle
-                            .send(AudioCommand::ChangeClientVolume(user.client_id, *volume))
-                            .unwrap();
-                        *volume
-                    } else {
-                        100u16
-                    };
-
-                    let values: [(u32, &dyn ToValue); 6] = [
-                        (Columns::Id as u32, &(user.client_id as u32)),
-                        (Columns::Username as u32, &user.name),
-                        (Columns::Volume as u32, &(volume as u32)),
-                        (
-                            Columns::NetworkLatency as u32,
-                            &format!("{:.1}ms", (one_way_latency.as_micros() as f64) / 1000.0),
-                        ),
-                        (Columns::IsPeerToPeer as u32, &false),
-                        (Columns::UserId as u32, &user.user_id.to_string()),
-                    ];
-                    user_list_model.insert_with_values(None, &values);
+            ui.pane_stack
+                .set_transition_type(gtk::StackTransitionType::SlideUp);
+            ui.pane_stack.set_visible_child_name("status");
+            ui.disconnect_button_revealer.set_reveal_child(true);
+            ui.set_state(UiState::Main {
+                user_list_model,
+                client_id,
+                round_trip_latency,
+                user_id,
+                saved_volumes,
+            });
+        }
+        Err(e) => {
+            let error_message = match e {
+                ConnectError::DestinationUnusable => {
+                    "Could not find the server provided".to_string()
                 }
-
-                ui.pane_stack
-                    .set_transition_type(gtk::StackTransitionType::SlideUp);
-                ui.pane_stack.set_visible_child_name("status");
-                ui.disconnect_button_revealer.set_reveal_child(true);
-                ui.state = UiState::Main {
-                    user_list_model,
-                    client_id,
-                    round_trip_latency,
-                    user_id,
-                    saved_volumes,
-                };
-            }
-            Err(e) => {
-                let error_message = match e {
-                    ConnectError::DestinationUnusable => {
-                        "Could not find the server provided".to_string()
-                    }
-                    ConnectError::NetworkError => "Could not connect to the server".to_string(),
-                    // AlreadyConnected shouldn't be possible, but it's useful for end-to-end testing network futures right now.
-                    ConnectError::AlreadyConnected => {
-                        "Can't connect because you're already connected to a server".to_string()
-                    }
-                    ConnectError::RequestError(e) => format!("Request failed: {:?}", e),
-                };
-                connect_failure_status.set_text(&error_message);
-                ui.borrow_mut().state = UiState::ChooseServer {
-                    user_id,
-                    saved_volumes,
-                };
-            }
+                ConnectError::NetworkError => "Could not connect to the server".to_string(),
+                // AlreadyConnected shouldn't be possible, but it's useful for end-to-end testing network futures right now.
+                ConnectError::AlreadyConnected => {
+                    "Can't connect because you're already connected to a server".to_string()
+                }
+                ConnectError::RequestError(e) => format!("Request failed: {:?}", e),
+            };
+            connect_failure_status.set_text(&error_message);
+            ui.borrow_mut().set_state(UiState::ChooseServer {
+                user_id,
+                saved_volumes,
+            });
         }
     }
 }
 
 async fn disconnect_from_server(
+    user_list_model: gtk::ListStore,
     ui: Rc<RefCell<UiModel>>,
     handle: NetworkHandle,
     audio: AudioHandle,
 ) {
-    let state = ui.borrow().state.clone();
-    if let UiState::Main {
-        user_list_model,
-        user_id,
-        saved_volumes,
-        ..
-    } = state
+    network::future::disconnect(&handle).await;
     {
-        network::future::disconnect(&handle).await;
-        {
-            let pane_stack = &ui.borrow().pane_stack;
-            pane_stack.set_transition_type(gtk::StackTransitionType::SlideDown);
-            pane_stack.set_visible_child_name("connect");
-            let ui = ui.borrow();
-            let connect_button: gtk::Button = ui.builder.object("connect_button").unwrap();
-            ui.window.set_default_widget(Some(&connect_button));
-            ui.disconnect_button_revealer.set_reveal_child(false);
-        }
-        user_list_model.clear();
-        audio.send(AudioCommand::ServerDisconnect).unwrap();
-        ui.borrow_mut().state = UiState::ChooseServer {
-            user_id,
-            saved_volumes,
-        };
+        let pane_stack = &ui.borrow().pane_stack;
+        pane_stack.set_transition_type(gtk::StackTransitionType::SlideDown);
+        pane_stack.set_visible_child_name("connect");
+        let ui = ui.borrow();
+        let connect_button: gtk::Button = ui.builder.object("connect_button").unwrap();
+        ui.window.set_default_widget(Some(&connect_button));
+        ui.disconnect_button_revealer.set_reveal_child(false);
     }
+    user_list_model.clear();
+    audio.send(AudioCommand::ServerDisconnect).unwrap();
 }
 
-#[derive(Clone, Debug)]
 enum UiState {
     ChooseServer {
         user_id: UserId,
@@ -375,15 +367,37 @@ enum UiState {
         round_trip_latency: Duration,
     },
     Connecting,
+    Disconnecting,
 }
 
 struct UiModel {
-    state: UiState,
+    state: Option<UiState>,
     pane_stack: gtk::Stack,
     builder: gtk::Builder,
     window: gtk::ApplicationWindow,
     disconnect_button_revealer: gtk::Revealer,
     network_latency_column_ref: Option<ObjectRef>,
+}
+
+impl UiModel {
+    fn state(&self) -> &UiState {
+        self.state.as_ref().unwrap()
+    }
+
+    fn state_mut(&mut self) -> &mut UiState {
+        self.state.as_mut().unwrap()
+    }
+
+    fn set_state(&mut self, state: UiState) {
+        self.state = Some(state);
+    }
+
+    fn use_state<T>(&mut self, f: impl FnOnce(UiState) -> (UiState, T)) -> T {
+        let old = self.state.take().unwrap();
+        let (new, return_value) = f(old);
+        self.state = Some(new);
+        return_value
+    }
 }
 
 async fn handle_network_events(
@@ -394,29 +408,78 @@ async fn handle_network_events(
     ui: Rc<RefCell<UiModel>>,
 ) {
     while let Some(event) = receiver.next().await {
-        let state = ui.borrow().state.clone();
         match event {
             NetworkEvent::SocketClosed => {
-                if let UiState::Main { .. } = state {
-                    disconnect_from_server(ui.clone(), network.clone(), audio.clone()).await;
+                let (user_list_model, user_id, saved_volumes) =
+                    match ui.borrow_mut().use_state(|state| {
+                        if let UiState::Main {
+                            user_list_model,
+                            user_id,
+                            saved_volumes,
+                            ..
+                        } = state
+                        {
+                            (
+                                UiState::Disconnecting,
+                                Some((user_list_model, user_id, saved_volumes)),
+                            )
+                        } else {
+                            (state, None)
+                        }
+                    }) {
+                        Some(m) => m,
+                        None => continue,
+                    };
 
-                    let builder = &ui.borrow().builder;
-                    let connect_failure_status: gtk::Label =
-                        builder.object("connect_failure_status").unwrap();
-                    connect_failure_status
-                        .set_text("Disconnecting from the server because the socket closed");
-                }
+                disconnect_from_server(user_list_model, ui.clone(), network.clone(), audio.clone())
+                    .await;
+
+                ui.borrow_mut().set_state(UiState::ChooseServer {
+                    user_id,
+                    saved_volumes,
+                });
+
+                let builder = &ui.borrow().builder;
+                let connect_failure_status: gtk::Label =
+                    builder.object("connect_failure_status").unwrap();
+                connect_failure_status
+                    .set_text("Disconnecting from the server because the socket closed");
             }
             NetworkEvent::NetworkError => {
-                if let UiState::Main { .. } = state {
-                    disconnect_from_server(ui.clone(), network.clone(), audio.clone()).await;
+                let (user_list_model, user_id, saved_volumes) =
+                    match ui.borrow_mut().use_state(|state| {
+                        if let UiState::Main {
+                            user_list_model,
+                            user_id,
+                            saved_volumes,
+                            ..
+                        } = state
+                        {
+                            (
+                                UiState::Disconnecting,
+                                Some((user_list_model, user_id, saved_volumes)),
+                            )
+                        } else {
+                            (state, None)
+                        }
+                    }) {
+                        Some(m) => m,
+                        None => continue,
+                    };
 
-                    let builder = &ui.borrow().builder;
-                    let connect_failure_status: gtk::Label =
-                        builder.object("connect_failure_status").unwrap();
-                    connect_failure_status
-                        .set_text("Disconnecting from the server because of a network issue");
-                }
+                disconnect_from_server(user_list_model, ui.clone(), network.clone(), audio.clone())
+                    .await;
+
+                ui.borrow_mut().set_state(UiState::ChooseServer {
+                    user_id,
+                    saved_volumes,
+                });
+
+                let builder = &ui.borrow().builder;
+                let connect_failure_status: gtk::Label =
+                    builder.object("connect_failure_status").unwrap();
+                connect_failure_status
+                    .set_text("Disconnecting from the server because of a network issue");
             }
             NetworkEvent::P2pEstablished {
                 round_trip_latency,
@@ -425,7 +488,7 @@ async fn handle_network_events(
             } => {
                 if let UiState::Main {
                     user_list_model, ..
-                } = ui.borrow().state.clone()
+                } = ui.borrow().state()
                 {
                     let iter = user_list_model.iter_first().unwrap();
                     let iter = loop {
@@ -476,7 +539,7 @@ async fn handle_network_events(
                     round_trip_latency,
                     saved_volumes,
                     ..
-                } = ui.borrow().state.clone()
+                } = &ui.borrow().state()
                 {
                     let result: Result<(), CommsNetworkError> = (|| {
                         match packet.kind() {
@@ -489,7 +552,7 @@ async fn handle_network_events(
                                 glib_context.spawn_local(attempt_p2p(
                                     network.clone(),
                                     network_event_sender.clone(),
-                                    client_id,
+                                    *client_id,
                                     P2pDestination {
                                         client_id: packet.body.user.client_id,
                                         local_udp_addr: packet.body.user.local_udp_addr,
@@ -502,7 +565,7 @@ async fn handle_network_events(
                                     .body
                                     .user
                                     .round_trip_latency
-                                    .saturating_add(round_trip_latency)
+                                    .saturating_add(*round_trip_latency)
                                     / 2;
 
                                 let volume = if let Some(volume) =
@@ -717,10 +780,10 @@ pub fn run(
             .unwrap();
         let builder = gtk::Builder::from_string(raw_app_ui);
         let ui = Rc::new(RefCell::new(UiModel {
-            state: UiState::ChooseServer {
+            state: Some(UiState::ChooseServer {
                 user_id: initial_local_storage.user_id,
                 saved_volumes: initial_local_storage.volumes,
-            },
+            }),
             pane_stack: stack.clone(),
             disconnect_button_revealer,
             window: window.clone(),
@@ -881,12 +944,12 @@ pub fn run(
                     let audio = audio.clone();
                     let ui = ui.clone();
                     scale.connect_value_changed(move |scale| {
-                        let state = &mut ui.borrow_mut().state;
+                        let mut ui = ui.borrow_mut();
                         let (user_list_model, saved_volumes) = if let UiState::Main {
                             user_list_model,
                             saved_volumes,
                             ..
-                        } = state
+                        } = ui.state_mut()
                         {
                             (user_list_model, saved_volumes)
                         } else {
@@ -925,11 +988,38 @@ pub fn run(
         }
 
         disconnect_button.connect_clicked(move |_| {
-            glib_context.spawn_local(disconnect_from_server(
-                ui.clone(),
-                network.clone(),
-                audio.clone(),
-            ));
+            let ui = ui.clone();
+            let network = network.clone();
+            let audio = audio.clone();
+            glib_context.spawn_local(async move {
+                let (user_list_model, user_id, saved_volumes) =
+                    match ui.borrow_mut().use_state(|state| {
+                        if let UiState::Main {
+                            user_list_model,
+                            user_id,
+                            saved_volumes,
+                            ..
+                        } = state
+                        {
+                            (
+                                UiState::Disconnecting,
+                                Some((user_list_model, user_id, saved_volumes)),
+                            )
+                        } else {
+                            (state, None)
+                        }
+                    }) {
+                        Some(m) => m,
+                        None => return,
+                    };
+
+                disconnect_from_server(user_list_model, ui.clone(), network, audio).await;
+
+                ui.borrow_mut().set_state(UiState::ChooseServer {
+                    user_id,
+                    saved_volumes,
+                });
+            });
         });
 
         let status_box: gtk::ScrolledWindow = builder.object("status_box").unwrap();
