@@ -38,6 +38,7 @@ pub fn run() {
             s!("URL Protocol"),
             Registry::REG_SZ.0,
             None,
+            0,
         )
         .ok()
         .unwrap();

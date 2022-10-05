@@ -118,7 +118,7 @@ pub struct WaveFormatExPtr(pub *mut Audio::WAVEFORMATEX);
 impl Drop for WaveFormatExPtr {
     fn drop(&mut self) {
         unsafe {
-            Com::CoTaskMemFree(self.0 as *mut _);
+            Com::CoTaskMemFree(Some(self.0 as *mut _));
         }
     }
 }

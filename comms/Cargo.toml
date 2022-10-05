@@ -5,7 +5,7 @@ authors = ["Mitchell Hentges <mitch9654@gmail.com>"]
 edition = "2021"
 
 [dependencies]
-adw = { version = "0.2.0-alpha.2", package = "libadwaita", features = ["gtk_v4_4", "v1_2"] }
+adw = { version = "0.2.0-alpha.3", package = "libadwaita", features = ["gtk_v4_4", "v1_2"] }
 async-std = "1.4"
 audiopus = "0.2.0"
 directories = "4.0"
@@ -35,7 +35,7 @@ features = [
 ]
 
 [target.'cfg(target_os = "windows")'.dependencies.windows]
-version = "0.40.0"
+version = "0.42.0"
 features = [
     "Win32_Foundation",
     "Win32_Security",

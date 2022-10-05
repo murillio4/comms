@@ -24,7 +24,7 @@ unsafe impl Sync for Enumerator {}
 
 thread_local!(static COM_INITIALIZED: ComInitialized = {
     unsafe {
-        Com::CoInitializeEx(ptr::null(), Com::COINIT_MULTITHREADED).unwrap();
+        Com::CoInitializeEx(None, Com::COINIT_MULTITHREADED).unwrap();
         ComInitialized(ptr::null_mut())
     }
 });
