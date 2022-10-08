@@ -48,24 +48,14 @@
       </object>
     </child>
   </object>
-  <object class="GtkScrolledWindow" id="status_box">
-    <property name="child">
-      <object class="GtkBox" id="box_containing_status_treeview">
-        <property name="orientation">vertical</property>
-        <child>
-          <object class="GtkTreeView" id="status_treeview">
-            <property name="enable-search">0</property>
-            <property name="focusable">1</property>
-            <property name="headers-visible">0</property>
-            <property name="vexpand">1</property>
-            <child internal-child="selection">
-              <object class="GtkTreeSelection"/>
-            </child>
-          </object>
-        </child>
-      </object>
-    </property>
+  <object class="GtkScrolledWindow" id="user_list_root">
     <property name="focusable">1</property>
     <property name="hscrollbar-policy">never</property>
+    <property name="vexpand">true</property>
+    <property name="child">
+      <object class="GtkListBox" id="user_list">
+        <property name="vexpand">true</property>
+      </object>
+    </property>
   </object>
 </interface>

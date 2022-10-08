@@ -1,7 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::str::FromStr;
 use std::time::Duration;
 
 use directories::ProjectDirs;
@@ -9,11 +8,9 @@ use futures::channel::mpsc::Sender;
 use futures::stream::StreamExt;
 use gio::prelude::*;
 use gio::ApplicationFlags;
-use glib::object::ObjectRef;
 use gtk::prelude::*;
 use gtk::{
-    gdk, CellRendererText, DialogFlags, Orientation, PositionType, ResponseType,
-    RevealerTransitionType, StyleContext, TreeView, TreeViewColumn,
+    gdk, DialogFlags, Orientation, PositionType, ResponseType, RevealerTransitionType, StyleContext,
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,34 +27,6 @@ use gtk::gdk::Display;
 use uuid::Uuid;
 
 pub mod ipc;
-
-#[derive(Debug)]
-#[repr(i32)]
-enum Columns {
-    Id = 0,
-    Username = 1,
-    Volume = 2,
-    IsCurrentUser = 3,
-    NetworkLatency = 4,
-    IsPeerToPeer = 5,
-    UserId = 6,
-}
-
-fn initialize_user_list(treeview: &TreeView) -> gtk::ListStore {
-    let col_types = [
-        glib::Type::U32,
-        glib::Type::STRING,
-        glib::Type::U32,
-        glib::Type::BOOL,
-        glib::Type::STRING,
-        glib::Type::BOOL,
-        glib::Type::STRING,
-    ];
-
-    let user_list_model = gtk::ListStore::new(&col_types);
-    treeview.set_model(Some(&user_list_model));
-    user_list_model
-}
 
 #[derive(Serialize, Deserialize)]
 struct LocalStorage {
@@ -151,10 +120,10 @@ async fn try_connect(
     connect_button.set_sensitive(true);
 
     match connect_result {
-        Ok((client_id, users, round_trip_latency)) => {
+        Ok((client_id, existing_users, round_trip_latency)) => {
             let glib_context = glib::MainContext::default();
 
-            for user in users.iter() {
+            for user in existing_users.iter() {
                 audio_handle
                     .send(AudioCommand::NewClient(user.client_id))
                     .unwrap();
@@ -172,109 +141,29 @@ async fn try_connect(
                 ));
             }
 
-            let mut ui = ui.borrow_mut();
-            let status_treeview: TreeView = ui.builder.object("status_treeview").unwrap();
-            let network_latency_column_ref = ui.network_latency_column_ref.clone();
-            let user_list_model = initialize_user_list(&status_treeview);
+            let user_list: gtk::ListBox = {
+                let ui = ui.borrow_mut();
+                ui.builder.object("user_list").unwrap()
+            };
 
-            status_treeview.set_property("has-tooltip", true);
-            {
-                let user_list_model = user_list_model.clone();
-                status_treeview.connect_query_tooltip(
-                    move |treeview, x, y, keyboard_mode, tooltip| {
-                        let (path, column) = if keyboard_mode {
-                            TreeViewExt::cursor(treeview)
-                        } else {
-                            let (bin_x, bin_y) = treeview.convert_widget_to_bin_window_coords(x, y);
-                            if let Some(r) = treeview.path_at_pos(bin_x, bin_y) {
-                                let (path, column, _, _) = r;
-                                (path, column)
-                            } else {
-                                return false;
-                            }
-                        };
+            let (row_widget, latency_widget) =
+                UiUser::create_widgets(&username, round_trip_latency);
+            user_list.append(&row_widget);
 
-                        let (path, column) = if let (Some(path), Some(column)) = (path, column) {
-                            (path, column)
-                        } else {
-                            return false;
-                        };
+            let user = Rc::new(RefCell::new(UiUser {
+                client_id,
+                user_id,
+                volume: *saved_volumes.get(&user_id).unwrap_or(&100u16),
+                is_current_user: true,
+                network_latency: round_trip_latency,
+                is_peer_to_peer: false,
+                root_widget: row_widget,
+                latency_widget,
+            }));
+            UiUser::attach_signal_handlers(user.clone(), audio_handle.clone(), ui.clone());
+            let mut users = HashMap::from([(client_id, user)]);
 
-                        if let Some(network_latency_column_ref) =
-                            network_latency_column_ref.as_ref()
-                        {
-                            if network_latency_column_ref != column.as_object_ref() {
-                                return false;
-                            }
-                        } else {
-                            return false;
-                        }
-
-                        let iter = if let Some(iter) = user_list_model.iter(&path) {
-                            iter
-                        } else {
-                            return false;
-                        };
-
-                        if let (Ok(is_peer_to_peer), Ok(is_current_user), Ok(one_way_latency)) = (
-                            user_list_model
-                                .get_value(&iter, Columns::IsPeerToPeer as i32)
-                                .get::<bool>(),
-                            user_list_model
-                                .get_value(&iter, Columns::IsCurrentUser as i32)
-                                .get::<bool>(),
-                            user_list_model
-                                .get_value(&iter, Columns::NetworkLatency as i32)
-                                .get::<String>(),
-                        ) {
-                            let text = match (is_peer_to_peer, is_current_user) {
-                                (_, true) => {
-                                    format!("Latency to server is {}", one_way_latency)
-                                }
-                                (true, _) => format!(
-                                    "Latency to other client (direct) is {}",
-                                    one_way_latency
-                                ),
-                                (false, _) => format!(
-                                    "Latency to other client (via server) is {}",
-                                    one_way_latency
-                                ),
-                            };
-                            tooltip.set_text(Some(&text));
-                            treeview.set_tooltip_cell(
-                                tooltip,
-                                Some(&path),
-                                Some(&column),
-                                None as Option<&CellRendererText>,
-                            );
-                            true
-                        } else {
-                            false
-                        }
-                    },
-                );
-            }
-
-            let values: [(u32, &dyn ToValue); 7] = [
-                (Columns::Id as u32, &(client_id as u32)),
-                (Columns::Username as u32, &username),
-                (
-                    Columns::Volume as u32,
-                    &(*saved_volumes.get(&user_id).unwrap_or(&100u16) as u32),
-                ),
-                (Columns::IsCurrentUser as u32, &true),
-                (
-                    Columns::NetworkLatency as u32,
-                    &format!(
-                        "{:.1}ms",
-                        (round_trip_latency.as_micros() as f64) / 1000.0 / 2.0
-                    ),
-                ),
-                (Columns::IsPeerToPeer as u32, &false),
-                (Columns::UserId as u32, &user_id.to_string()),
-            ];
-            user_list_model.insert_with_values(None, &values);
-            for user in users.iter() {
+            for user in existing_users.into_iter() {
                 let one_way_latency =
                     user.round_trip_latency.saturating_add(round_trip_latency) / 2;
 
@@ -287,30 +176,36 @@ async fn try_connect(
                     100u16
                 };
 
-                let values: [(u32, &dyn ToValue); 6] = [
-                    (Columns::Id as u32, &(user.client_id as u32)),
-                    (Columns::Username as u32, &user.name),
-                    (Columns::Volume as u32, &(volume as u32)),
-                    (
-                        Columns::NetworkLatency as u32,
-                        &format!("{:.1}ms", (one_way_latency.as_micros() as f64) / 1000.0),
-                    ),
-                    (Columns::IsPeerToPeer as u32, &false),
-                    (Columns::UserId as u32, &user.user_id.to_string()),
-                ];
-                user_list_model.insert_with_values(None, &values);
+                let (row_widget, latency_widget) =
+                    UiUser::create_widgets(&user.name, round_trip_latency);
+                user_list.append(&row_widget);
+
+                let user_rc = Rc::new(RefCell::new(UiUser {
+                    client_id: user.client_id,
+                    user_id: user.user_id,
+                    volume,
+                    is_current_user: false,
+                    network_latency: one_way_latency,
+                    is_peer_to_peer: false,
+                    root_widget: row_widget,
+                    latency_widget,
+                }));
+                UiUser::attach_signal_handlers(user_rc.clone(), audio_handle.clone(), ui.clone());
+                users.insert(user.client_id, user_rc);
             }
 
+            let mut ui = ui.borrow_mut();
             ui.pane_stack
                 .set_transition_type(gtk::StackTransitionType::SlideUp);
-            ui.pane_stack.set_visible_child_name("status");
+            ui.pane_stack.set_visible_child_name("user_list");
             ui.disconnect_button_revealer.set_reveal_child(true);
             ui.set_state(UiState::Main {
-                user_list_model,
+                users,
                 client_id,
                 round_trip_latency,
                 user_id,
                 saved_volumes,
+                user_list,
             });
         }
         Err(e) => {
@@ -335,7 +230,8 @@ async fn try_connect(
 }
 
 async fn disconnect_from_server(
-    user_list_model: gtk::ListStore,
+    users: HashMap<ClientId, Rc<RefCell<UiUser>>>,
+    user_list: gtk::ListBox,
     ui: Rc<RefCell<UiModel>>,
     handle: NetworkHandle,
     audio: AudioHandle,
@@ -350,8 +246,166 @@ async fn disconnect_from_server(
         ui.window.set_default_widget(Some(&connect_button));
         ui.disconnect_button_revealer.set_reveal_child(false);
     }
-    user_list_model.clear();
+    for user in users.values() {
+        // ListBox implicitly creates a "ListBoxRow" parent for each appended widget
+        user_list.remove(&user.borrow().root_widget.parent().unwrap());
+    }
     audio.send(AudioCommand::ServerDisconnect).unwrap();
+}
+
+struct UiUser {
+    client_id: ClientId,
+    user_id: UserId,
+    volume: u16,
+    is_current_user: bool,
+    network_latency: Duration,
+    is_peer_to_peer: bool,
+    root_widget: gtk::Box,
+    latency_widget: gtk::Label,
+}
+
+impl UiUser {
+    fn create_widgets(username: &str, network_latency: Duration) -> (gtk::Box, gtk::Label) {
+        let row_container = gtk::Box::new(Orientation::Horizontal, 0);
+        row_container.append(
+            &gtk::Label::builder()
+                .label(username)
+                .xalign(0.0)
+                .hexpand(true)
+                .build(),
+        );
+        let latency_label = gtk::Label::builder()
+            .label(&Self::format_latency_text(network_latency, false))
+            .xalign(1.0)
+            .build();
+        row_container.append(&latency_label);
+        let root_container = gtk::Box::new(Orientation::Vertical, 0);
+        root_container.append(&row_container);
+        (root_container, latency_label)
+    }
+
+    fn format_latency_text(network_latency: Duration, show_link_emoji: bool) -> String {
+        format!(
+            "{:.1}ms {}",
+            (network_latency.as_micros() as f64) / 1000.0 / 2.0,
+            if show_link_emoji { "🔗" } else { "" }
+        )
+    }
+
+    fn update_latency_text(&self) {
+        self.latency_widget.set_text(&Self::format_latency_text(
+            self.network_latency,
+            self.is_peer_to_peer,
+        ));
+    }
+
+    fn attach_signal_handlers(
+        this: Rc<RefCell<Self>>,
+        audio: AudioHandle,
+        ui: Rc<RefCell<UiModel>>,
+    ) {
+        let user = this.borrow();
+        let click_gesture = gtk::GestureClick::new();
+        click_gesture.set_button(3);
+        user.root_widget.add_controller(&click_gesture);
+        {
+            let this = this.clone();
+            click_gesture.connect_pressed(move |_, _, x, y| {
+                let x = x.round() as i32;
+                let y = y.round() as i32;
+
+                let user = this.borrow_mut();
+                let popover = gtk::Popover::new();
+                let popover_box = gtk::Box::new(Orientation::Vertical, 0);
+
+                let label_text = match user.is_current_user {
+                    true => "Headphone Volume",
+                    false => "Volume",
+                };
+
+                let adjustment =
+                    gtk::Adjustment::new(user.volume as f64, 0.0, 400.0, 2.0, 10.0, 0.0);
+                let scale = gtk::builders::ScaleBuilder::new()
+                    .adjustment(&adjustment)
+                    .value_pos(PositionType::Left)
+                    .orientation(Orientation::Horizontal)
+                    .digits(0)
+                    .draw_value(true)
+                    .build();
+
+                scale.add_mark(100.0, gtk::PositionType::Bottom, None);
+                scale.add_mark(200.0, gtk::PositionType::Bottom, None);
+                scale.add_mark(300.0, gtk::PositionType::Bottom, None);
+                scale.set_width_request(200);
+
+                popover_box.insert_child_after(&scale, None::<&gtk::Widget>);
+                popover_box.insert_child_after(
+                    &gtk::builders::LabelBuilder::new().label(label_text).build(),
+                    None::<&gtk::Widget>,
+                );
+
+                let this = this.clone();
+                let audio = audio.clone();
+                let ui = ui.clone();
+                scale.connect_value_changed(move |scale| {
+                    let mut ui = ui.borrow_mut();
+                    let saved_volumes = if let UiState::Main { saved_volumes, .. } = ui.state_mut()
+                    {
+                        saved_volumes
+                    } else {
+                        return;
+                    };
+
+                    let mut user = this.borrow_mut();
+                    user.volume = scale.adjustment().value() as u16;
+                    audio
+                        .send(if user.is_current_user {
+                            AudioCommand::ChangeMainVolume(user.volume)
+                        } else {
+                            AudioCommand::ChangeClientVolume(user.client_id, user.volume)
+                        })
+                        .unwrap();
+
+                    saved_volumes.insert(user.user_id, user.volume);
+                    let glib_context = glib::MainContext::default();
+                    glib_context.spawn_local(update_saved_volumes(saved_volumes.clone()));
+                });
+
+                let rectangle = gdk::Rectangle::new(x, y, 0, 0);
+                popover.set_pointing_to(Some(&rectangle));
+                user.root_widget.prepend(&popover);
+                popover.set_child(Some(&popover_box));
+                popover.popup();
+
+                popover.connect_closed(|popover| {
+                    popover.unparent();
+                });
+            });
+        }
+
+        user.latency_widget.set_property("has-tooltip", true);
+        {
+            let this = this.clone();
+            user.latency_widget
+                .connect_query_tooltip(move |_, _, _, _, tooltip| {
+                    let user = this.borrow();
+                    let latency_text = Self::format_latency_text(user.network_latency, false);
+                    let text = match (user.is_peer_to_peer, user.is_current_user) {
+                        (_, true) => {
+                            format!("Latency to server is {}", &latency_text)
+                        }
+                        (true, _) => {
+                            format!("Latency to other client (direct) is {}", &latency_text)
+                        }
+                        (false, _) => {
+                            format!("Latency to other client (via server) is {}", &latency_text)
+                        }
+                    };
+                    tooltip.set_text(Some(&text));
+                    true
+                });
+        }
+    }
 }
 
 enum UiState {
@@ -360,9 +414,10 @@ enum UiState {
         saved_volumes: HashMap<UserId, u16>,
     },
     Main {
+        users: HashMap<ClientId, Rc<RefCell<UiUser>>>,
         user_id: UserId,
         saved_volumes: HashMap<UserId, u16>,
-        user_list_model: gtk::ListStore,
+        user_list: gtk::ListBox,
         client_id: ClientId,
         round_trip_latency: Duration,
     },
@@ -376,14 +431,9 @@ struct UiModel {
     builder: gtk::Builder,
     window: gtk::ApplicationWindow,
     disconnect_button_revealer: gtk::Revealer,
-    network_latency_column_ref: Option<ObjectRef>,
 }
 
 impl UiModel {
-    fn state(&self) -> &UiState {
-        self.state.as_ref().unwrap()
-    }
-
     fn state_mut(&mut self) -> &mut UiState {
         self.state.as_mut().unwrap()
     }
@@ -410,10 +460,11 @@ async fn handle_network_events(
     while let Some(event) = receiver.next().await {
         match event {
             NetworkEvent::SocketClosed => {
-                let (user_list_model, user_id, saved_volumes) =
+                let (users, user_list, user_id, saved_volumes) =
                     match ui.borrow_mut().use_state(|state| {
                         if let UiState::Main {
-                            user_list_model,
+                            users,
+                            user_list,
                             user_id,
                             saved_volumes,
                             ..
@@ -421,7 +472,7 @@ async fn handle_network_events(
                         {
                             (
                                 UiState::Disconnecting,
-                                Some((user_list_model, user_id, saved_volumes)),
+                                Some((users, user_list, user_id, saved_volumes)),
                             )
                         } else {
                             (state, None)
@@ -431,8 +482,14 @@ async fn handle_network_events(
                         None => continue,
                     };
 
-                disconnect_from_server(user_list_model, ui.clone(), network.clone(), audio.clone())
-                    .await;
+                disconnect_from_server(
+                    users,
+                    user_list,
+                    ui.clone(),
+                    network.clone(),
+                    audio.clone(),
+                )
+                .await;
 
                 ui.borrow_mut().set_state(UiState::ChooseServer {
                     user_id,
@@ -446,10 +503,11 @@ async fn handle_network_events(
                     .set_text("Disconnecting from the server because the socket closed");
             }
             NetworkEvent::NetworkError => {
-                let (user_list_model, user_id, saved_volumes) =
+                let (users, user_list, user_id, saved_volumes) =
                     match ui.borrow_mut().use_state(|state| {
                         if let UiState::Main {
-                            user_list_model,
+                            users,
+                            user_list,
                             user_id,
                             saved_volumes,
                             ..
@@ -457,7 +515,7 @@ async fn handle_network_events(
                         {
                             (
                                 UiState::Disconnecting,
-                                Some((user_list_model, user_id, saved_volumes)),
+                                Some((users, user_list, user_id, saved_volumes)),
                             )
                         } else {
                             (state, None)
@@ -467,8 +525,14 @@ async fn handle_network_events(
                         None => continue,
                     };
 
-                disconnect_from_server(user_list_model, ui.clone(), network.clone(), audio.clone())
-                    .await;
+                disconnect_from_server(
+                    users,
+                    user_list,
+                    ui.clone(),
+                    network.clone(),
+                    audio.clone(),
+                )
+                .await;
 
                 ui.borrow_mut().set_state(UiState::ChooseServer {
                     user_id,
@@ -486,60 +550,26 @@ async fn handle_network_events(
                 client_id,
                 is_from_lead_client,
             } => {
-                if let UiState::Main {
-                    user_list_model, ..
-                } = ui.borrow().state()
-                {
-                    let iter = user_list_model.iter_first().unwrap();
-                    let iter = loop {
-                        if let Ok(row_client_id) = user_list_model
-                            .get_value(&iter, Columns::Id as i32)
-                            .get::<u32>()
-                        {
-                            if row_client_id == client_id as u32 {
-                                break Some(iter);
-                            }
-                        }
-
-                        if !user_list_model.iter_next(&iter) {
-                            break None;
-                        }
-                    };
-
-                    if let Some(iter) = iter {
-                        if let Ok(is_already_peer_to_peer) = user_list_model
-                            .get_value(&iter, Columns::IsPeerToPeer as i32)
-                            .get::<bool>()
-                        {
-                            if !is_already_peer_to_peer || is_from_lead_client {
-                                user_list_model.set(
-                                    &iter,
-                                    &[
-                                        (
-                                            Columns::NetworkLatency as u32,
-                                            &format!(
-                                                "{:.1}ms 🔗",
-                                                (round_trip_latency.as_micros() as f64)
-                                                    / 1000.0
-                                                    / 2.0
-                                            ),
-                                        ),
-                                        (Columns::IsPeerToPeer as u32, &true),
-                                    ],
-                                );
-                            }
+                if let UiState::Main { users, .. } = ui.borrow_mut().state_mut() {
+                    if let Some(user) = users.get_mut(&client_id) {
+                        let mut user = user.borrow_mut();
+                        if !user.is_peer_to_peer || is_from_lead_client {
+                            user.is_peer_to_peer = true;
+                            user.network_latency = round_trip_latency;
+                            user.update_latency_text();
                         }
                     }
                 }
             }
             NetworkEvent::Packet(packet) => {
                 if let UiState::Main {
-                    user_list_model,
+                    users,
+                    user_list,
                     client_id,
                     round_trip_latency,
                     saved_volumes,
                     ..
-                } = &ui.borrow().state()
+                } = ui.borrow_mut().state_mut()
                 {
                     let result: Result<(), CommsNetworkError> = (|| {
                         match packet.kind() {
@@ -584,26 +614,28 @@ async fn handle_network_events(
                                     100u16
                                 };
 
-                                user_list_model.set(
-                                    &user_list_model.append(),
-                                    &[
-                                        (Columns::Id as u32, &(packet.body.user.client_id as u32)),
-                                        (Columns::Username as u32, &packet.body.user.name),
-                                        (Columns::Volume as u32, &(volume as u32)),
-                                        (
-                                            Columns::NetworkLatency as u32,
-                                            &format!(
-                                                "{:.1}ms",
-                                                (one_way_latency.as_micros() as f64) / 1000.0
-                                            ),
-                                        ),
-                                        (Columns::IsPeerToPeer as u32, &false),
-                                        (
-                                            Columns::UserId as u32,
-                                            &packet.body.user.user_id.to_string(),
-                                        ),
-                                    ],
+                                let (row_widget, latency_widget) = UiUser::create_widgets(
+                                    &packet.body.user.name,
+                                    *round_trip_latency,
                                 );
+                                let user = UiUser {
+                                    client_id: packet.body.user.client_id,
+                                    user_id: packet.body.user.user_id,
+                                    volume,
+                                    is_current_user: false,
+                                    network_latency: one_way_latency,
+                                    is_peer_to_peer: false,
+                                    root_widget: row_widget,
+                                    latency_widget,
+                                };
+                                user_list.append(&user.root_widget);
+                                let user = Rc::new(RefCell::new(user));
+                                UiUser::attach_signal_handlers(
+                                    user.clone(),
+                                    audio.clone(),
+                                    ui.clone(),
+                                );
+                                users.insert(packet.body.user.client_id, user);
                             }
                             UserLeft::KIND_ID => {
                                 let packet: Packet<UserLeft> = packet.finish_parse()?;
@@ -615,22 +647,8 @@ async fn handle_network_events(
                                     client_id: packet.body.client_id,
                                 });
 
-                                let id = packet.body.client_id as u32;
-                                let iter = user_list_model.iter_first().unwrap();
-                                loop {
-                                    let value = user_list_model
-                                        .get_value(&iter, Columns::Id as i32)
-                                        .get::<u32>()
-                                        .unwrap();
-                                    if value == id {
-                                        user_list_model.remove(&iter);
-                                        break;
-                                    }
-                                    if !user_list_model.iter_next(&iter) {
-                                        println!("Couldn't find user to remove");
-                                        break;
-                                    }
-                                }
+                                let user = users.remove(&packet.body.client_id).unwrap();
+                                user_list.remove(&user.borrow().root_widget.parent().unwrap());
                             }
                             _ => (),
                         }
@@ -788,7 +806,6 @@ pub fn run(
             disconnect_button_revealer,
             window: window.clone(),
             builder: builder.clone(),
-            network_latency_column_ref: None,
         }));
 
         let glib_context = glib::MainContext::default();
@@ -854,148 +871,16 @@ pub fn run(
         stack.add_named(&connect_form, Some("connect"));
 
         // --- Setup for main state
-
-        let box_containing_treeview: gtk::Box =
-            builder.object("box_containing_status_treeview").unwrap();
-        let treeview: gtk::TreeView = builder.object("status_treeview").unwrap();
-        let username_column = TreeViewColumn::with_attributes(
-            "Users",
-            &gtk::CellRendererText::new(),
-            &[("text", Columns::Username as i32)],
-        );
-        username_column.set_property("expand", true);
-        treeview.append_column(&username_column);
-
-        let network_latency_column = TreeViewColumn::with_attributes(
-            "Network Latency",
-            &gtk::CellRendererText::builder().xalign(1.0).build(),
-            &[("text", Columns::NetworkLatency as i32)],
-        );
-        treeview.append_column(&network_latency_column);
-        {
-            ui.borrow_mut().network_latency_column_ref =
-                Some(network_latency_column.as_object_ref().clone());
-        }
-
-        {
-            let audio = audio.clone();
-            let ui = ui.clone();
-
-            let click_gesture = gtk::GestureClick::new();
-            click_gesture.set_button(3);
-            treeview.add_controller(&click_gesture);
-            click_gesture.connect_pressed(move |_, _, x, y| {
-                let x = x.round() as i32;
-                let y = y.round() as i32;
-                if let Some(user) = treeview.path_at_pos(x, y) {
-                    let model = treeview.model().unwrap();
-                    let iter = model.iter(user.0.as_ref().unwrap()).unwrap();
-
-                    let client_id = model
-                        .get_value(&iter, Columns::Id as i32)
-                        .get::<u32>()
-                        .unwrap();
-                    let user_id: UserId = UserId::from_str(
-                        &model
-                            .get_value(&iter, Columns::UserId as i32)
-                            .get::<String>()
-                            .unwrap(),
-                    )
-                    .unwrap();
-
-                    let volume = model
-                        .get_value(&iter, Columns::Volume as i32)
-                        .get::<u32>()
-                        .unwrap();
-                    let is_current_user = model
-                        .get_value(&iter, Columns::IsCurrentUser as i32)
-                        .get::<bool>()
-                        .unwrap();
-
-                    let popover = gtk::Popover::new();
-                    let popover_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-
-                    let label_text = match is_current_user {
-                        true => "Headphone Volume",
-                        false => "Volume",
-                    };
-
-                    let adjustment =
-                        gtk::Adjustment::new(volume as f64, 0.0, 400.0, 2.0, 10.0, 0.0);
-                    let scale = gtk::builders::ScaleBuilder::new()
-                        .adjustment(&adjustment)
-                        .value_pos(PositionType::Left)
-                        .orientation(Orientation::Horizontal)
-                        .digits(0)
-                        .draw_value(true)
-                        .build();
-
-                    scale.add_mark(100.0, gtk::PositionType::Bottom, None);
-                    scale.add_mark(200.0, gtk::PositionType::Bottom, None);
-                    scale.add_mark(300.0, gtk::PositionType::Bottom, None);
-                    scale.set_width_request(200);
-
-                    popover_box.insert_child_after(&scale, None::<&gtk::Widget>);
-                    popover_box.insert_child_after(
-                        &gtk::builders::LabelBuilder::new().label(label_text).build(),
-                        None::<&gtk::Widget>,
-                    );
-
-                    let audio = audio.clone();
-                    let ui = ui.clone();
-                    scale.connect_value_changed(move |scale| {
-                        let mut ui = ui.borrow_mut();
-                        let (user_list_model, saved_volumes) = if let UiState::Main {
-                            user_list_model,
-                            saved_volumes,
-                            ..
-                        } = ui.state_mut()
-                        {
-                            (user_list_model, saved_volumes)
-                        } else {
-                            return;
-                        };
-
-                        let new_volume = scale.adjustment().value() as u16;
-                        audio
-                            .send(if is_current_user {
-                                AudioCommand::ChangeMainVolume(new_volume)
-                            } else {
-                                AudioCommand::ChangeClientVolume(client_id as ClientId, new_volume)
-                            })
-                            .unwrap();
-
-                        let values: [(u32, &dyn ToValue); 1] =
-                            [(Columns::Volume as u32, &(new_volume as u32))];
-                        user_list_model.set(&iter, &values);
-
-                        saved_volumes.insert(user_id, new_volume);
-                        let glib_context = glib::MainContext::default();
-                        glib_context.spawn_local(update_saved_volumes(saved_volumes.clone()));
-                    });
-
-                    let rectangle = gdk::Rectangle::new(x, y, 0, 0);
-                    popover.set_pointing_to(Some(&rectangle));
-                    box_containing_treeview.insert_child_after(&popover, None::<&gtk::Widget>);
-                    popover.set_child(Some(&popover_box));
-                    popover.popup();
-
-                    popover.connect_closed(|popover| {
-                        popover.unparent();
-                    });
-                }
-            });
-        }
-
         disconnect_button.connect_clicked(move |_| {
             let ui = ui.clone();
             let network = network.clone();
             let audio = audio.clone();
             glib_context.spawn_local(async move {
-                let (user_list_model, user_id, saved_volumes) =
+                let (users, user_list, user_id, saved_volumes) =
                     match ui.borrow_mut().use_state(|state| {
                         if let UiState::Main {
-                            user_list_model,
+                            users,
+                            user_list,
                             user_id,
                             saved_volumes,
                             ..
@@ -1003,7 +888,7 @@ pub fn run(
                         {
                             (
                                 UiState::Disconnecting,
-                                Some((user_list_model, user_id, saved_volumes)),
+                                Some((users, user_list, user_id, saved_volumes)),
                             )
                         } else {
                             (state, None)
@@ -1013,7 +898,7 @@ pub fn run(
                         None => return,
                     };
 
-                disconnect_from_server(user_list_model, ui.clone(), network, audio).await;
+                disconnect_from_server(users, user_list, ui.clone(), network, audio).await;
 
                 ui.borrow_mut().set_state(UiState::ChooseServer {
                     user_id,
@@ -1022,8 +907,8 @@ pub fn run(
             });
         });
 
-        let status_box: gtk::ScrolledWindow = builder.object("status_box").unwrap();
-        stack.add_named(&status_box, Some("status"));
+        let user_list_root: gtk::ScrolledWindow = builder.object("user_list_root").unwrap();
+        stack.add_named(&user_list_root, Some("user_list"));
 
         window.set_child(Some(&stack));
         window.present();

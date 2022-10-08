@@ -9,3 +9,7 @@ scale value {
 .edit-icon {
     opacity: 0;
 }
+
+row {
+    padding: 2px 4px;
+}
