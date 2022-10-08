@@ -6,6 +6,7 @@ use std::time::Duration;
 use directories::ProjectDirs;
 use futures::channel::mpsc::Sender;
 use futures::stream::StreamExt;
+use futures_timer::Delay;
 use gio::prelude::*;
 use gio::ApplicationFlags;
 use gtk::prelude::*;
@@ -159,6 +160,8 @@ async fn try_connect(
                 is_peer_to_peer: false,
                 root_widget: row_widget,
                 latency_widget,
+                is_speaking: false,
+                speaking_duration: Duration::ZERO,
             }));
             UiUser::attach_signal_handlers(user.clone(), audio_handle.clone(), ui.clone());
             let mut users = HashMap::from([(client_id, user)]);
@@ -189,6 +192,8 @@ async fn try_connect(
                     is_peer_to_peer: false,
                     root_widget: row_widget,
                     latency_widget,
+                    is_speaking: false,
+                    speaking_duration: Duration::ZERO,
                 }));
                 UiUser::attach_signal_handlers(user_rc.clone(), audio_handle.clone(), ui.clone());
                 users.insert(user.client_id, user_rc);
@@ -262,6 +267,8 @@ struct UiUser {
     is_peer_to_peer: bool,
     root_widget: gtk::Box,
     latency_widget: gtk::Label,
+    is_speaking: bool,
+    speaking_duration: Duration,
 }
 
 impl UiUser {
@@ -429,11 +436,16 @@ struct UiModel {
     state: Option<UiState>,
     pane_stack: gtk::Stack,
     builder: gtk::Builder,
+    app: adw::Application,
     window: gtk::ApplicationWindow,
     disconnect_button_revealer: gtk::Revealer,
 }
 
 impl UiModel {
+    fn state(&self) -> &UiState {
+        self.state.as_ref().unwrap()
+    }
+
     fn state_mut(&mut self) -> &mut UiState {
         self.state.as_mut().unwrap()
     }
@@ -627,6 +639,8 @@ async fn handle_network_events(
                                     is_peer_to_peer: false,
                                     root_widget: row_widget,
                                     latency_widget,
+                                    is_speaking: false,
+                                    speaking_duration: Duration::ZERO,
                                 };
                                 user_list.append(&user.root_widget);
                                 let user = Rc::new(RefCell::new(user));
@@ -668,6 +682,118 @@ async fn handle_network_events(
     }
 }
 
+async fn handle_ui_commands(
+    mut receiver: futures::channel::mpsc::Receiver<UICommand>,
+    ui: Rc<RefCell<UiModel>>,
+) {
+    while let Some(event) = receiver.next().await {
+        match event {
+            UICommand::UserIsSpeaking {
+                client_id,
+                duration,
+            } => {
+                if let UiState::Main { users, .. } = ui.borrow().state() {
+                    if let Some(user_rc) = users.get(&client_id) {
+                        let mut user = user_rc.borrow_mut();
+                        if !user.is_speaking {
+                            user.is_speaking = true;
+                            user.speaking_duration = duration;
+                            if let Some(p) = user.root_widget.parent() {
+                                p.add_css_class("active")
+                            }
+                            let glib_context = glib::MainContext::default();
+                            let user_rc = user_rc.clone();
+                            glib_context.spawn_local(async move {
+                                loop {
+                                    let timeout = {
+                                        let mut user = user_rc.borrow_mut();
+                                        let timeout = user.speaking_duration;
+                                        user.speaking_duration = Duration::ZERO;
+                                        timeout
+                                    };
+                                    Delay::new(timeout).await;
+
+                                    if timeout == Duration::ZERO {
+                                        let mut user = user_rc.borrow_mut();
+                                        user.is_speaking = false;
+                                        if let Some(p) = user.root_widget.parent() {
+                                            p.remove_css_class("active")
+                                        }
+                                        break;
+                                    }
+                                }
+                            });
+                        } else {
+                            user.speaking_duration += duration;
+                        }
+                    }
+                }
+            }
+            UICommand::CurrentUserStartedSpeaking => {
+                if let UiState::Main {
+                    client_id, users, ..
+                } = ui.borrow().state()
+                {
+                    if let Some(user_rc) = users.get(client_id) {
+                        let mut user = user_rc.borrow_mut();
+                        user.is_speaking = true;
+                        if let Some(p) = user.root_widget.parent() {
+                            p.add_css_class("active")
+                        }
+                    }
+                }
+            }
+            UICommand::CurrentUserStoppedSpeaking => {
+                if let UiState::Main {
+                    client_id, users, ..
+                } = ui.borrow().state()
+                {
+                    if let Some(user_rc) = users.get(client_id) {
+                        let mut user = user_rc.borrow_mut();
+                        user.is_speaking = false;
+                        if let Some(p) = user.root_widget.parent() {
+                            p.remove_css_class("active")
+                        }
+                    }
+                }
+            }
+            UICommand::AudioIPCInitStatus(audio_status) => {
+                if let AudioIPCInitStatus::Error(e) = audio_status {
+                    let error_message = match e {
+                        EventLoopCreationError::NoInputDevice => {
+                            "No microphone was detected".to_string()
+                        }
+                        EventLoopCreationError::NoOutputDevice => {
+                            "No headphones/speakers were detected".to_string()
+                        }
+                        EventLoopCreationError::InputDeviceError(m) => {
+                            format!("Failed to set up microphone: {}", m)
+                        }
+                        EventLoopCreationError::OutputDeviceError(m) => {
+                            format!("Failed to set up headphones/speakers: {}", m)
+                        }
+                    };
+
+                    let app = ui.borrow().app.clone();
+                    let window = ui.borrow().window.clone();
+                    let dialog = gtk::Dialog::with_buttons(
+                        Some(&error_message),
+                        Some(&window),
+                        DialogFlags::USE_HEADER_BAR.union(DialogFlags::DESTROY_WITH_PARENT),
+                        &[("_Close", ResponseType::Close)],
+                    );
+                    dialog.connect_response(move |_, _| {
+                        app.quit();
+                    });
+                    dialog.show();
+                    return;
+                }
+            }
+            UICommand::DevicesFound { .. } => (),
+        }
+    }
+}
+
 fn gtk_start(f: impl FnOnce(&adw::Application) + 'static) {
     let application =
         adw::Application::new(Some("ca.mitchhentges.comms"), ApplicationFlags::NON_UNIQUE);
@@ -690,7 +816,7 @@ pub fn run(
     network: NetworkHandle,
     network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
     network_event_sender: Sender<NetworkEvent>,
-    ui_receiver: std::sync::mpsc::Receiver<UICommand>,
+    ui_receiver: futures::channel::mpsc::Receiver<UICommand>,
     audio: AudioHandle,
 ) {
     let initial_local_storage: Option<LocalStorage> = ProjectDirs::from("", "Comms", "Comms")
@@ -746,48 +872,8 @@ pub fn run(
         header_bar.pack_start(&disconnect_button_revealer);
         window.set_titlebar(Some(&header_bar));
 
-        let command = ui_receiver.recv().unwrap();
-        let audio_status = match command {
-            UICommand::AudioIPCInitStatus(s) => s,
-            _ => panic!("Expected first UICommand to be 'AudioIPCInitStatus'"),
-        };
-        if let AudioIPCInitStatus::Error(e) = audio_status {
-            let error_message = match e {
-                EventLoopCreationError::NoInputDevice => "No microphone was detected".to_string(),
-                EventLoopCreationError::NoOutputDevice => {
-                    "No headphones/speakers were detected".to_string()
-                }
-                EventLoopCreationError::InputDeviceError(m) => {
-                    format!("Failed to set up microphone: {}", m)
-                }
-                EventLoopCreationError::OutputDeviceError(m) => {
-                    format!("Failed to set up headphones/speakers: {}", m)
-                }
-            };
-
-            let dialog = gtk::Dialog::with_buttons(
-                Some(&error_message),
-                Some(&window),
-                DialogFlags::USE_HEADER_BAR.union(DialogFlags::DESTROY_WITH_PARENT),
-                &[("_Close", ResponseType::Close)],
-            );
-            let app = app.clone();
-            dialog.connect_response(move |_, _| {
-                app.quit();
-            });
-            dialog.show();
-            return;
-        }
-
+        // Audio thread is expecting this to be provided.
         audio.send(AudioCommand::ListDevices).unwrap();
-        let ui_cmd_from_audio: UICommand = ui_receiver.recv().unwrap();
-        match ui_cmd_from_audio {
-            UICommand::DevicesFound {
-                input_devices,
-                output_devices,
-            } => (input_devices, output_devices),
-            _ => panic!("Expected second UICommand to be 'DevicesFound'"),
-        };
 
         let stack = gtk::Stack::new();
         stack.set_visible(true);
@@ -804,6 +890,7 @@ pub fn run(
             }),
             pane_stack: stack.clone(),
             disconnect_button_revealer,
+            app: app.clone(),
             window: window.clone(),
             builder: builder.clone(),
         }));
@@ -816,6 +903,7 @@ pub fn run(
             network.clone(),
             ui.clone(),
         ));
+        glib_context.spawn_local(handle_ui_commands(ui_receiver, ui.clone()));
 
         window.set_title(Some("Comms"));
         stack.set_transition_duration(100);

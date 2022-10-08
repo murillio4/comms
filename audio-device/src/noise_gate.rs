@@ -14,6 +14,10 @@ pub enum State {
 }
 
 impl State {
+    fn is_active(&self) -> bool {
+        !matches!(self, State::Off)
+    }
+
     fn update_threshold_state(&mut self, is_above: bool) {
         *self = match self {
             State::Off => {
@@ -100,6 +104,13 @@ pub struct GateNoiseFilter {
     pub recent_chunks: AllocRingBuffer<f32>,
     pub threshold: f32,
     pub state: State,
+    was_active: bool,
+}
+
+pub enum ChangedState {
+    NONE,
+    OPEN,
+    CLOSED,
 }
 
 impl GateNoiseFilter {
@@ -108,10 +119,11 @@ impl GateNoiseFilter {
             recent_chunks: AllocRingBuffer::with_capacity(sliding_window_chunk_count),
             threshold: 0f32,
             state: State::Off,
+            was_active: false,
         }
     }
 
-    pub fn update_window(&mut self, next_chunk: &[f32]) {
+    pub fn update_window(&mut self, next_chunk: &[f32]) -> ChangedState {
         let mut accumulator = 0f32;
         for sample in next_chunk {
             accumulator += sample * sample;
@@ -133,6 +145,14 @@ impl GateNoiseFilter {
             .fold(f32::INFINITY, |a, &b| a.min(b));
         self.threshold = noise_floor * 1.1 + 0.005;
         self.state.update_threshold_state(rms > self.threshold);
+        let is_now_active = self.state.is_active();
+        let state_change = match (self.was_active, is_now_active) {
+            (false, true) => ChangedState::OPEN,
+            (true, false) => ChangedState::CLOSED,
+            _ => ChangedState::NONE,
+        };
+        self.was_active = is_now_active;
+        state_change
     }
 
     pub fn process(&mut self, sample: f32) -> f32 {

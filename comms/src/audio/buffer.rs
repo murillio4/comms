@@ -1,6 +1,7 @@
 use crate::network::ipc::{NetworkCommand, NetworkHandle, Protocol};
+use crate::ui::ipc::UICommand;
 use audio_device::buffer::{MaybeSharedPlaybackSource, MicSink, PlaybackSource};
-use audio_device::noise_gate::GateNoiseFilter;
+use audio_device::noise_gate::{ChangedState, GateNoiseFilter};
 use audiopus::coder::{Decoder, Encoder};
 use audiopus::{Application, Channels};
 use comms_lib::packet::{AudioIndex, ClientId, P2pEstablished};
@@ -10,6 +11,7 @@ use dasp::Sample;
 use glib::bitflags::_core::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 const BUFFER_SIZE: usize = 4800;
 
@@ -68,6 +70,7 @@ impl Multiplexer {
         data: OpusAudioFrame,
         is_peer_to_peer: bool,
         network_handle: &NetworkHandle,
+        ui_handle: &mut futures::channel::mpsc::Sender<UICommand>,
     ) -> Result<(), audiopus::Error> {
         let queue = match self.client_queues.get_mut(&id) {
             Some(queue) => queue,
@@ -85,6 +88,13 @@ impl Multiplexer {
             &mut decode_buffer as &mut [f32],
             false,
         )?;
+
+        ui_handle
+            .try_send(UICommand::UserIsSpeaking {
+                client_id: id,
+                duration: Duration::from_millis((size as f64 / 48.0).round() as u64),
+            })
+            .unwrap();
 
         for new_sample in &decode_buffer[..size] {
             let sample_buffer_index =
@@ -186,6 +196,7 @@ impl MaybeSharedPlaybackSource<Multiplexer> for RcMultiplexer {
 
 pub struct MicBuffer {
     network_handle: NetworkHandle,
+    ui_handle: futures::channel::mpsc::Sender<UICommand>,
     sample_buffer: [f32; BUFFER_SIZE],
     sample_buffer_start: usize,
     sample_buffer_end: usize,
@@ -195,9 +206,13 @@ pub struct MicBuffer {
 }
 
 impl MicBuffer {
-    pub fn new(network_handle: NetworkHandle) -> Result<Self, audiopus::Error> {
+    pub fn new(
+        network_handle: NetworkHandle,
+        ui_handle: futures::channel::mpsc::Sender<UICommand>,
+    ) -> Result<Self, audiopus::Error> {
         Ok(Self {
             network_handle,
+            ui_handle,
             sample_buffer: [0f32; BUFFER_SIZE],
             sample_buffer_start: 0,
             sample_buffer_end: 0,
@@ -224,7 +239,18 @@ impl MicSink for MicBuffer {
         {
             let next_samples =
                 &mut self.sample_buffer[self.sample_buffer_start..self.sample_buffer_start + 480];
-            self.noise_gate.update_window(next_samples);
+            let state_change = self.noise_gate.update_window(next_samples);
+            match state_change {
+                ChangedState::OPEN => self
+                    .ui_handle
+                    .try_send(UICommand::CurrentUserStartedSpeaking)
+                    .unwrap(),
+                ChangedState::CLOSED => self
+                    .ui_handle
+                    .try_send(UICommand::CurrentUserStoppedSpeaking)
+                    .unwrap(),
+                _ => (),
+            };
 
             for sample in next_samples.iter_mut() {
                 *sample = self.noise_gate.process(*sample);

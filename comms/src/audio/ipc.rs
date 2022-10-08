@@ -87,7 +87,7 @@ pub struct AudioReceiver<R> {
     pub(crate) multiplexer: RcMultiplexer,
     pub(crate) registration: R,
     pub(crate) command_rx: Receiver<AudioCommand>,
-    pub(crate) ui_handle: Sender<UICommand>,
+    pub(crate) ui_handle: futures::channel::mpsc::Sender<UICommand>,
     pub(crate) network_handle: NetworkHandle,
 }
 
@@ -96,7 +96,7 @@ impl<R> AudioReceiver<R> {
         multiplexer: RcMultiplexer,
         registration: R,
         command_rx: Receiver<AudioCommand>,
-        ui_handle: Sender<UICommand>,
+        ui_handle: futures::channel::mpsc::Sender<UICommand>,
         network_handle: NetworkHandle,
     ) -> Self {
         Self {
@@ -137,6 +137,7 @@ impl<R> InterruptReceiver<R> for AudioReceiver<R> {
                                 chunk,
                                 is_peer_to_peer,
                                 &self.network_handle,
+                                &mut self.ui_handle,
                             )
                             .expect("Failed to decode audio from multiplexer client")
                     })
@@ -144,10 +145,10 @@ impl<R> InterruptReceiver<R> for AudioReceiver<R> {
                 AudioCommand::SwitchInputDevice(device_id) => AC::change_input_device(device_id),
                 AudioCommand::SwitchOutputDevice(device_id) => AC::change_output_device(device_id),
                 AudioCommand::ListDevices => {
-                    let ui_handle = self.ui_handle.clone();
+                    let mut ui_handle = self.ui_handle.clone();
                     connection.list_devices(move |devices| {
                         ui_handle
-                            .send(UICommand::DevicesFound {
+                            .try_send(UICommand::DevicesFound {
                                 input_devices: devices.input_devices,
                                 output_devices: devices.output_devices,
                             })

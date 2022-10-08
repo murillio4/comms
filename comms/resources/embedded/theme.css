@@ -11,5 +11,17 @@ scale value {
 }
 
 row {
-    padding: 2px 4px;
+    padding: 0;
+}
+
+row .horizontal {
+    padding: 2px 4px 1px;
+}
+
+row.active .horizontal {
+    background-color: rgba(0, 255, 0, 0.05);
+    border: 1px solid #90CFAF;
+    margin: 1px 1px 0;
+    padding: 0 2px;
+    border-radius: 3px;
 }

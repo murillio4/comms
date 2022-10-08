@@ -9,7 +9,7 @@ use crate::network::ipc::NetworkHandle;
 use crate::network::SendToNetworkThreadError;
 use crate::ui::ipc::{AudioIPCInitStatus, UICommand};
 use audio_device::audio_connection::EventLoop;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 
 #[cfg(windows)]
 mod wasapi;
@@ -24,7 +24,7 @@ pub type AudioPlatformImpl = crate::audio::pulseaudio::PulseAudioPlatform;
 pub fn run(
     parameters: <AudioPlatformImpl as AudioPlatform>::Parameters,
     network_handle: NetworkHandle,
-    ui_handle: Sender<UICommand>,
+    mut ui_handle: futures::channel::mpsc::Sender<UICommand>,
     registration: <AudioPlatformImpl as AudioPlatform>::Registration,
     receiver: Receiver<AudioCommand>,
 ) -> Result<(), AudioError> {
@@ -36,19 +36,19 @@ pub fn run(
         ui_handle.clone(),
         network_handle.clone(),
     );
-    let mic_buffer = MicBuffer::new(network_handle)?;
+    let mic_buffer = MicBuffer::new(network_handle, ui_handle.clone())?;
     let event_loop =
         match AudioPlatformImpl::create_event_loop(parameters, receiver, mic_buffer, multiplexer) {
             Ok(l) => l,
             Err(e) => {
                 ui_handle
-                    .send(UICommand::AudioIPCInitStatus(AudioIPCInitStatus::Error(e)))
+                    .try_send(UICommand::AudioIPCInitStatus(AudioIPCInitStatus::Error(e)))
                     .unwrap();
                 return Ok(());
             }
         };
     ui_handle
-        .send(UICommand::AudioIPCInitStatus(AudioIPCInitStatus::Ready))
+        .try_send(UICommand::AudioIPCInitStatus(AudioIPCInitStatus::Ready))
         .unwrap();
     event_loop.run();
     Ok(())

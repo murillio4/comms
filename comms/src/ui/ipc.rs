@@ -1,5 +1,7 @@
 use crate::audio::ipc::EventLoopCreationError;
 use audio_device::audio_connection::DeviceInfo;
+use comms_lib::packet::ClientId;
+use std::time::Duration;
 
 pub enum AudioIPCInitStatus {
     Ready,
@@ -12,4 +14,10 @@ pub enum UICommand {
         input_devices: Vec<DeviceInfo>,
         output_devices: Vec<DeviceInfo>,
     },
+    UserIsSpeaking {
+        client_id: ClientId,
+        duration: Duration,
+    },
+    CurrentUserStartedSpeaking,
+    CurrentUserStoppedSpeaking,
 }

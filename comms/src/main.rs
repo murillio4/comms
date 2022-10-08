@@ -46,7 +46,7 @@ fn main() {
     }));
 
     // Audio <> UI comm channel
-    let (ui_handle, ui_receiver) = mpsc::channel();
+    let (ui_handle, ui_receiver) = futures::channel::mpsc::channel(32);
     // Audio <> Network comm channel
     let (audio_registration, audio_notify) = AudioPlatformImpl::create_channel();
     let (audio_sender, audio_receiver) = mpsc::channel();
