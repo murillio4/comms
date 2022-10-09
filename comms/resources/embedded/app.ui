@@ -36,25 +36,35 @@
       </object>
     </child>
     <child>
-      <object class="GtkProgressBar" id="connect_progress">
-        <property name="valign">start</property>
-        <property name="opacity">0</property>
-      </object>
-    </child>
-    <child>
       <object class="GtkButton" id="connect_button">
-        <property name="focusable">true</property>
-        <property name="label">Connect</property>
+        <property name="css_classes">connect_button</property>
+        <property name="focusable">1</property>
+        <child>
+          <object class="GtkBox">
+            <property name="orientation">vertical</property>
+            <child>
+              <object class="GtkLabel">
+                <property name="label">Connect</property>
+                <property name="hexpand">1</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkProgressBar" id="connect_progress">
+                <property name="opacity">0</property>
+              </object>
+            </child>
+          </object>
+        </child>
       </object>
     </child>
   </object>
   <object class="GtkScrolledWindow" id="user_list_root">
     <property name="focusable">1</property>
     <property name="hscrollbar-policy">never</property>
-    <property name="vexpand">true</property>
+    <property name="vexpand">1</property>
     <property name="child">
       <object class="GtkListBox" id="user_list">
-        <property name="vexpand">true</property>
+        <property name="vexpand">1</property>
       </object>
     </property>
   </object>

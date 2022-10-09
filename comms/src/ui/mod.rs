@@ -910,6 +910,10 @@ pub fn run(
 
         // --- Setup for connect-to-server state
 
+        let connect_progress: gtk::ProgressBar = builder.object("connect_progress").unwrap();
+        connect_progress.add_css_class("osd");
+        connect_progress.add_css_class("horizontal");
+
         let server_entry: adw::EntryRow = builder.object("server_entry").unwrap();
         server_entry.set_text(&server_parameter.unwrap_or(initial_local_storage.server));
 
@@ -932,6 +936,7 @@ pub fn run(
         };
 
         let connect_button: gtk::Button = builder.object("connect_button").unwrap();
+        connect_button.set_overflow(gtk::Overflow::Hidden);
         window.set_default_widget(Some(&connect_button));
         {
             let submit_connection_form = submit_connection_form.clone();
