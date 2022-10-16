@@ -1,3 +1,4 @@
+use crate::warp_wrapper_path::get_warp_wrapper_path;
 use windows::core::s;
 use windows::core::PCSTR;
 use windows::Win32::System::Registry;
@@ -57,13 +58,10 @@ pub fn run() {
         .ok()
         .unwrap();
 
-        // ".replace()" is hacky way to remove the "\\?\" prefix that the "shell\open\command"
-        // configuration doesn't understand.
-        let comms_path = std::env::current_exe()
-            .unwrap()
-            .as_path()
-            .to_string_lossy()
-            .replace(r"\\?\", "");
+        let comms_path = match get_warp_wrapper_path() {
+            Some(path) => path.to_string_lossy().into_owned(),
+            None => return,
+        };
 
         Registry::RegSetValueA(
             key,

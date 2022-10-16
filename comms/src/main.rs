@@ -13,6 +13,7 @@ mod network;
 #[cfg(windows)]
 mod register_protocol;
 mod ui;
+mod warp_wrapper_path;
 
 // const OPUS_PACKET_MAX_LENGTH: usize = 1276;
 

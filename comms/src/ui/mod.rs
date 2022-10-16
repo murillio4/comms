@@ -1,5 +1,10 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io;
+use std::io::Write;
+use std::num::ParseIntError;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -22,6 +27,7 @@ use crate::network;
 use crate::network::future::{attempt_p2p, P2pDestination};
 use crate::network::ipc::{ConnectError, NetworkCommand, NetworkEvent, NetworkHandle};
 use crate::ui::ipc::{AudioIPCInitStatus, UICommand};
+use crate::warp_wrapper_path::get_warp_wrapper_path;
 use comms_lib::network::CommsNetworkError;
 use glib::timeout_add_local;
 use gtk::gdk::Display;
@@ -29,12 +35,267 @@ use uuid::Uuid;
 
 pub mod ipc;
 
+const BUILD_PIPELINE_ID: Option<&str> = option_env!("CI_PIPELINE_ID");
+
 #[derive(Serialize, Deserialize)]
 struct LocalStorage {
     username: String,
     server: String,
     user_id: UserId,
     volumes: HashMap<UserId, u16>,
+}
+
+#[derive(Debug)]
+enum CheckForUpdateError {
+    Ureq(Box<ureq::Error>),
+    Parse,
+    NoWarpWrapper,
+}
+
+enum DownloadProgress {
+    Partial(f64),
+    Done(Vec<u8>),
+}
+
+impl From<ureq::Error> for CheckForUpdateError {
+    fn from(e: ureq::Error) -> Self {
+        Self::Ureq(Box::new(e))
+    }
+}
+
+impl From<io::Error> for CheckForUpdateError {
+    fn from(e: io::Error) -> Self {
+        Self::Ureq(Box::new(e.into()))
+    }
+}
+
+impl From<ParseIntError> for CheckForUpdateError {
+    fn from(_: ParseIntError) -> Self {
+        Self::Parse
+    }
+}
+
+async fn spawn_worker<T: std::fmt::Debug + Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    std::thread::spawn(move || {
+        tx.send(f()).unwrap();
+    });
+    rx.await.unwrap()
+}
+
+async fn check_for_updates(
+    project_dirs: ProjectDirs,
+    header_bar: adw::HeaderBar,
+    update_button_revealer: gtk::Revealer,
+    update_button: gtk::Button,
+    update_button_label: gtk::Label,
+    update_progress_css_provider: gtk::CssProvider,
+) {
+    let build_pipeline_id: u64 = match BUILD_PIPELINE_ID.and_then(|s| s.parse().ok()) {
+        Some(id) => id,
+        None => return,
+    };
+
+    let result = spawn_worker(move || {
+        let result: Result<Option<(u64, PathBuf)>, CheckForUpdateError> = (|| {
+            let comms_path = match get_warp_wrapper_path() {
+                Some(p) => p,
+                None => return Err(CheckForUpdateError::NoWarpWrapper)
+            };
+
+            let json = ureq::get("https://gitlab.com/api/v4/projects/comms-app%2Fcomms/pipelines/?status=success&per_page=1&ref=main")
+                .call()?
+                .into_json::<serde_json::Value>()?;
+            let latest_pipeline_id = match json
+                .get(0)
+                .and_then(|o| o.get("id"))
+                .and_then(|v| v.as_u64())
+            {
+                Some(v) => v,
+                None => return Err(CheckForUpdateError::Parse),
+            };
+            if latest_pipeline_id <= build_pipeline_id {
+                return Ok(None);
+            }
+
+            let json = ureq::get(&format!(
+                "https://gitlab.com/api/v4/projects/comms-app%2Fcomms/pipelines/{}/jobs",
+                latest_pipeline_id
+            ))
+            .call()?
+            .into_json::<serde_json::Value>()?;
+            let job_id = match json
+                .get(0)
+                .and_then(|o| o.get("id"))
+                .and_then(|v| v.as_u64())
+            {
+                Some(v) => v,
+                None => return Err(CheckForUpdateError::Parse),
+            };
+            Ok(Some((job_id, comms_path)))
+        })();
+        result
+    }).await;
+    let (job_id, entry_comms_path) = match result {
+        Ok(Some(tuple)) => tuple,
+        Ok(None) => {
+            println!("No update was found");
+            return;
+        }
+        Err(CheckForUpdateError::Parse) => {
+            eprintln!("Failed to parse GitLab JSON");
+            return;
+        }
+        Err(CheckForUpdateError::Ureq(ureq_error)) => {
+            eprintln!("Request error: {:?}", ureq_error);
+            return;
+        }
+        Err(CheckForUpdateError::NoWarpWrapper) => {
+            eprintln!("Failed to find warp wrapper executable");
+            return;
+        }
+    };
+    header_bar.pack_end(&update_button_revealer);
+    update_button_revealer.set_reveal_child(true);
+
+    update_button.connect_clicked(move |button| {
+        let update_progress_css_provider = update_progress_css_provider.clone();
+        let update_progress_css = move |progress: u16| {
+            update_progress_css_provider.load_from_data(format!(".horizontal {{
+                background: linear-gradient(to right, rgba(0, 0, 0, 0.15) {progress}%, transparent {progress}%);
+            }}", progress=progress).as_bytes());
+        };
+
+        button.set_sensitive(false);
+        update_button_label.set_text("Updating...");
+        button.set_tooltip_text(Some("Will restart once finished"));
+        update_progress_css(0);
+
+        let (tx, rx) = async_channel::unbounded();
+        std::thread::spawn(move || {
+            let result: Result<(), CheckForUpdateError> = (|| {
+                let response = ureq::get(&format!("https://gitlab.com/api/v4/projects/comms-app%2Fcomms/jobs/{}/artifacts/comms.exe", job_id))
+                    .call()?;
+                let content_length: usize = match response.header("Content-Length") {
+                    Some(h) => h.parse()?,
+                    None => return Err(CheckForUpdateError::Parse),
+                };
+                let mut buf = Vec::with_capacity(content_length);
+                let mut chunk = [0u8; 4096];
+                let mut reader = response.into_reader();
+                loop {
+                    match reader.read(&mut chunk)? {
+                        0 => break,
+                        amount => {
+                            buf.extend_from_slice(&chunk[..amount]);
+                            let percentage_progress = (buf.len() as f64) / content_length as f64;
+                            tx.try_send(Ok(DownloadProgress::Partial(percentage_progress))).unwrap();
+                        }
+                    }
+                }
+
+                tx.try_send(Ok(DownloadProgress::Done(buf.clone()))).unwrap();
+                Ok(())
+            })();
+
+            if let Err(e) = result {
+                tx.try_send(Err(e)).unwrap();
+            }
+        });
+
+        let show_update_failure = {
+            let button = button.clone();
+            let update_button_label = update_button_label.clone();
+            move |description: String| {
+                button.remove_css_class("suggested-action");
+                button.add_css_class("destructive-action");
+                update_button_label.set_text("Failed to update");
+                button.set_tooltip_text(Some(&description));
+            }
+        };
+
+        let glib_context = glib::MainContext::default();
+        let update_button_label = update_button_label.clone();
+        let project_dirs = project_dirs.clone();
+        let entry_comms_path = entry_comms_path.clone();
+
+        glib_context.spawn_local(async move {
+            let buf = loop {
+                match rx.recv().await {
+                    Ok(Ok(DownloadProgress::Partial(percentage_progress))) => update_progress_css((percentage_progress * 100.0).round() as u16),
+                    Ok(Ok(DownloadProgress::Done(buf))) => break buf,
+                    Ok(Err(e)) => {
+                        let text = match e {
+                            CheckForUpdateError::Ureq(e) => format!("Request failed: {:?}", e),
+                            CheckForUpdateError::Parse => "Failed to parse JSON/headers/etc".to_string(),
+                            CheckForUpdateError::NoWarpWrapper => unimplemented!(),
+                        };
+                        show_update_failure(text);
+                        return;
+                    }
+                    _ => panic!("Loop should always exit before receiving 'channel closed' error"),
+                }
+            };
+            update_button_label.set_text("Restarting");
+            let cache_dir = project_dirs.cache_dir();
+            let old_comms_cache_path = cache_dir.join("comms-old.exe");
+            let new_comms_cache_path = cache_dir.join("comms-new.exe");
+
+            let result = (move || -> Result<(), Box<dyn std::error::Error>> {
+                let extracted_comms_exe_path = std::env::current_exe()?;
+                let extracted_comms_dir_path = extracted_comms_exe_path
+                    .parent()
+                    .ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{:?} does not have a parent", extracted_comms_exe_path)))?
+                    .to_owned();
+
+                let extracted_comms_dir_backup_path = extracted_comms_dir_path
+                    .parent()
+                    .ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{:?} does not have a parent", extracted_comms_dir_path)))?
+                    .join(format!("{}.old", extracted_comms_dir_path
+                        .file_name()
+                        .ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{:?} does not have a file name", extracted_comms_dir_path)))?
+                        .to_string_lossy()));
+
+                let ignore_not_found_error = |r: Result<_, io::Error>| {
+                    match r {
+                        Ok(_) => Ok(()),
+                        Err(ref e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                        _ => r,
+                    }
+                };
+
+                ignore_not_found_error(std::fs::remove_file(&old_comms_cache_path))?;
+                ignore_not_found_error(std::fs::remove_file(&new_comms_cache_path))?;
+                ignore_not_found_error(std::fs::remove_dir_all(&extracted_comms_dir_backup_path))?;
+
+                std::fs::create_dir_all(&new_comms_cache_path.parent().ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{:?} does not have a parent", new_comms_cache_path)))?)?;
+                std::fs::create_dir_all(&extracted_comms_dir_backup_path)?;
+                {
+                    let mut new_comms = File::create(&new_comms_cache_path)?;
+                    new_comms.write_all(&buf)?;
+                }
+
+                for path in std::fs::read_dir(&extracted_comms_dir_path)? {
+                    let path = path?;
+                    std::fs::rename(path.path(), extracted_comms_dir_backup_path.join(path.file_name()))?;
+                }
+
+                std::fs::rename(&entry_comms_path, &old_comms_cache_path)?;
+                std::fs::rename(&new_comms_cache_path, &entry_comms_path)?;
+
+                std::process::Command::new(entry_comms_path).spawn()?;
+                Ok(())
+            })();
+
+            if let Err(e) = result {
+                show_update_failure(format!("{:?}", e));
+            } else {
+                std::process::exit(0);
+            }
+        });
+    });
 }
 
 async fn try_connect(
@@ -819,11 +1080,11 @@ pub fn run(
     ui_receiver: futures::channel::mpsc::Receiver<UICommand>,
     audio: AudioHandle,
 ) {
-    let initial_local_storage: Option<LocalStorage> = ProjectDirs::from("", "Comms", "Comms")
-        .and_then(|project_dirs| {
-            std::fs::read_to_string(project_dirs.data_dir().join("local_storage")).ok()
-        })
-        .and_then(|storage_string| serde_json::from_str(&storage_string).ok());
+    let project_dirs = ProjectDirs::from("", "Comms", "Comms").unwrap();
+    let initial_local_storage: Option<LocalStorage> =
+        std::fs::read_to_string(project_dirs.data_dir().join("local_storage"))
+            .ok()
+            .and_then(|storage_string| serde_json::from_str(&storage_string).ok());
 
     let initial_local_storage = initial_local_storage.unwrap_or(LocalStorage {
         username: std::env::var_os(if cfg!(windows) { "USERNAME" } else { "USER" })
@@ -868,6 +1129,36 @@ pub fn run(
             .reveal_child(false)
             .build();
 
+        let update_button_progress_box = gtk::Box::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(0)
+            .build();
+        let update_button_label = gtk::Label::new(Some("🎉"));
+        update_button_progress_box.append(&update_button_label);
+        let update_button = gtk::Button::builder()
+            .css_classes(vec![
+                "update_button".to_string(),
+                "suggested-action".to_string(),
+            ])
+            .has_tooltip(true)
+            .tooltip_text("Update is available")
+            .child(&update_button_progress_box)
+            .overflow(gtk::Overflow::Hidden)
+            .build();
+        let update_button_revealer = gtk::Revealer::builder()
+            .transition_type(RevealerTransitionType::Crossfade)
+            .transition_duration(100)
+            .child(&update_button)
+            .reveal_child(false)
+            .build();
+
+        let update_progress_css_provider = gtk::CssProvider::new();
+        StyleContext::add_provider(
+            &update_button_progress_box.style_context(),
+            &update_progress_css_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+
         let header_bar = adw::HeaderBar::new();
         header_bar.pack_start(&disconnect_button_revealer);
         window.set_titlebar(Some(&header_bar));
@@ -904,6 +1195,14 @@ pub fn run(
             ui.clone(),
         ));
         glib_context.spawn_local(handle_ui_commands(ui_receiver, ui.clone()));
+        glib_context.spawn_local(check_for_updates(
+            project_dirs,
+            header_bar,
+            update_button_revealer,
+            update_button,
+            update_button_label,
+            update_progress_css_provider,
+        ));
 
         window.set_title(Some("Comms"));
         stack.set_transition_duration(100);

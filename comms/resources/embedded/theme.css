@@ -46,3 +46,15 @@ row.active .horizontal {
 .connect_button:disabled progressbar {
     filter: none;
 }
+
+.update_button {
+    padding: 0;
+}
+
+.update_button .horizontal {
+    padding: 5px 10px;
+}
+
+.update_button:disabled {
+    filter: none;
+}
