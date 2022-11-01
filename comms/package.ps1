@@ -45,7 +45,9 @@ function CopyWithDependencies {
         }
 
         $global:handled_dependencies += $dll_name
-        $dll_path = where.exe $dll_name
+        $ErrorActionPreference = "SilentlyContinue"
+        $dll_path = where.exe $dll_name 2>$null
+        $ErrorActionPreference = "Stop"
 
         if (($dll_path -eq $null) -or (-not $dll_path.Contains("gtk-build\gtk\x64"))) {
             continue
