@@ -1,5 +1,6 @@
 # Expects the following environment variables to be set:
 # DUMPBIN_PATH: path to the VS Build Tools "dumpbin.exe" binary
+param([switch]$reuse_package_dir)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -20,45 +21,50 @@ if (-not (Test-Path -Path $comms_path)) {
 }
 
 $package_dir = Join-Path -Path $repo_dir -ChildPath "package"
-Remove-Item $package_dir -Recurse -ErrorAction Ignore
-[void](mkdir $package_dir)
 
-$dumpbin = [Environment]::GetEnvironmentVariable('DUMPBIN_PATH')
-$global:handled_dependencies = @()
-function CopyWithDependencies {
-    param (
-        $resource_path
-    )
+if (-not (Test-Path -Path $package_dir) -or -not $reuse_package_dir) {
+    Remove-Item $package_dir -Recurse -ErrorAction Ignore
+    [void](mkdir $package_dir)
 
-    echo "Copying $resource_path"
-    cp $resource_path $package_dir
+    $dumpbin = [Environment]::GetEnvironmentVariable('DUMPBIN_PATH')
+    $global:handled_dependencies = @()
+    function CopyWithDependencies {
+        param (
+            $resource_path
+        )
 
-    $dumpbin_output = & $dumpbin /dependents $resource_path
-    foreach ($line in $dumpbin_output) {
-        if ((-not $line.EndsWith(".dll")) -or (-not $line.StartsWith("    "))) {
-            continue
+        echo "Copying $resource_path"
+        cp $resource_path $package_dir
+
+        $dumpbin_output = & $dumpbin /dependents $resource_path
+        foreach ($line in $dumpbin_output) {
+            if ((-not $line.EndsWith(".dll")) -or (-not $line.StartsWith("    "))) {
+                continue
+            }
+
+            $dll_name = $line.Trim()
+            if ($global:handled_dependencies.Contains($dll_name)) {
+                continue
+            }
+
+            $global:handled_dependencies += $dll_name
+            $ErrorActionPreference = "SilentlyContinue"
+            $dll_path = where.exe $dll_name 2>$null
+            $ErrorActionPreference = "Stop"
+
+            if (($dll_path -eq $null) -or (-not $dll_path.Contains("gtk-build\gtk\x64"))) {
+                continue
+            }
+
+            CopyWithDependencies $dll_path
         }
-
-        $dll_name = $line.Trim()
-        if ($global:handled_dependencies.Contains($dll_name)) {
-            continue
-        }
-
-        $global:handled_dependencies += $dll_name
-        $ErrorActionPreference = "SilentlyContinue"
-        $dll_path = where.exe $dll_name 2>$null
-        $ErrorActionPreference = "Stop"
-
-        if (($dll_path -eq $null) -or (-not $dll_path.Contains("gtk-build\gtk\x64"))) {
-            continue
-        }
-
-        CopyWithDependencies $dll_path
     }
-}
 
-CopyWithDependencies $comms_path
-CopyWithDependencies (where.exe gdbus.exe)
+    CopyWithDependencies $comms_path
+    CopyWithDependencies (where.exe gdbus.exe)
+} else {
+    cp $comms_path $package_dir
+}
 
 Remove-Item comms.exe -ErrorAction Ignore
 warp-packer --arch windows-x64 --input_dir $package_dir --exec comms.exe --output comms.exe
