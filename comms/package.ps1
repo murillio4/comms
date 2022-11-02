@@ -7,14 +7,14 @@ $ErrorActionPreference = "Stop"
 
 $repo_dir = (Get-Item $MyInvocation.MyCommand.Path).Directory.Parent.FullName
 Push-Location $repo_dir
-cargo build --release --bin comms
+cargo build --bin comms --profile release-windows
 if ($LASTEXITCODE -ne 0) {
     Pop-Location
     exit 1
 }
 Pop-Location
 
-$comms_path = Join-Path -Path $repo_dir -ChildPath "target\release\comms.exe"
+$comms_path = Join-Path -Path $repo_dir -ChildPath "target\release-windows\comms.exe"
 if (-not (Test-Path -Path $comms_path)) {
     echo "$comms_path does not exist"
     exit 1

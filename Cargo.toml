@@ -12,6 +12,10 @@ members = [
 ]
 
 [profile.release]
-lto = true
+lto = "thin"
 debug = true
 split-debuginfo = "packed"
+
+[profile.release-windows]
+inherits = "release"
+lto = true

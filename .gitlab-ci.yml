@@ -55,15 +55,15 @@ build_release_windows:
     - cargo fmt --all -- --check
     - cargo clippy --locked --all-targets --all-features -- -D warnings
     - cargo test
-    - cargo build --all --release
+    - cargo build --all --profile release-windows
     - comms/package.ps1
     - comms/sign.ps1
     - sentry-cli upload-dif .\target\release\comms.pdb --org comms --project comms-app --include-sources
   artifacts:
     paths:
       - comms.exe
-      - target/release/beep-cli.exe
-      - target/release/comms.exe
-      - target/release/comms-server.exe
+      - target/release-windows/beep-cli.exe
+      - target/release-windows/comms.exe
+      - target/release-windows/comms-server.exe
   tags:
     - windows
