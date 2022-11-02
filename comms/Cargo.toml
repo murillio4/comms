@@ -9,6 +9,7 @@ adw = { version = "0.2.0-alpha.3", package = "libadwaita", features = ["gtk_v4_4
 async-channel = "1.7.1"
 async-std = "1.4"
 audiopus = "0.2.0"
+chrono = "0.4.22"
 directories = "4.0"
 futures = "0.3"
 futures-timer = "3.0"

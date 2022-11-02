@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+use chrono::{DateTime, SubsecRound};
 use directories::ProjectDirs;
 use futures::channel::mpsc::Sender;
 use futures::stream::StreamExt;
@@ -35,7 +36,7 @@ use uuid::Uuid;
 
 pub mod ipc;
 
-const BUILD_PIPELINE_ID: Option<&str> = option_env!("CI_PIPELINE_ID");
+const BUILD_TIMESTAMP: Option<&str> = option_env!("CI_JOB_STARTED_AT");
 
 #[derive(Serialize, Deserialize)]
 struct LocalStorage {
@@ -93,8 +94,8 @@ async fn check_for_updates(
     update_button_label: gtk::Label,
     update_progress_css_provider: gtk::CssProvider,
 ) {
-    let build_pipeline_id: u64 = match BUILD_PIPELINE_ID.and_then(|s| s.parse().ok()) {
-        Some(id) => id,
+    let build_timestamp = match BUILD_TIMESTAMP.and_then(|s| DateTime::parse_from_rfc3339(s).ok()) {
+        Some(timestamp) => timestamp,
         None => return,
     };
 
@@ -116,24 +117,40 @@ async fn check_for_updates(
                 Some(v) => v,
                 None => return Err(CheckForUpdateError::Parse),
             };
-            if latest_pipeline_id <= build_pipeline_id {
-                return Ok(None);
-            }
 
             let json = ureq::get(&format!(
                 "https://gitlab.com/api/v4/projects/comms-app%2Fcomms/pipelines/{}/jobs",
                 latest_pipeline_id
             ))
-            .call()?
-            .into_json::<serde_json::Value>()?;
-            let job_id = match json
-                .get(0)
-                .and_then(|o| o.get("id"))
+                .call()?
+                .into_json::<serde_json::Value>()?;
+
+            let json = match json.get(0) {
+                Some(j) => j,
+                None => return Err(CheckForUpdateError::Parse),
+            };
+
+            let latest_job_timestamp = match json.get("started_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok()) {
+                Some(d) => d,
+                None => return Err(CheckForUpdateError::Parse),
+            };
+
+            // "started_at" has subseconds while "CI_JOB_STARTED_AT" does not.
+            let latest_job_timestamp = latest_job_timestamp.trunc_subsecs(0);
+
+            if latest_job_timestamp <= build_timestamp {
+                return Ok(None);
+            }
+
+            let job_id = match json.get("id")
                 .and_then(|v| v.as_u64())
             {
                 Some(v) => v,
                 None => return Err(CheckForUpdateError::Parse),
             };
+
             Ok(Some((job_id, comms_path)))
         })();
         result
@@ -1244,8 +1261,8 @@ pub fn run(
                 submit_fn();
             });
         }
-        if let Some(build_id) = BUILD_PIPELINE_ID {
-            connect_button.set_tooltip_text(Some(&format!("Build #{}", build_id)));
+        if let Some(timestamp) = BUILD_TIMESTAMP {
+            connect_button.set_tooltip_text(Some(&format!("Build {}", timestamp)));
             connect_button.set_has_tooltip(true);
         }
 
