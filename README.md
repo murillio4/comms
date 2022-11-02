@@ -5,6 +5,14 @@
 ![screenshot of the connect pane](doc/screenshot-connect.png)
 ![screenshot of the user-list pane](doc/screenshot-user-list.png)
 
+## Features
+
+* Lightweight app, consumes < 15MB of memory
+* Optimized audio pipelines to keep latency low
+* Uses peer-to-peer connections to reduce latency further
+
+## Latency benchmarks
+
 Round-trip audio latency, as casually measured from residential internet:
 
 ```
