@@ -1244,6 +1244,10 @@ pub fn run(
                 submit_fn();
             });
         }
+        if let Some(build_id) = BUILD_PIPELINE_ID {
+            connect_button.set_tooltip_text(Some(&format!("Build #{}", build_id)));
+            connect_button.set_has_tooltip(true);
+        }
 
         let username_entry: adw::EntryRow = builder.object("username_entry").unwrap();
         {
