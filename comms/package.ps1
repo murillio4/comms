@@ -1,9 +1,19 @@
 # Expects the following environment variables to be set:
 # DUMPBIN_PATH: path to the VS Build Tools "dumpbin.exe" binary
-param([switch]$reuse_package_dir)
+# EDITBIN_PATH: path to the VS Build Tools "editbin.exe" binary - only needed if -hide_console is specified
+param(
+    [switch]$reuse_package_dir,
+    [switch]$hide_console
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$editbin = [Environment]::GetEnvironmentVariable('EDITBIN_PATH')
+if ($hide_console -and -not $editbin) {
+    echo "'-hide_console' was provided, but the required environment variable 'EDITBIN_PATH' is not set"
+    exit 1
+}
 
 $repo_dir = (Get-Item $MyInvocation.MyCommand.Path).Directory.Parent.FullName
 Push-Location $repo_dir
@@ -67,16 +77,23 @@ if (-not (Test-Path -Path $package_dir) -or -not $reuse_package_dir) {
 }
 
 Remove-Item comms.exe -ErrorAction Ignore
+Remove-Item comms-with-console.exe -ErrorAction Ignore
 warp-packer --arch windows-x64 --input_dir $package_dir --exec comms.exe --output comms.exe
-$editbin = [Environment]::GetEnvironmentVariable('EDITBIN_PATH')
-if (-not $editbin) {
-    echo "Not hiding startup console window as 'EDITBIN_PATH' environment variable isn't set"
-} else {
+
+if ($hide_console) {
+    mv comms.exe comms-with-console.exe
+    &$editbin /subsystem:windows $package_dir/comms.exe
+    warp-packer --arch windows-x64 --input_dir $package_dir --exec comms.exe --output comms.exe
     &$editbin /subsystem:windows comms.exe
 }
 
 if (Get-Command "ResourceHacker.exe" -ErrorAction SilentlyContinue) {
     ResourceHacker.exe -open comms.exe -save comms.exe -action addskip -res comms\resources\logo.ico -mask "ICONGROUP,MAINICON,"
+
+    if (Test-Path -Path comms-with-console.exe) {
+        ResourceHacker.exe -open comms-with-console.exe -save comms-with-console.exe -action addskip -res comms\resources\logo.ico -mask "ICONGROUP,MAINICON,"
+    }
+
     # ResourceHacker forks and dumps output after, which dirties the terminal. This "sleep and echo" ensures that
     # a clean prompt is available afterwards.
     sleep 1

@@ -1,5 +1,3 @@
-#![windows_subsystem = "windows"]
-
 use std::sync::mpsc;
 use std::{panic, process};
 
