@@ -3,7 +3,8 @@
 # EDITBIN_PATH: path to the VS Build Tools "editbin.exe" binary - only needed if -hide_console is specified
 param(
     [switch]$reuse_package_dir,
-    [switch]$hide_console
+    [switch]$hide_console,
+    [string]$gtk_build_dir = "C:\gtk-build\gtk\x64\release\"
 )
 
 Set-StrictMode -Version Latest
@@ -72,6 +73,8 @@ if (-not (Test-Path -Path $package_dir) -or -not $reuse_package_dir) {
 
     CopyWithDependencies $comms_path
     CopyWithDependencies (where.exe gdbus.exe)
+    [void](mkdir $package_dir/share/glib-2.0)
+    cp -r "$gtk_build_dir/share/glib-2.0/schemas" $package_dir/share/glib-2.0
 } else {
     cp $comms_path $package_dir
 }
