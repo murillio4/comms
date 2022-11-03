@@ -19,3 +19,4 @@ split-debuginfo = "packed"
 [profile.release-windows]
 inherits = "release"
 lto = true
+codegen-units = 1
