@@ -43,7 +43,7 @@ Round-trip audio latency, as casually measured from residential internet:
 ## Windows Build Instructions
 
 1. Install [`rust`](https://rustup.rs/). Follow the directions and install the Visual Studio tools Rust recommends.
-2. Follow the [`gvsbuild` steps to build GTK3 with MSVC tools](https://github.com/wingtk/gvsbuild)
+2. Follow the [`gvsbuild` steps to build GTK4 with MSVC tools](https://github.com/wingtk/gvsbuild)
    * When the `gvsbuild` steps recommend setting `$env:Path`, make it a permanent change by doing the following:
       1. From the Start menu, go to the Control Panel entry for “Edit environment variables for your account”.
       2. Double-click the `Path` row in the top list of variables. Click “New” to add a new item to the list.
