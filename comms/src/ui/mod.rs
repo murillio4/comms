@@ -575,9 +575,7 @@ impl UiUser {
             .xalign(1.0)
             .build();
         row_container.append(&latency_label);
-        let root_container = gtk::Box::new(Orientation::Vertical, 0);
-        root_container.append(&row_container);
-        (root_container, latency_label)
+        (row_container, latency_label)
     }
 
     fn format_latency_text(network_latency: Duration, show_link_emoji: bool) -> String {

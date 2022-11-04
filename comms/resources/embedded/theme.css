@@ -10,20 +10,8 @@ scale value {
     opacity: 0;
 }
 
-row {
-    padding: 0;
-}
-
-row .horizontal {
-    padding: 2px 4px;
-}
-
-row.active .horizontal {
-    background-color: rgba(0, 255, 0, 0.05);
-    border: 1px solid #90CFAF;
-    margin: 1px 1px;
-    padding: 0 2px;
-    border-radius: 3px;
+row.active {
+    background-color: rgba(144, 207, 175, 0.2);
 }
 
 .connect_button {
