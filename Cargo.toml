@@ -14,7 +14,6 @@ members = [
 [profile.release]
 lto = "thin"
 debug = true
-split-debuginfo = "packed"
 
 [profile.dev-linux]
 inherits = "dev"
@@ -24,3 +23,4 @@ split-debuginfo = "unpacked"
 inherits = "release"
 lto = true
 codegen-units = 1
+split-debuginfo = "packed"
