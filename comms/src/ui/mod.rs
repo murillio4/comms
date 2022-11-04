@@ -32,6 +32,7 @@ use crate::warp_wrapper_path::get_warp_wrapper_path;
 use comms_lib::network::CommsNetworkError;
 use glib::timeout_add_local;
 use gtk::gdk::Display;
+use gtk::pango::EllipsizeMode;
 use uuid::Uuid;
 
 pub mod ipc;
@@ -568,6 +569,7 @@ impl UiUser {
                 .label(username)
                 .xalign(0.0)
                 .hexpand(true)
+                .ellipsize(EllipsizeMode::End)
                 .build(),
         );
         let latency_label = gtk::Label::builder()
