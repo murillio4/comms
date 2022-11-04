@@ -16,6 +16,10 @@ lto = "thin"
 debug = true
 split-debuginfo = "packed"
 
+[profile.dev-linux]
+inherits = "dev"
+split-debuginfo = "unpacked"
+
 [profile.release-windows]
 inherits = "release"
 lto = true

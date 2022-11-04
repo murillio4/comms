@@ -298,7 +298,7 @@ async fn check_for_updates(
                 ignore_not_found_error(std::fs::remove_file(&new_comms_cache_path))?;
                 ignore_not_found_error(std::fs::remove_dir_all(&extracted_comms_dir_backup_path))?;
 
-                std::fs::create_dir_all(&new_comms_cache_path.parent().ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{:?} does not have a parent", new_comms_cache_path)))?)?;
+                std::fs::create_dir_all(new_comms_cache_path.parent().ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{:?} does not have a parent", new_comms_cache_path)))?)?;
                 std::fs::create_dir_all(&extracted_comms_dir_backup_path)?;
                 {
                     let mut new_comms = File::create(&new_comms_cache_path)?;

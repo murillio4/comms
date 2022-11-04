@@ -101,7 +101,7 @@ impl TaskExecutor {
                         }
                     };
                     let waker = waker_ref(&futures_waker);
-                    let context = &mut Context::from_waker(&*waker);
+                    let context = &mut Context::from_waker(&waker);
                     match future.as_mut().poll(context) {
                         Poll::Pending => {
                             let mut arena = self.arena.borrow_mut();

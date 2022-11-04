@@ -62,9 +62,9 @@ fn parse_arguments(
             use_interactive_mode = true
         }
         // Handle positional arguments
-        else if !argument.starts_with("--") && server_address == None {
+        else if !argument.starts_with("--") && server_address.is_none() {
             server_address = Some(argument)
-        } else if !argument.starts_with("--") && client_name == None {
+        } else if !argument.starts_with("--") && client_name.is_none() {
             client_name = Some(argument)
         } else {
             eprintln!("Usage: beep-cli server_address [client_name] [--interactive]");
