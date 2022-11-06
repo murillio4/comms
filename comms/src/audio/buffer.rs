@@ -149,6 +149,32 @@ impl Multiplexer {
 impl PlaybackSource for Multiplexer {
     fn next_samples(&mut self, count: usize, callback: impl FnOnce((&[f32], Option<&[f32]>))) {
         let end_index = (self.sample_buffer_start + count) % BUFFER_SIZE;
+
+        for queue in self.client_queues.values_mut() {
+            if queue.sample_buffer_offset < count {
+                let mut decode_buffer = [0f32; 480];
+                let decoded_sample_count = queue
+                    .decoder
+                    .decode_float(None::<&Vec<u8>>, &mut decode_buffer as &mut [f32], false)
+                    .expect("Failed to produce generated opus audio");
+
+                for new_sample in &decode_buffer[..decoded_sample_count] {
+                    let sample_buffer_index =
+                        (self.sample_buffer_start + queue.sample_buffer_offset) % BUFFER_SIZE;
+                    let existing_sample = self.sample_buffer[sample_buffer_index];
+                    let sample = existing_sample
+                        .add_amp(*new_sample * self.main_volume * queue.current_volume);
+                    self.sample_buffer[sample_buffer_index] = if sample == f32::INFINITY {
+                        f32::MAX
+                    } else {
+                        sample
+                    };
+                    queue.sample_buffer_offset = (queue.sample_buffer_offset + 1) % BUFFER_SIZE;
+                }
+            }
+            queue.sample_buffer_offset = queue.sample_buffer_offset.saturating_sub(count);
+        }
+
         if end_index >= self.sample_buffer_start {
             let windows = (
                 &self.sample_buffer[self.sample_buffer_start..end_index],
@@ -172,9 +198,6 @@ impl PlaybackSource for Multiplexer {
             }
         }
         self.sample_buffer_start = end_index;
-        for queue in self.client_queues.values_mut() {
-            queue.sample_buffer_offset = queue.sample_buffer_offset.saturating_sub(count);
-        }
     }
 }
 
