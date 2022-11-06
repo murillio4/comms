@@ -24,7 +24,7 @@ pub type AudioPlatformImpl = crate::audio::pulseaudio::PulseAudioPlatform;
 pub fn run(
     parameters: <AudioPlatformImpl as AudioPlatform>::Parameters,
     network_handle: NetworkHandle,
-    mut ui_handle: futures::channel::mpsc::Sender<UICommand>,
+    ui_handle: async_channel::Sender<UICommand>,
     registration: <AudioPlatformImpl as AudioPlatform>::Registration,
     receiver: Receiver<AudioCommand>,
 ) -> Result<(), AudioError> {

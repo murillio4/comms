@@ -87,7 +87,7 @@ pub struct AudioReceiver<R> {
     pub(crate) multiplexer: RcMultiplexer,
     pub(crate) registration: R,
     pub(crate) command_rx: Receiver<AudioCommand>,
-    pub(crate) ui_handle: futures::channel::mpsc::Sender<UICommand>,
+    pub(crate) ui_handle: async_channel::Sender<UICommand>,
     pub(crate) network_handle: NetworkHandle,
 }
 
@@ -96,7 +96,7 @@ impl<R> AudioReceiver<R> {
         multiplexer: RcMultiplexer,
         registration: R,
         command_rx: Receiver<AudioCommand>,
-        ui_handle: futures::channel::mpsc::Sender<UICommand>,
+        ui_handle: async_channel::Sender<UICommand>,
         network_handle: NetworkHandle,
     ) -> Self {
         Self {
@@ -145,7 +145,7 @@ impl<R> InterruptReceiver<R> for AudioReceiver<R> {
                 AudioCommand::SwitchInputDevice(device_id) => AC::change_input_device(device_id),
                 AudioCommand::SwitchOutputDevice(device_id) => AC::change_output_device(device_id),
                 AudioCommand::ListDevices => {
-                    let mut ui_handle = self.ui_handle.clone();
+                    let ui_handle = self.ui_handle.clone();
                     connection.list_devices(move |devices| {
                         ui_handle
                             .try_send(UICommand::DevicesFound {

@@ -70,7 +70,7 @@ impl Multiplexer {
         data: OpusAudioFrame,
         is_peer_to_peer: bool,
         network_handle: &NetworkHandle,
-        ui_handle: &mut futures::channel::mpsc::Sender<UICommand>,
+        ui_handle: &mut async_channel::Sender<UICommand>,
     ) -> Result<(), audiopus::Error> {
         let queue = match self.client_queues.get_mut(&id) {
             Some(queue) => queue,
@@ -196,7 +196,7 @@ impl MaybeSharedPlaybackSource<Multiplexer> for RcMultiplexer {
 
 pub struct MicBuffer {
     network_handle: NetworkHandle,
-    ui_handle: futures::channel::mpsc::Sender<UICommand>,
+    ui_handle: async_channel::Sender<UICommand>,
     sample_buffer: [f32; BUFFER_SIZE],
     sample_buffer_start: usize,
     sample_buffer_end: usize,
@@ -208,7 +208,7 @@ pub struct MicBuffer {
 impl MicBuffer {
     pub fn new(
         network_handle: NetworkHandle,
-        ui_handle: futures::channel::mpsc::Sender<UICommand>,
+        ui_handle: async_channel::Sender<UICommand>,
     ) -> Result<Self, audiopus::Error> {
         Ok(Self {
             network_handle,

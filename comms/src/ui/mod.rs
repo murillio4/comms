@@ -972,7 +972,7 @@ async fn handle_network_events(
 }
 
 async fn handle_ui_commands(
-    mut receiver: futures::channel::mpsc::Receiver<UICommand>,
+    mut receiver: async_channel::Receiver<UICommand>,
     ui: Rc<RefCell<UiModel>>,
 ) {
     while let Some(event) = receiver.next().await {
@@ -1105,7 +1105,7 @@ pub fn run(
     network: NetworkHandle,
     network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
     network_event_sender: Sender<NetworkEvent>,
-    ui_receiver: futures::channel::mpsc::Receiver<UICommand>,
+    ui_receiver: async_channel::Receiver<UICommand>,
     audio: AudioHandle,
 ) {
     let project_dirs = ProjectDirs::from("", "Comms", "Comms").unwrap();
