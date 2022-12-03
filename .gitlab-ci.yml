@@ -58,7 +58,7 @@ build_release_windows:
     - cargo build --all --profile release-windows
     - comms/package.ps1 -hide_console
     - comms/sign.ps1
-    - sentry-cli upload-dif .\target\release\comms.pdb --org comms --project comms-app --include-sources
+    - sentry-cli upload-dif .\target\release-windows\comms.pdb --org comms --project comms-app --include-sources
   artifacts:
     paths:
       - comms.exe
