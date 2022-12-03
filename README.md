@@ -49,15 +49,7 @@ Round-trip audio latency, as casually measured from residential internet:
       2. Double-click the `Path` row in the top list of variables. Click “New” to add a new item to the list.
       3. Paste in `C:\gtk-build\gtk\x64\release\bin`
       4. Click "OK" twice.
-3. Build Libadwaita:
-   1. From the Windows start menu, run `x64 Native Tools Command Prompt`
-   2. `mkdir C:\gtk-build\github`
-   3. `cd C:\gtk-build\github`
-   4. `git clone https://gitlab.gnome.org/GNOME/libadwaita.git --depth=1 --branch libadwaita-1-2`
-   5. `cd libadwaita`
-   6. `pipx install meson`
-   7. `meson setup builddir -Dprefix=C:\gtk-build\gtk\x64\release -Dintrospection=disabled -Dvapi=false -Dexamples=false -Dtests=false`
-   8. `meson install -C builddir`
+3. Build Libadwaita with `gvsbuild`: `gvsbuild build libadwaita`
 4. Ensure Rust is using the `msvc` toolchain, if it isn't already: `rustup default stable-msvc`
 5. From `comms`, run `cargo run --bin comms`
 
@@ -69,10 +61,10 @@ You can speed this up by using the LLVM linker instead of the default MSVC one:
 1. Download and run the most recent `LLVM-$version-win64.exe` [from the LLVM releases page](https://github.com/llvm/llvm-project/releases)
 2. Add `C:\Program Files\LLVM\bin` to your `PATH`
 3. Edit `$env:USERPROFILE\.cargo\config.toml` and add the following contents:
-```
-[target.x86_64-pc-windows-msvc]
-linker = "lld-link.exe"
-```
+    ```
+    [target.x86_64-pc-windows-msvc]
+    linker = "lld-link.exe"
+    ```
 4. Run `cargo clean`, then `cargo build --bin comms`
 
 ## Wireshark Decoder
