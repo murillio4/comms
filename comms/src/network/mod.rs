@@ -381,19 +381,13 @@ impl Worker {
                             }
                             NetworkCommand::SendAudio(chunk) => {
                                 if let Some(connection) = &mut self.connection {
-                                    let bytes: Vec<u8> = chunk
-                                        .bytes
-                                        .iter()
-                                        .flat_map(|sample| sample.to_le_bytes().to_vec())
-                                        .collect();
-
                                     let mut packets = vec![(
                                         connection.server_addr,
                                         OutgoingPacketFrame::from_packet(
                                             None,
                                             &AudioFromClient {
                                                 index: chunk.index,
-                                                bytes: bytes.clone(),
+                                                bytes: chunk.bytes.clone(),
                                             },
                                         )
                                         .unwrap(),
@@ -406,7 +400,7 @@ impl Worker {
                                                     None,
                                                     &AudioToClient {
                                                         index: chunk.index,
-                                                        bytes: bytes.clone(),
+                                                        bytes: chunk.bytes.clone(),
                                                         author: client_id,
                                                         from_client_peer_to_peer: true,
                                                     },
