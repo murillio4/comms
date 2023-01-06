@@ -150,7 +150,7 @@ impl PlaybackSource for CalculateDelayPlayback {
                 let sample_rate = 48000f32;
 
                 *sample_clock = (*sample_clock + 1.0) % sample_rate;
-                ((*sample_clock * 440.0 * 2.0 * std::f32::consts::PI / sample_rate).sin()) as f32
+                (*sample_clock * 440.0 * 2.0 * std::f32::consts::PI / sample_rate).sin()
             };
 
             let (sample, next_state) = match *state {

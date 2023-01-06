@@ -243,13 +243,11 @@ impl PlaybackSource for Beep {
                         existing_measurements,
                     };
                     self.sample_clock = (self.sample_clock + 1.0) % SAMPLE_RATE;
-                    ((self.sample_clock * 440.0 * 2.0 * std::f32::consts::PI / SAMPLE_RATE).sin())
-                        as f32
+                    (self.sample_clock * 440.0 * 2.0 * std::f32::consts::PI / SAMPLE_RATE).sin()
                 }
                 State::Measuring { .. } => {
                     self.sample_clock = (self.sample_clock + 1.0) % SAMPLE_RATE;
-                    ((self.sample_clock * 440.0 * 2.0 * std::f32::consts::PI / SAMPLE_RATE).sin())
-                        as f32
+                    (self.sample_clock * 440.0 * 2.0 * std::f32::consts::PI / SAMPLE_RATE).sin()
                 }
                 State::WaitingForSilence { .. } => 0f32,
             };

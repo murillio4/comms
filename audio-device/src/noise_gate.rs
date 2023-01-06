@@ -129,7 +129,7 @@ impl GateNoiseFilter {
             accumulator += sample * sample;
         }
 
-        let rms = (accumulator / next_chunk.len() as f32).sqrt() as f32;
+        let rms = (accumulator / next_chunk.len() as f32).sqrt();
 
         let max = next_chunk
             .iter()

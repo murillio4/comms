@@ -132,7 +132,7 @@ impl PlaybackSource for PlaybackForLoopback {
                     accumulator += sample * sample;
                 }
 
-                let rms = (accumulator / samples.len() as f32).sqrt() as f32;
+                let rms = (accumulator / samples.len() as f32).sqrt();
                 let max = samples
                     .iter()
                     .map(|s| s.abs())
@@ -157,7 +157,7 @@ impl PlaybackSource for PlaybackForLoopback {
                     .unwrap();
                 self.audio_plot_sender
                     .send(IncomingAudioPlotData::NoiseGateThreshold(
-                        self.gate.threshold as f32,
+                        self.gate.threshold,
                     ))
                     .unwrap();
 

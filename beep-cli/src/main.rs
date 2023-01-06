@@ -128,7 +128,7 @@ fn main() -> Result<(), BeepClientErr> {
     // Produce a sinusoid
     let mut next_value = || {
         sample_clock = (sample_clock + 1.0) % sample_rate;
-        ((sample_clock * 440.0 * 2.0 * std::f32::consts::PI / sample_rate).sin() * 0.2) as f32
+        (sample_clock * 440.0 * 2.0 * std::f32::consts::PI / sample_rate).sin() * 0.2
     };
 
     let start = SystemTime::now();

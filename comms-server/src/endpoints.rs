@@ -57,8 +57,8 @@ async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) ->
         }
         clients
             .established
-            .iter()
-            .map(|(id, _)| *id)
+            .keys()
+            .copied()
             .filter(|id| id != &context.client_id)
             .filter(|id| !excluded_client_ids.contains(id))
             .collect()

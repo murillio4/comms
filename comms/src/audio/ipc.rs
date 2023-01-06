@@ -67,10 +67,7 @@ impl AudioHandle {
     ) {
         self.send(AudioCommand::AudioFromClient(
             id,
-            OpusAudioFrame {
-                index,
-                bytes: bytes.to_vec(),
-            },
+            OpusAudioFrame { index, bytes },
             is_peer_to_peer,
         ))
         .unwrap();
