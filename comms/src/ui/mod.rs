@@ -1118,7 +1118,7 @@ pub fn run(
         username: std::env::var_os(if cfg!(windows) { "USERNAME" } else { "USER" })
             .map(|v| v.to_string_lossy().to_string())
             .unwrap_or_default(),
-        server: String::new(),
+        server: "getcomms.app".to_string(),
         user_id: Uuid::new_v4(),
         volumes: HashMap::new(),
     });
