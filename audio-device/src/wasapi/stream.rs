@@ -258,7 +258,7 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                         self.raw_stream.channel_count,
                     );
 
-                    unsafe { self.render_client.ReleaseBuffer(frames_available as u32, 0) }
+                    unsafe { self.render_client.ReleaseBuffer(frames_available, 0) }
                         .map_err(stream_error_from_win_error)?;
                 }
                 SampleFormat::I16 => {
@@ -275,7 +275,7 @@ impl<P: PlaybackSource> WasapiPlaybackStream<P> {
                         self.raw_stream.channel_count,
                     );
 
-                    unsafe { self.render_client.ReleaseBuffer(frames_available as u32, 0) }
+                    unsafe { self.render_client.ReleaseBuffer(frames_available, 0) }
                         .map_err(stream_error_from_win_error)?;
                 }
             }

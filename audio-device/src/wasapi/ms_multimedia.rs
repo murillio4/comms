@@ -36,8 +36,8 @@ pub fn format_to_waveformatextensible(format: &Format) -> Audio::WAVEFORMATEXTEN
         SampleFormat::I16 => MmregFormat::Pcm,
         SampleFormat::F32 => MmregFormat::Extensible,
     };
-    let channels = format.channels as u16;
-    let sample_rate = format.sample_rate.0 as u32;
+    let channels = format.channels;
+    let sample_rate = format.sample_rate.0;
     let sample_bytes = format.data_type.sample_size() as u16;
     let avg_bytes_per_sec = channels as u32 * sample_rate * sample_bytes as u32;
     let block_align = channels * sample_bytes;
