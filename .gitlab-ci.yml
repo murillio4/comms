@@ -1,6 +1,7 @@
 stages:
   - build
   - build_release
+  - deploy_release
 
 build_linux:
   stage: build
@@ -68,3 +69,27 @@ build_release_windows:
       - target/release-windows/comms-server.exe
   tags:
     - windows
+
+deploy_release:
+  stage: deploy_release
+  only:
+    - main
+  script:
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | ssh-add -
+    - |-
+      sftp comms-ci@getcomms.app <<EOD
+      put target/release/comms-server
+      EOD
+    - |-
+      ssh -T comms-ci@getcomms.app <<EOD
+      set -ex
+      cd /opt/comms
+      chmod 774 ~/comms-server
+      chown comms-ci:comms ~/comms-server
+      mv ~/comms-server .
+      sudo /bin/systemctl restart comms.service
+      EOD
+    - ssh-agent -k
+  dependencies:
+    - build_release_linux
