@@ -30,6 +30,7 @@ use crate::network::ipc::{ConnectError, NetworkCommand, NetworkEvent, NetworkHan
 use crate::ui::ipc::{AudioIPCInitStatus, UICommand};
 use crate::warp_wrapper_path::get_warp_wrapper_path;
 use comms_lib::network::CommsNetworkError;
+use comms_lib::packet;
 use glib::timeout_add_local;
 use gtk::gdk::Display;
 use gtk::pango::EllipsizeMode;
@@ -514,6 +515,21 @@ async fn try_connect(
                     "Can't connect because you're already connected to a server".to_string()
                 }
                 ConnectError::RequestError(e) => format!("Request failed: {:?}", e),
+                ConnectError::IncompatibleServerProtocolVersion(server_version) => {
+                    if server_version > packet::PROTOCOL_VERSION {
+                        format!(
+                            "App is out-of-date compared to server ({} < {}), please update Comms",
+                            packet::PROTOCOL_VERSION,
+                            server_version
+                        )
+                    } else {
+                        format!(
+                            "App is newer than out-of-date server ({} > {})",
+                            packet::PROTOCOL_VERSION,
+                            server_version
+                        )
+                    }
+                }
             };
             connect_failure_status.set_text(&error_message);
             ui.borrow_mut().set_state(UiState::ChooseServer {
@@ -531,7 +547,7 @@ async fn disconnect_from_server(
     handle: NetworkHandle,
     audio: AudioHandle,
 ) {
-    network::future::disconnect(&handle).await;
+    network::future::disconnect(&handle, None).await.unwrap();
     {
         let pane_stack = &ui.borrow().pane_stack;
         pane_stack.set_transition_type(gtk::StackTransitionType::SlideDown);

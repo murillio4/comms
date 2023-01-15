@@ -30,7 +30,14 @@ mod network;
 mod task;
 
 pub async fn on_connect(network_handle: NetworkHandle, client_id: ClientId) -> EndpointResult {
-    let outgoing = SendPacket::tcp(Target::One(client_id), None, packet::Hello { client_id })?;
+    let outgoing = SendPacket::tcp(
+        Target::One(client_id),
+        None,
+        packet::Hello {
+            client_id,
+            protocol_version: packet::PROTOCOL_VERSION,
+        },
+    )?;
     outgoing.send(&network_handle).await;
     Ok(())
 }

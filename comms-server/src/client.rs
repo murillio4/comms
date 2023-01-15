@@ -121,11 +121,11 @@ impl Clients {
     }
 
     pub fn remove_client(&mut self, client_id: &ClientId) {
-        self.established
+        let _ = self
+            .established
             .remove(client_id)
             .map(|_| ())
-            .or_else(|| self.connecting.remove(client_id).map(|_| ()))
-            .expect("Tried to close connection with nonexistent client");
+            .or_else(|| self.connecting.remove(client_id).map(|_| ()));
         for client in self.established.values_mut() {
             client.p2p_connections.retain(|id| id != client_id);
         }

@@ -4,6 +4,9 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 use uuid::Uuid;
 
+pub const PROTOCOL_VERSION: ProtocolVersion = 1;
+
+pub type ProtocolVersion = u32;
 pub type UserId = Uuid;
 pub type ClientId = u16;
 pub type PacketKind = u8;
@@ -155,6 +158,7 @@ impl PacketBody for ErrorResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Hello {
     pub client_id: ClientId,
+    pub protocol_version: ProtocolVersion,
 }
 
 impl PacketBody for Hello {
@@ -183,6 +187,7 @@ impl PacketBody for UserLeft {
 pub enum DisconnectReason {
     Leaving,
     MalformedData,
+    IncompatibleClientVersion(ProtocolVersion),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

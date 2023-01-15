@@ -5,7 +5,7 @@ use comms_lib::network::CommsNetworkError;
 use comms_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, ClientId, Disconnect,
     DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, NetworkUser,
-    P2pEstablished, Packet, PacketBody, PacketId, UserJoined, UserLeft,
+    P2pEstablished, Packet, PacketBody, PacketId, ProtocolVersion, UserJoined, UserLeft,
 };
 use comms_lib::serialization::{IncomingPacketFrame, IncomingPacketFrameRef, SerializeError};
 use futures::future;
@@ -171,6 +171,20 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
     Ok(())
 }
 
+async fn receive_disonnect_packet(context: Context, packet: Packet<Disconnect>) -> EndpointResult {
+    close_connection(
+        context,
+        match packet.body.reason {
+            DisconnectReason::Leaving => CloseConnectionReason::Leaving,
+            DisconnectReason::MalformedData => CloseConnectionReason::MalformedData,
+            DisconnectReason::IncompatibleClientVersion(v) => {
+                CloseConnectionReason::IncompatibleClientVersion(v)
+            }
+        },
+    )
+    .await
+}
+
 async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> EndpointResult {
     let outgoing = SendPacket::tcp(
         Target::One(context.client_id),
@@ -195,7 +209,10 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> En
                     .map(|c| (c.username.clone(), c.connection.tcp.peer_addr()))
             })
         {
-            println!("[{:?}] \"{}\" has disconnected", &addr, &name);
+            println!(
+                "[{:?}] \"{}\" has disconnected due to {:?}",
+                &addr, &name, &reason
+            );
         }
     }
 
@@ -235,6 +252,9 @@ fn tcp_packet_to_endpoint(
     let kind = packet.header.kind;
     match kind {
         FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, packet.finish_parse()?)),
+        Disconnect::KIND_ID => {
+            spawner.spawn(receive_disonnect_packet(context, packet.finish_parse()?))
+        }
         _ => spawner.spawn(sent_wrong_packet(context, packet.header.id)),
     };
     Ok(())
@@ -257,8 +277,10 @@ fn udp_packet_to_endpoint(
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum CloseConnectionReason {
+    Leaving,
     SocketClosed,
     MalformedData,
+    IncompatibleClientVersion(ProtocolVersion),
 }
 
 pub fn spawn_close_connection(

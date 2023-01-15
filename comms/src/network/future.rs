@@ -8,6 +8,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use async_std::net::ToSocketAddrs;
+use async_std::task::sleep;
 use futures::channel::mpsc::Sender;
 use futures::channel::oneshot;
 use futures::future;
@@ -18,6 +19,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use comms_lib::network::CommsNetworkError;
+use comms_lib::packet;
 use comms_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted,
     NetworkUser, P2pAcknowledgeBack, Packet, PacketBody, UserId,
@@ -51,6 +53,12 @@ async fn connect_without_timeout(
         send_response: s,
     })
     .await?;
+
+    if connect_success.hello.protocol_version != packet::PROTOCOL_VERSION {
+        return Err(ConnectError::IncompatibleServerProtocolVersion(
+            connect_success.hello.protocol_version,
+        ));
+    }
 
     let _: Packet<AssociateUdpAccepted> = request_expect(
         handle,
@@ -91,12 +99,20 @@ pub async fn connect(
     pin_mut!(connect_future);
     match future::select(timeout, connect_future).await {
         Either::Left(_) => {
-            disconnect(handle).await;
+            disconnect(handle, None).await.unwrap();
             Err(ConnectError::NetworkError)
         }
         Either::Right((result, _)) => {
             if result.is_err() {
-                disconnect(handle).await;
+                let reason = match result {
+                    Err(ConnectError::IncompatibleServerProtocolVersion(_)) => {
+                        Some(packet::DisconnectReason::IncompatibleClientVersion(
+                            packet::PROTOCOL_VERSION,
+                        ))
+                    }
+                    _ => None,
+                };
+                disconnect(handle, reason).await.unwrap();
             }
             result
         }
@@ -212,8 +228,17 @@ pub async fn attempt_p2p(
     }
 }
 
-pub async fn disconnect(handle: &NetworkHandle) {
-    NetworkFuture::new(handle, |s| NetworkCommand::Disconnect { send_response: s }).await
+pub async fn disconnect(
+    handle: &NetworkHandle,
+    reason: Option<packet::DisconnectReason>,
+) -> Result<(), CommsNetworkError> {
+    if let Some(reason) = reason {
+        send(handle, Protocol::Tcp, None, packet::Disconnect { reason })?;
+        // Give time to send packet before closing TCP stream.
+        sleep(Duration::from_millis(10)).await;
+    }
+    NetworkFuture::new(handle, |s| NetworkCommand::Disconnect { send_response: s }).await;
+    Ok(())
 }
 
 pub async fn request_any<Req>(

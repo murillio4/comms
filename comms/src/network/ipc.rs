@@ -13,7 +13,7 @@ use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 use crate::audio::ipc::AudioHandle;
 use crate::network::future::{RequestError, SendResponse};
 use crate::network::{NextPollToken, WorkerInit};
-use comms_lib::packet::{ClientId, Hello, P2pAcknowledge, Packet};
+use comms_lib::packet::{ClientId, Hello, P2pAcknowledge, Packet, ProtocolVersion};
 use comms_lib::OpusAudioFrame;
 
 #[derive(Debug)]
@@ -39,6 +39,7 @@ pub enum ConnectError {
     NetworkError,
     AlreadyConnected,
     RequestError(RequestError),
+    IncompatibleServerProtocolVersion(ProtocolVersion),
 }
 
 impl From<io::Error> for ConnectError {
