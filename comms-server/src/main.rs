@@ -8,14 +8,18 @@
 
 use crate::client::{Clients, ConnectingClient, Connection};
 use crate::endpoints::{
-    handle_tcp_stream, handle_udp_packet, spawn_close_connection, CloseConnectionReason,
-    HandlePacketError, StreamStatus,
+    close_connection, handle_tcp_stream, handle_udp_packet, spawn_close_connection,
+    CloseConnectionReason, Context, HandlePacketError, StreamStatus,
 };
 use crate::network::{NetworkHandle, SendPacket, Target};
-use crate::task::EndpointResult;
+use crate::task::{FutureError, FutureResult};
+use async_std::task::sleep;
 use comms_lib::network::{CommsNetworkError, ServerUdpReadIter, UdpConnection};
 use comms_lib::packet;
-use comms_lib::packet::ClientId;
+use comms_lib::packet::{ClientId, KeepAliveAck, PacketBody};
+use futures::future::Either;
+use futures::pin_mut;
+use futures_timer::Delay;
 use mio::net::TcpListener;
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token, Waker};
@@ -23,13 +27,84 @@ use std::cell::RefCell;
 use std::io;
 use std::io::Error;
 use std::sync::Arc;
+use std::time::Duration;
 
 mod client;
 mod endpoints;
+mod future;
 mod network;
 mod task;
 
-pub async fn on_connect(network_handle: NetworkHandle, client_id: ClientId) -> EndpointResult {
+/// Return true if connection is
+async fn ping_keep_alive(
+    keep_alive_packet: Result<SendPacket, FutureError>,
+    network_handle: &NetworkHandle,
+) -> Option<CloseConnectionReason> {
+    let Ok(packet) = keep_alive_packet else {
+        return Some(CloseConnectionReason::MalformedData);
+    };
+
+    let timeout = Delay::new(Duration::from_secs(5));
+    let keepalive_future = packet.send_expect(network_handle);
+    pin_mut!(keepalive_future);
+    match futures::future::select(timeout, keepalive_future).await {
+        Either::Left(_) => {
+            return Some(CloseConnectionReason::KeepaliveTimeout);
+        }
+        Either::Right((packet, _)) => {
+            if packet.header.kind != KeepAliveAck::KIND_ID {
+                return Some(CloseConnectionReason::MalformedData);
+            }
+        }
+    }
+    None
+}
+
+pub async fn keep_alive(
+    network_handle: NetworkHandle,
+    client_id: ClientId,
+    clients: Arc<RefCell<Clients>>,
+) -> FutureResult {
+    let context = Context {
+        client_id,
+        network_handle: network_handle.clone(),
+        clients: clients.clone(),
+    };
+
+    loop {
+        sleep(Duration::from_secs(10)).await;
+
+        if clients.borrow_mut().client_by_id(&client_id).is_none() {
+            return Ok(());
+        }
+
+        if let Some(close_reason) = ping_keep_alive(
+            SendPacket::tcp(Target::One(client_id), None, packet::KeepAlive {}),
+            &network_handle,
+        )
+        .await
+        {
+            eprintln!("{close_reason:?}");
+            if let Err(e) = close_connection(context, close_reason).await {
+                eprintln!("{e:?}");
+            }
+            return Ok(());
+        }
+
+        let Ok(packet) = SendPacket::udp(
+            Target::One(client_id),
+            None,
+            packet::KeepAlive {}
+        ) else {
+            eprintln!("{:?}", CloseConnectionReason::MalformedData);
+            return Ok(());
+        };
+
+        packet.send(&network_handle).await;
+    }
+}
+
+pub async fn on_connect(network_handle: NetworkHandle, client_id: ClientId) -> FutureResult {
     let outgoing = SendPacket::tcp(
         Target::One(client_id),
         None,
@@ -55,6 +130,7 @@ fn main() -> Result<(), CommsServerError> {
     let waker_token = Token(next_client_id() as usize);
     let waker = Arc::new(Waker::new(poll.registry(), waker_token).unwrap());
     let (task_executor, spawner) = task::new(waker.clone());
+    let spawner = Arc::new(RefCell::new(spawner));
 
     let mut udp_socket = UdpSocket::bind("0.0.0.0:18847".parse().unwrap())?;
     let udp_token = Token(next_client_id() as usize);
@@ -73,7 +149,7 @@ fn main() -> Result<(), CommsServerError> {
 
     let mut events = Events::with_capacity(1024);
     let mut udp = UdpConnection::new(udp_socket);
-    let clients = Arc::new(RefCell::new(Clients::new()));
+    let clients = Arc::new(RefCell::new(Clients::default()));
 
     loop {
         poll.poll(&mut events, None)?;
@@ -94,7 +170,7 @@ fn main() -> Result<(), CommsServerError> {
                         CloseConnectionReason::MalformedData,
                         &network_handle,
                         clients.clone(),
-                        &spawner,
+                        &spawner.borrow(),
                     );
                 }
             } else if token == udp_token {
@@ -105,7 +181,7 @@ fn main() -> Result<(), CommsServerError> {
                                 addr,
                                 packet,
                                 clients.clone(),
-                                &spawner,
+                                &spawner.borrow(),
                                 network_handle.clone(),
                             )
                             .map_err(|e| e.into())
@@ -132,29 +208,38 @@ fn main() -> Result<(), CommsServerError> {
                         Interest::READABLE | Interest::WRITABLE,
                     )?;
 
-                    let mut clients = clients.borrow_mut();
-                    clients.connecting.insert(
-                        client_id,
-                        ConnectingClient {
-                            connection: Connection::new(stream),
-                            udp_association: None,
-                        },
-                    );
+                    {
+                        let mut clients = clients.borrow_mut();
+                        clients.connecting.insert(
+                            client_id,
+                            ConnectingClient {
+                                connection: Connection::new(stream),
+                                udp_association: None,
+                            },
+                        );
+                    }
 
-                    spawner.spawn(on_connect(network_handle.clone(), client_id));
+                    spawner
+                        .borrow()
+                        .spawn(on_connect(network_handle.clone(), client_id));
                 }
             } else {
                 // it's a TCP stream event
                 if event.is_readable() {
                     let client_id = token.0 as ClientId;
-                    match handle_tcp_stream(client_id, clients.clone(), &spawner, &network_handle) {
+                    match handle_tcp_stream(
+                        client_id,
+                        clients.clone(),
+                        spawner.clone(),
+                        &network_handle,
+                    ) {
                         Ok(StreamStatus::Closed) => {
                             spawn_close_connection(
                                 client_id,
                                 CloseConnectionReason::SocketClosed,
                                 &network_handle,
                                 clients.clone(),
-                                &spawner,
+                                &spawner.borrow(),
                             );
                         }
                         Err(HandlePacketError::CommunicationFailure) => {
@@ -163,7 +248,7 @@ fn main() -> Result<(), CommsServerError> {
                                 CloseConnectionReason::MalformedData,
                                 &network_handle,
                                 clients.clone(),
-                                &spawner,
+                                &spawner.borrow(),
                             );
                         }
                         _ => (),

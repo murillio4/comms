@@ -9,13 +9,13 @@ use std::rc::{Rc, Weak};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::sync::Arc;
 
-type EndpointFuture = dyn Future<Output = EndpointResult> + 'static;
+type EndpointFuture = dyn Future<Output = FutureResult> + 'static;
 
 #[derive(Debug)]
-pub enum EndpointError {
+pub enum FutureError {
     SerializeFailed { kind: PacketKind },
 }
-pub type EndpointResult = Result<(), EndpointError>;
+pub type FutureResult = Result<(), FutureError>;
 
 #[derive(Clone, Debug)]
 struct ArenaToken(usize);
@@ -35,7 +35,7 @@ struct FuturesArena {
 }
 
 impl FuturesArena {
-    fn new_future(&mut self, future: impl Future<Output = EndpointResult> + 'static) -> ArenaToken {
+    fn new_future(&mut self, future: impl Future<Output = FutureResult> + 'static) -> ArenaToken {
         let future = Box::pin(future);
         let token = match self.tokens.pop() {
             Some(token) => {
@@ -144,7 +144,7 @@ pub struct Spawner {
 }
 
 impl Spawner {
-    pub fn spawn(&self, future: impl Future<Output = EndpointResult> + 'static) {
+    pub fn spawn(&self, future: impl Future<Output = FutureResult> + 'static) {
         let future: Pin<_> = Box::pin(future);
         let arena = self
             .arena

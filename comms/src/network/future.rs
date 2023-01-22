@@ -11,9 +11,9 @@ use async_std::net::ToSocketAddrs;
 use async_std::task::sleep;
 use futures::channel::mpsc::Sender;
 use futures::channel::oneshot;
-use futures::future;
 use futures::future::Either;
 use futures::pin_mut;
+use futures::{future, SinkExt};
 use futures_timer::Delay;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -21,8 +21,8 @@ use serde::Serialize;
 use comms_lib::network::CommsNetworkError;
 use comms_lib::packet;
 use comms_lib::packet::{
-    AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted,
-    NetworkUser, P2pAcknowledgeBack, Packet, PacketBody, UserId,
+    AssociateUdp, AssociateUdpAccepted, ClientId, FinishConnect, FinishConnectAccepted, KeepAlive,
+    KeepAliveAck, NetworkUser, P2pAcknowledgeBack, Packet, PacketBody, UserId,
 };
 use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame};
 
@@ -225,6 +225,46 @@ pub async fn attempt_p2p(
         Err(()) => {
             eprintln!("Failed to start P2P connection with {public_udp_addr}");
         }
+    }
+}
+
+pub async fn keep_alive(handle: NetworkHandle, mut network_event_sender: Sender<NetworkEvent>) {
+    loop {
+        let timeout = Delay::new(Duration::from_secs(5));
+        let keepalive_future = request_expect(&handle, Protocol::Tcp, None, KeepAlive);
+        pin_mut!(keepalive_future);
+        match futures::future::select(timeout, keepalive_future).await {
+            Either::Left(_) => {
+                network_event_sender
+                    .send(NetworkEvent::TimedOut)
+                    .await
+                    .unwrap();
+                return;
+            }
+            Either::Right((packet_result, _)) => match packet_result {
+                Ok::<Packet<KeepAliveAck>, _>(_) => {}
+                Err(e) => {
+                    eprintln!("{e:?}");
+                    network_event_sender
+                        .send(NetworkEvent::NetworkError)
+                        .await
+                        .unwrap();
+                    return;
+                }
+            },
+        }
+
+        if let Err(e) = send(&handle, Protocol::Udp, None, KeepAlive) {
+            eprintln!("{e:?}");
+            network_event_sender
+                .send(NetworkEvent::NetworkError)
+                .await
+                .unwrap();
+            return;
+        }
+        handle.command(NetworkCommand::KeepAliveP2pClients);
+
+        sleep(Duration::from_secs(10)).await;
     }
 }
 

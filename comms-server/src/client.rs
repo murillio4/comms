@@ -1,9 +1,11 @@
+use crate::future::SendResponse;
 use comms_lib::network::TcpConnection;
 use comms_lib::packet::{ClientId, PacketId, UserId};
 use comms_lib::serialization::OutgoingPacketFrame;
 use mio::net::TcpStream;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
 pub struct NextPacketId(PacketId);
@@ -26,6 +28,7 @@ pub struct Connection {
     pub tcp_writable: bool,
     pub outgoing_queue: VecDeque<(ClientId, OutgoingPacketFrame)>,
     pub partially_sent_packet: Option<Vec<u8>>,
+    pub reply_map: HashMap<NonZeroU64, SendResponse>,
 }
 
 impl Connection {
@@ -36,6 +39,7 @@ impl Connection {
             next_packet_id: NextPacketId::new(),
             outgoing_queue: VecDeque::new(),
             partially_sent_packet: None,
+            reply_map: HashMap::new(),
         }
     }
 
@@ -65,6 +69,7 @@ pub struct Client {
     pub p2p_connections: Vec<ClientId>,
 }
 
+#[derive(Default)]
 pub struct Clients {
     pub established: HashMap<ClientId, Client>,
     pub connecting: HashMap<ClientId, ConnectingClient>,
@@ -76,13 +81,6 @@ pub enum AnyClientRef<'a> {
 }
 
 impl Clients {
-    pub fn new() -> Self {
-        Clients {
-            established: HashMap::new(),
-            connecting: HashMap::new(),
-        }
-    }
-
     pub fn id_by_public_socket_addr(&self, addr: &SocketAddr) -> Option<ClientId> {
         self.established
             .iter()

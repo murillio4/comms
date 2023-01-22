@@ -13,8 +13,8 @@ use comms_lib::network::{
     ClientUdpPacket, ClientUdpReadIter, CommsNetworkError, TcpConnection, UdpConnection,
 };
 use comms_lib::packet::{
-    AudioFromClient, AudioToClient, ClientId, Hello, P2pAcknowledge, P2pAcknowledgeBack,
-    P2pSynchronize, Packet, PacketBody,
+    AudioFromClient, AudioToClient, ClientId, Hello, KeepAlive, KeepAliveAck, P2pAcknowledge,
+    P2pAcknowledgeBack, P2pSynchronize, Packet, PacketBody,
 };
 use comms_lib::serialization::{IncomingPacketFrame, IncomingPacketFrameRef, OutgoingPacketFrame};
 
@@ -159,14 +159,14 @@ fn handle_udp_packet(
                 audio_to_client.body.from_client_peer_to_peer,
             );
         }
-        P2pSynchronize::KIND_ID => {
-            let sync: Packet<P2pSynchronize> = parsed_packet.finish_parse()?;
-            network_handle.command(NetworkCommand::Packet {
-                protocol: Protocol::UdpP2p(addr),
-                packet: OutgoingPacketFrame::from_packet(Some(sync.id), &P2pAcknowledge())?,
-                send_response: None,
-            })
-        }
+        P2pSynchronize::KIND_ID => network_handle.command(NetworkCommand::Packet {
+            protocol: Protocol::UdpP2p(addr),
+            packet: OutgoingPacketFrame::from_packet(
+                Some(parsed_packet.header.id),
+                &P2pAcknowledge(),
+            )?,
+            send_response: None,
+        }),
         P2pAcknowledgeBack::KIND_ID => {
             let ack_back: Packet<P2pAcknowledgeBack> = parsed_packet.finish_parse()?;
             println!(
@@ -186,6 +186,11 @@ fn handle_udp_packet(
                 })
                 .unwrap();
         }
+        KeepAlive::KIND_ID => network_handle.command(NetworkCommand::Packet {
+            protocol: Protocol::UdpP2p(addr),
+            packet: OutgoingPacketFrame::from_packet(Some(parsed_packet.header.id), &KeepAliveAck)?,
+            send_response: None,
+        }),
         _ => {
             event_sender
                 .try_send(NetworkEvent::Packet(parsed_packet))
@@ -210,6 +215,7 @@ fn handle_tcp_packet(
         SendResponse<Result<ConnectSuccess, ConnectError>>,
     )>,
     event_sender: &mut Sender<NetworkEvent>,
+    network_handle: &NetworkHandle,
 ) -> Result<(), CommsNetworkError> {
     if let Some(reply_to) = stream_packet.header.reply_to {
         if let Some((Some(sender), None)) = reply_map.remove(&reply_to) {
@@ -228,6 +234,12 @@ fn handle_tcp_packet(
                 udp_local_addr,
             }));
         }
+    } else if kind == KeepAlive::KIND_ID {
+        network_handle.command(NetworkCommand::Packet {
+            protocol: Protocol::Tcp,
+            packet: OutgoingPacketFrame::from_packet(Some(stream_packet.header.id), &KeepAliveAck)?,
+            send_response: None,
+        })
     } else {
         event_sender
             .try_send(NetworkEvent::Packet(stream_packet.into()))
@@ -494,6 +506,25 @@ impl Worker {
                                     }
                                 }
                             }
+                            NetworkCommand::KeepAliveP2pClients => {
+                                if let Some(connection) = &mut self.connection {
+                                    let id = connection.next_packet_id();
+                                    for udp_addr in connection.known_sockets.keys() {
+                                        let packet = KeepAlive;
+                                        let Ok(outgoing) = OutgoingPacketFrame::from_packet(None, &packet) else {
+                                            continue;
+                                        };
+
+                                        let Ok(raw) = outgoing.into_raw(id) else {
+                                            continue;
+                                        };
+
+                                        let _ = connection
+                                            .udp
+                                            .push_outgoing(ClientUdpPacket::new(raw, *udp_addr));
+                                    }
+                                }
+                            }
                             NetworkCommand::RegisterP2pClient {
                                 client_id,
                                 udp_addr,
@@ -557,6 +588,7 @@ impl Worker {
                                     client_id,
                                     connect_response,
                                     &mut event_sender,
+                                    &network_handle,
                                 )
                             }) {
                                 Err(CommsNetworkError::Closed) => {

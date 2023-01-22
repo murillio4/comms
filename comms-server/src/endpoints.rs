@@ -1,11 +1,13 @@
 use crate::client::{Client, Clients, UdpAssociation};
+use crate::keep_alive;
 use crate::network::{NetworkHandle, SendPacket, Target};
-use crate::task::{EndpointResult, Spawner};
+use crate::task::{FutureResult, Spawner};
 use comms_lib::network::CommsNetworkError;
 use comms_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioToClient, ClientId, Disconnect,
-    DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, NetworkUser,
-    P2pEstablished, Packet, PacketBody, PacketId, ProtocolVersion, UserJoined, UserLeft,
+    DisconnectReason, ErrorResponse, FinishConnect, FinishConnectAccepted, KeepAlive, KeepAliveAck,
+    NetworkUser, P2pEstablished, Packet, PacketBody, PacketId, ProtocolVersion, UserJoined,
+    UserLeft,
 };
 use comms_lib::serialization::{IncomingPacketFrame, IncomingPacketFrameRef, SerializeError};
 use futures::future;
@@ -26,7 +28,7 @@ async fn associate_udp(
     clients: Arc<RefCell<Clients>>,
     public_addr: SocketAddr,
     packet: Packet<AssociateUdp>,
-) -> EndpointResult {
+) -> FutureResult {
     let outgoing = {
         let mut clients = clients.borrow_mut();
         let mut client = match clients.connecting.get_mut(&packet.body.client_id) {
@@ -48,7 +50,7 @@ async fn associate_udp(
     Ok(())
 }
 
-async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) -> EndpointResult {
+async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) -> FutureResult {
     let client_ids = {
         let clients = context.clients.borrow();
         let mut excluded_client_ids = &Vec::new();
@@ -77,7 +79,7 @@ async fn audio_from_client(context: Context, packet: Packet<AudioFromClient>) ->
     Ok(())
 }
 
-async fn p2p_established(context: Context, packet: Packet<P2pEstablished>) -> EndpointResult {
+async fn p2p_established(context: Context, packet: Packet<P2pEstablished>) -> FutureResult {
     let mut clients = context.clients.borrow_mut();
     if let Some(client) = clients.established.get_mut(&packet.body.source_client_id) {
         client.p2p_connections.push(context.client_id);
@@ -85,7 +87,11 @@ async fn p2p_established(context: Context, packet: Packet<P2pEstablished>) -> En
     Ok(())
 }
 
-async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> EndpointResult {
+async fn finish_connect(
+    spawner: Arc<RefCell<Spawner>>,
+    context: Context,
+    packet: Packet<FinishConnect>,
+) -> FutureResult {
     let packets = {
         let mut clients = context.clients.borrow_mut();
         let mut client = match clients.connecting.remove(&context.client_id) {
@@ -121,6 +127,12 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
                         p2p_connections: Vec::new(),
                     },
                 );
+
+                spawner.borrow().spawn(keep_alive(
+                    context.network_handle.clone(),
+                    context.client_id,
+                    context.clients.clone(),
+                ));
 
                 vec![
                     SendPacket::tcp(
@@ -171,7 +183,7 @@ async fn finish_connect(context: Context, packet: Packet<FinishConnect>) -> Endp
     Ok(())
 }
 
-async fn receive_disonnect_packet(context: Context, packet: Packet<Disconnect>) -> EndpointResult {
+async fn receive_disonnect_packet(context: Context, packet: Packet<Disconnect>) -> FutureResult {
     close_connection(
         context,
         match packet.body.reason {
@@ -185,7 +197,18 @@ async fn receive_disonnect_packet(context: Context, packet: Packet<Disconnect>) 
     .await
 }
 
-async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> EndpointResult {
+async fn receive_keep_alive(context: Context, packet: Packet<KeepAlive>) -> FutureResult {
+    SendPacket::udp(
+        Target::One(context.client_id),
+        Some(packet.id),
+        KeepAliveAck,
+    )?
+    .send(&context.network_handle)
+    .await;
+    Ok(())
+}
+
+async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> FutureResult {
     let outgoing = SendPacket::tcp(
         Target::One(context.client_id),
         Some(packet_id),
@@ -195,7 +218,7 @@ async fn sent_wrong_packet(context: Context, packet_id: PacketId) -> EndpointRes
     Ok(())
 }
 
-async fn close_connection(context: Context, reason: CloseConnectionReason) -> EndpointResult {
+pub async fn close_connection(context: Context, reason: CloseConnectionReason) -> FutureResult {
     {
         let clients = context.clients.borrow_mut();
         if let Some((name, addr)) = clients
@@ -245,17 +268,27 @@ async fn close_connection(context: Context, reason: CloseConnectionReason) -> En
 }
 
 fn tcp_packet_to_endpoint(
-    spawner: &Spawner,
+    spawner: Arc<RefCell<Spawner>>,
     context: Context,
     packet: IncomingPacketFrameRef,
 ) -> Result<(), CommsNetworkError> {
     let kind = packet.header.kind;
+
     match kind {
-        FinishConnect::KIND_ID => spawner.spawn(finish_connect(context, packet.finish_parse()?)),
-        Disconnect::KIND_ID => {
-            spawner.spawn(receive_disonnect_packet(context, packet.finish_parse()?))
-        }
-        _ => spawner.spawn(sent_wrong_packet(context, packet.header.id)),
+        FinishConnect::KIND_ID => spawner.borrow().spawn(finish_connect(
+            spawner.clone(),
+            context,
+            packet.finish_parse()?,
+        )),
+        Disconnect::KIND_ID => spawner
+            .borrow()
+            .spawn(receive_disonnect_packet(context, packet.finish_parse()?)),
+        KeepAlive::KIND_ID => spawner
+            .borrow()
+            .spawn(receive_keep_alive(context, packet.finish_parse()?)),
+        _ => spawner
+            .borrow()
+            .spawn(sent_wrong_packet(context, packet.header.id)),
     };
     Ok(())
 }
@@ -281,6 +314,7 @@ pub enum CloseConnectionReason {
     SocketClosed,
     MalformedData,
     IncompatibleClientVersion(ProtocolVersion),
+    KeepaliveTimeout,
 }
 
 pub fn spawn_close_connection(
@@ -349,6 +383,15 @@ pub fn handle_udp_packet(
         }
     };
 
+    if let Some(reply_to) = packet.header.reply_to {
+        if let Some(connection) = clients.borrow_mut().connection_by_id(&client_id) {
+            if let Some(send_response) = connection.reply_map.remove(&reply_to) {
+                send_response.done(packet);
+                return Ok(());
+            }
+        }
+    }
+
     udp_packet_to_endpoint(
         spawner,
         packet,
@@ -370,7 +413,7 @@ pub enum StreamStatus {
 pub fn handle_tcp_stream(
     client_id: ClientId,
     clients: Arc<RefCell<Clients>>,
-    spawner: &Spawner,
+    spawner: Arc<RefCell<Spawner>>,
     network_handle: &NetworkHandle,
 ) -> Result<StreamStatus, HandlePacketError> {
     let clients_arc = clients.clone();
@@ -379,6 +422,8 @@ pub fn handle_tcp_stream(
         Some(connection) => connection,
         None => return Ok(StreamStatus::Nonexistent),
     };
+
+    let reply_map = &mut connection.reply_map;
 
     match connection
         .tcp
@@ -390,7 +435,14 @@ pub fn handle_tcp_stream(
                 network_handle: network_handle.clone(),
             };
 
-            tcp_packet_to_endpoint(spawner, context, packet)
+            if let Some(reply_to) = packet.header.reply_to {
+                if let Some(send_response) = reply_map.remove(&reply_to) {
+                    send_response.done(IncomingPacketFrame::from(packet));
+                    return Ok(());
+                }
+            }
+
+            tcp_packet_to_endpoint(spawner.clone(), context, packet)
         }) {
         Err(CommsNetworkError::Closed) => return Ok(StreamStatus::Closed),
         Err(_) => return Err(HandlePacketError::CommunicationFailure),

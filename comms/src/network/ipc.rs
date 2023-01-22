@@ -26,6 +26,7 @@ pub enum NetworkEvent {
         round_trip_latency: Duration,
         is_from_lead_client: bool,
     },
+    TimedOut,
 }
 
 pub struct ConnectSuccess {
@@ -83,6 +84,7 @@ pub enum NetworkCommand {
         udp_addr: SocketAddr,
         send_response: SendResponse<Result<(Duration, Packet<P2pAcknowledge>), CommsNetworkError>>,
     },
+    KeepAliveP2pClients,
     Disconnect {
         send_response: SendResponse<()>,
     },
@@ -102,6 +104,7 @@ impl Display for NetworkCommand {
             Self::RegisterP2pClient { .. } => f.write_str("RegisterClient"),
             Self::RemoveP2pClient { .. } => f.write_str("RemoveP2pClient"),
             Self::AttemptP2pSync { .. } => f.write_str("AttemptP2pSync"),
+            Self::KeepAliveP2pClients => f.write_str("KeepAliveP2pClients"),
         }
     }
 }

@@ -4,7 +4,7 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: ProtocolVersion = 1;
+pub const PROTOCOL_VERSION: ProtocolVersion = 2;
 
 pub type ProtocolVersion = u32;
 pub type UserId = Uuid;
@@ -197,4 +197,11 @@ pub struct Disconnect {
 
 impl PacketBody for Disconnect {
     const KIND_ID: PacketKind = 11u8;
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct KeepAliveAck;
+
+impl PacketBody for KeepAliveAck {
+    const KIND_ID: PacketKind = 16u8;
 }

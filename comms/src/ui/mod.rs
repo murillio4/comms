@@ -25,7 +25,7 @@ use comms_lib::packet::{ClientId, Packet, PacketBody, UserId, UserJoined, UserLe
 
 use crate::audio::ipc::{AudioCommand, AudioHandle, EventLoopCreationError};
 use crate::network;
-use crate::network::future::{attempt_p2p, P2pDestination};
+use crate::network::future::{attempt_p2p, keep_alive, P2pDestination};
 use crate::network::ipc::{ConnectError, NetworkCommand, NetworkEvent, NetworkHandle};
 use crate::ui::ipc::{AudioIPCInitStatus, UICommand};
 use crate::warp_wrapper_path::get_warp_wrapper_path;
@@ -413,6 +413,11 @@ async fn try_connect(
     match connect_result {
         Ok((client_id, existing_users, round_trip_latency)) => {
             let glib_context = glib::MainContext::default();
+
+            glib_context.spawn_local(keep_alive(
+                network_handle.clone(),
+                network_event_sender.clone(),
+            ));
 
             for user in existing_users.iter() {
                 audio_handle
@@ -817,6 +822,49 @@ async fn handle_network_events(
                     builder.object("connect_failure_status").unwrap();
                 connect_failure_status
                     .set_text("Disconnecting from the server because the socket closed");
+            }
+            NetworkEvent::TimedOut => {
+                let (users, user_list, user_id, saved_volumes) =
+                    match ui.borrow_mut().use_state(|state| {
+                        if let UiState::Main {
+                            users,
+                            user_list,
+                            user_id,
+                            saved_volumes,
+                            ..
+                        } = state
+                        {
+                            (
+                                UiState::Disconnecting,
+                                Some((users, user_list, user_id, saved_volumes)),
+                            )
+                        } else {
+                            (state, None)
+                        }
+                    }) {
+                        Some(m) => m,
+                        None => continue,
+                    };
+
+                disconnect_from_server(
+                    users,
+                    user_list,
+                    ui.clone(),
+                    network.clone(),
+                    audio.clone(),
+                )
+                .await;
+
+                ui.borrow_mut().set_state(UiState::ChooseServer {
+                    user_id,
+                    saved_volumes,
+                });
+
+                let builder = &ui.borrow().builder;
+                let connect_failure_status: gtk::Label =
+                    builder.object("connect_failure_status").unwrap();
+                connect_failure_status
+                    .set_text("Disconnecting from the server because connection timed out");
             }
             NetworkEvent::NetworkError => {
                 let (users, user_list, user_id, saved_volumes) =

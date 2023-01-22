@@ -1,5 +1,6 @@
 use crate::client::{AnyClientRef, Clients};
-use crate::task::EndpointError;
+use crate::future::{NetworkFuture, SendResponse};
+use crate::task::FutureError;
 use comms_lib::network::{Protocol, ServerUdpPacket, UdpConnection};
 use comms_lib::packet::{ClientId, PacketBody, PacketId};
 use comms_lib::serialization::OutgoingPacketFrame;
@@ -8,7 +9,12 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 
 pub struct OutgoingQueue {
-    receiver: Receiver<(Protocol, ClientId, OutgoingPacketFrame)>,
+    receiver: Receiver<(
+        Protocol,
+        ClientId,
+        OutgoingPacketFrame,
+        Option<SendResponse>,
+    )>,
 }
 
 impl OutgoingQueue {
@@ -18,31 +24,37 @@ impl OutgoingQueue {
         udp: &mut UdpConnection<ServerUdpPacket>,
     ) {
         // Sort the incoming queue of packets into their respective socket buckets
-        for (protocol, dest, packet) in self.receiver.try_iter() {
+        for (protocol, dest, packet, send_response) in self.receiver.try_iter() {
+            let connection = match clients.client_by_id(&dest) {
+                Some(AnyClientRef::Established(c)) => &mut c.connection,
+                Some(AnyClientRef::Connecting(c)) => &mut c.connection,
+                _ => continue,
+            };
+            let packet_id = connection.next_packet_id();
+            if let Some(send_response) = send_response {
+                connection.reply_map.insert(packet_id, send_response);
+            }
+
             match protocol {
                 Protocol::Udp => {
-                    let (packet_id, addr) = match clients.client_by_id(&dest) {
+                    let  udp_addr = match clients.client_by_id(&dest) {
                         Some(AnyClientRef::Established(c)) => {
-                            (c.connection.next_packet_id(), c.public_udp_addr)
+                            c.public_udp_addr
                         },
-                        Some(AnyClientRef::Connecting(c)) => (
-                            c.connection.next_packet_id(),
-                            c.udp_association.as_ref().expect("Attempting to send UDP packet to client that hasn't associated yet").public_udp_addr,
-                        ),
+                        Some(AnyClientRef::Connecting(c)) => {
+                            c.udp_association.as_ref().unwrap_or_else(|| panic!("Attempting to send UDP packet of kind \"{}\" to client that hasn't associated yet", packet.kind)).public_udp_addr
+                        },
                         _ => continue,
                     };
+
                     udp.push_outgoing_without_send(ServerUdpPacket::new(
-                        addr,
+                        udp_addr,
                         packet.into_raw(packet_id).unwrap(),
-                    ))
+                    ));
                 }
                 Protocol::Tcp => {
-                    if let Some(connection) = clients.connection_by_id(&dest) {
-                        let bytes = packet.into_raw(connection.next_packet_id()).unwrap();
-                        connection.tcp.push_outgoing_without_send(&bytes);
-                    } else {
-                        println!("connection could not be found :)");
-                    }
+                    let bytes = packet.into_raw(packet_id).unwrap();
+                    connection.tcp.push_outgoing_without_send(&bytes);
                 }
             }
         }
@@ -78,13 +90,31 @@ impl OutgoingQueue {
 
 #[derive(Clone)]
 pub struct NetworkHandle {
-    sender: SyncSender<(Protocol, ClientId, OutgoingPacketFrame)>,
+    sender: SyncSender<(
+        Protocol,
+        ClientId,
+        OutgoingPacketFrame,
+        Option<SendResponse>,
+    )>,
     waker: Arc<Waker>,
 }
 
 impl NetworkHandle {
     pub fn send(&self, protocol: Protocol, dest: ClientId, packet: OutgoingPacketFrame) {
-        self.sender.send((protocol, dest, packet)).unwrap();
+        self.sender.send((protocol, dest, packet, None)).unwrap();
+        self.waker.wake().unwrap();
+    }
+
+    pub fn send_expect(
+        &self,
+        protocol: Protocol,
+        dest: ClientId,
+        packet: OutgoingPacketFrame,
+        send_response: SendResponse,
+    ) {
+        self.sender
+            .send((protocol, dest, packet, Some(send_response)))
+            .unwrap();
         self.waker.wake().unwrap();
     }
 }
@@ -111,12 +141,12 @@ impl SendPacket {
         destination: Target,
         reply_to: Option<PacketId>,
         packet: B,
-    ) -> Result<Self, EndpointError>
+    ) -> Result<Self, FutureError>
     where
         B: PacketBody,
     {
         let packet = OutgoingPacketFrame::from_packet(reply_to, &packet)
-            .map_err(|_| EndpointError::SerializeFailed { kind: B::KIND_ID })?;
+            .map_err(|_| FutureError::SerializeFailed { kind: B::KIND_ID })?;
         Ok(Self {
             destination,
             protocol,
@@ -128,7 +158,7 @@ impl SendPacket {
         destination: Target,
         reply_to: Option<PacketId>,
         packet: B,
-    ) -> Result<Self, EndpointError>
+    ) -> Result<Self, FutureError>
     where
         B: PacketBody,
     {
@@ -139,7 +169,7 @@ impl SendPacket {
         destination: Target,
         reply_to: Option<PacketId>,
         packet: B,
-    ) -> Result<Self, EndpointError>
+    ) -> Result<Self, FutureError>
     where
         B: PacketBody,
     {
@@ -154,6 +184,15 @@ impl SendPacket {
                 for client in clients {
                     handle.send(protocol.clone(), client, self.packet.clone())
                 }
+            }
+        }
+    }
+
+    pub fn send_expect(self, handle: &NetworkHandle) -> NetworkFuture {
+        match self.destination {
+            Target::One(dest) => NetworkFuture::new(handle, self.packet, self.protocol, dest),
+            Target::Many(_) => {
+                unimplemented!("send_expect only implemented for single targets");
             }
         }
     }
