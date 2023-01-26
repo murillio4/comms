@@ -90,8 +90,8 @@ fn main() -> Result<(), BeepClientErr> {
 
     let client_name = client_name.unwrap_or_else(|| "beep".to_string());
 
-    let server_address_with_port = format!("{}:18847", server_address);
-    println!("Connecting to {}...", server_address_with_port);
+    let server_address_with_port = format!("{server_address}:18847");
+    println!("Connecting to {server_address_with_port}...");
 
     let mut tcp = TcpStream::connect(server_address_with_port.clone())?;
     let udp = UdpSocket::bind("0.0.0.0:0")?;

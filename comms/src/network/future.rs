@@ -34,7 +34,7 @@ async fn connect_without_timeout(
     username: String,
     user_id: UserId,
 ) -> Result<(ClientId, Vec<NetworkUser>, Duration), ConnectError> {
-    let destination_with_port = format!("{}:18847", destination);
+    let destination_with_port = format!("{destination}:18847");
     let destination = match destination_with_port.to_socket_addrs().await {
         Ok(mut addresses) => {
             if let Some(address) = addresses.next() {
@@ -132,7 +132,7 @@ pub async fn attempt_p2p_without_timeout(
     destination: P2pDestination,
     is_lead_client: bool,
 ) -> Result<(Duration, SocketAddr), ()> {
-    println!("Attempting P2P connection with {:?}!", destination);
+    println!("Attempting P2P connection with {destination:?}!");
     let timeout = Delay::new(Duration::from_secs(3));
 
     let acknowledge_local = NetworkFuture::new(&handle, |s| NetworkCommand::AttemptP2pSync {
@@ -166,7 +166,7 @@ pub async fn attempt_p2p_without_timeout(
     let (round_trip_latency, packet) = match result {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("Failed to parse P2P packet: {:?}", e);
+            eprintln!("Failed to parse P2P packet: {e:?}");
             return Err(());
         }
     };
@@ -180,7 +180,7 @@ pub async fn attempt_p2p_without_timeout(
             client_id: local_client_id,
         },
     ) {
-        eprintln!("Failed to send P2P packet: {:?}", e);
+        eprintln!("Failed to send P2P packet: {e:?}");
         return Err(());
     }
 
@@ -223,7 +223,7 @@ pub async fn attempt_p2p(
                 .unwrap();
         }
         Err(()) => {
-            eprintln!("Failed to start P2P connection with {}", public_udp_addr);
+            eprintln!("Failed to start P2P connection with {public_udp_addr}");
         }
     }
 }

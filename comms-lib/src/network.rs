@@ -293,7 +293,7 @@ impl<U: UdpPacket> UdpConnection<U> {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
-                    eprintln!("Encountered generic error during UDP reading: {:?}", e);
+                    eprintln!("Encountered generic error during UDP reading: {e:?}");
                     continue;
                 }
             }
@@ -417,13 +417,11 @@ impl ClientUdpReadIter<'_> {
                     return Err(e);
                 } else if let Some(client_id) = known_sockets.get(&addr) {
                     eprintln!(
-                        "Encountered error while communicating with client {}: {:?}",
-                        client_id, e
+                        "Encountered error while communicating with client {client_id}: {e:?}"
                     );
                 } else {
                     eprintln!(
-                        "Encountered error while communicating with unknown client {}: {:?}",
-                        addr, e
+                        "Encountered error while communicating with unknown client {addr}: {e:?}"
                     );
                 };
             }

@@ -111,7 +111,7 @@ impl TaskExecutor {
                             let mut arena = self.arena.borrow_mut();
                             arena.tokens.push(futures_waker.token.clone());
                             if let Err(e) = result {
-                                panic!("Packet-handling function failed: {:?}", e);
+                                panic!("Packet-handling function failed: {e:?}");
                             }
                         }
                     }

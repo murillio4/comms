@@ -121,8 +121,7 @@ async fn check_for_updates(
             };
 
             let json = ureq::get(&format!(
-                "https://gitlab.com/api/v4/projects/comms-app%2Fcomms/pipelines/{}/jobs",
-                latest_pipeline_id
+                "https://gitlab.com/api/v4/projects/comms-app%2Fcomms/pipelines/{latest_pipeline_id}/jobs"
             ))
                 .call()?
                 .into_json::<serde_json::Value>()?;
@@ -179,7 +178,7 @@ async fn check_for_updates(
             return;
         }
         Err(CheckForUpdateError::Ureq(ureq_error)) => {
-            eprintln!("Request error: {:?}", ureq_error);
+            eprintln!("Request error: {ureq_error:?}");
             return;
         }
         Err(CheckForUpdateError::NoWarpWrapper) => {
@@ -195,7 +194,7 @@ async fn check_for_updates(
         let update_progress_css = move |progress: u16| {
             update_progress_css_provider.load_from_data(format!(".horizontal {{
                 background: linear-gradient(to right, rgba(0, 0, 0, 0.15) {progress}%, transparent {progress}%);
-            }}", progress=progress).as_bytes());
+            }}").as_bytes());
         };
 
         button.set_sensitive(false);
@@ -206,7 +205,7 @@ async fn check_for_updates(
         let (tx, rx) = async_channel::unbounded();
         std::thread::spawn(move || {
             let result: Result<(), CheckForUpdateError> = (|| {
-                let response = ureq::get(&format!("https://gitlab.com/api/v4/projects/comms-app%2Fcomms/jobs/{}/artifacts/comms.exe", job_id))
+                let response = ureq::get(&format!("https://gitlab.com/api/v4/projects/comms-app%2Fcomms/jobs/{job_id}/artifacts/comms.exe"))
                     .call()?;
                 let content_length: usize = match response.header("Content-Length") {
                     Some(h) => h.parse()?,
@@ -258,7 +257,7 @@ async fn check_for_updates(
                     Ok(Ok(DownloadProgress::Done(buf))) => break buf,
                     Ok(Err(e)) => {
                         let text = match e {
-                            CheckForUpdateError::Ureq(e) => format!("Request failed: {:?}", e),
+                            CheckForUpdateError::Ureq(e) => format!("Request failed: {e:?}"),
                             CheckForUpdateError::Parse => "Failed to parse JSON/headers/etc".to_string(),
                             CheckForUpdateError::NoWarpWrapper => unimplemented!(),
                         };
@@ -277,15 +276,15 @@ async fn check_for_updates(
                 let extracted_comms_exe_path = std::env::current_exe()?;
                 let extracted_comms_dir_path = extracted_comms_exe_path
                     .parent()
-                    .ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{:?} does not have a parent", extracted_comms_exe_path)))?
+                    .ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{extracted_comms_exe_path:?} does not have a parent")))?
                     .to_owned();
 
                 let extracted_comms_dir_backup_path = extracted_comms_dir_path
                     .parent()
-                    .ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{:?} does not have a parent", extracted_comms_dir_path)))?
+                    .ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{extracted_comms_dir_path:?} does not have a parent")))?
                     .join(format!("{}.old", extracted_comms_dir_path
                         .file_name()
-                        .ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{:?} does not have a file name", extracted_comms_dir_path)))?
+                        .ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{extracted_comms_dir_path:?} does not have a file name")))?
                         .to_string_lossy()));
 
                 let ignore_not_found_error = |r: Result<_, io::Error>| {
@@ -300,7 +299,7 @@ async fn check_for_updates(
                 ignore_not_found_error(std::fs::remove_file(&new_comms_cache_path))?;
                 ignore_not_found_error(std::fs::remove_dir_all(&extracted_comms_dir_backup_path))?;
 
-                std::fs::create_dir_all(new_comms_cache_path.parent().ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{:?} does not have a parent", new_comms_cache_path)))?)?;
+                std::fs::create_dir_all(new_comms_cache_path.parent().ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{new_comms_cache_path:?} does not have a parent")))?)?;
                 std::fs::create_dir_all(&extracted_comms_dir_backup_path)?;
                 {
                     let mut new_comms = File::create(&new_comms_cache_path)?;
@@ -320,7 +319,7 @@ async fn check_for_updates(
             })();
 
             if let Err(e) = result {
-                show_update_failure(format!("{:?}", e));
+                show_update_failure(format!("{e:?}"));
             } else {
                 std::process::exit(0);
             }
@@ -514,7 +513,7 @@ async fn try_connect(
                 ConnectError::AlreadyConnected => {
                     "Can't connect because you're already connected to a server".to_string()
                 }
-                ConnectError::RequestError(e) => format!("Request failed: {:?}", e),
+                ConnectError::RequestError(e) => format!("Request failed: {e:?}"),
                 ConnectError::IncompatibleServerProtocolVersion(server_version) => {
                     if server_version > packet::PROTOCOL_VERSION {
                         format!(
@@ -1072,10 +1071,10 @@ async fn handle_ui_commands(
                             "No headphones/speakers were detected".to_string()
                         }
                         EventLoopCreationError::InputDeviceError(m) => {
-                            format!("Failed to set up microphone: {}", m)
+                            format!("Failed to set up microphone: {m}")
                         }
                         EventLoopCreationError::OutputDeviceError(m) => {
-                            format!("Failed to set up headphones/speakers: {}", m)
+                            format!("Failed to set up headphones/speakers: {m}")
                         }
                     };
 
@@ -1289,7 +1288,7 @@ pub fn run(
             });
         }
         if let Some(timestamp) = BUILD_TIMESTAMP {
-            connect_button.set_tooltip_text(Some(&format!("Build {}", timestamp)));
+            connect_button.set_tooltip_text(Some(&format!("Build {timestamp}")));
             connect_button.set_has_tooltip(true);
         }
 

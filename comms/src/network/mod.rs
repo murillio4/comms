@@ -318,7 +318,7 @@ impl Worker {
                                         match protocol {
                                             Protocol::Tcp => {
                                                 if let Err(e) = connection.tcp.push_outgoing(&raw) {
-                                                    println!("Failed to send TCP data: {:?}", e);
+                                                    println!("Failed to send TCP data: {e:?}");
                                                     if let Some((_, send_response)) =
                                                         connection.connect_response.take()
                                                     {

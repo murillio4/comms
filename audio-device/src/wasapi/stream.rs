@@ -65,7 +65,7 @@ impl RawWasapiStream {
 
     pub fn start(&self) {
         if let Err(err) = unsafe { (*self.audio_client).Start() } {
-            eprintln!("An error occurred when playing stream: {:?}", err);
+            eprintln!("An error occurred when playing stream: {err:?}");
         }
     }
 }
@@ -288,7 +288,7 @@ fn stream_error_from_win_error(error: windows::core::Error) -> StreamError {
     if error.code() == Audio::AUDCLNT_E_DEVICE_INVALIDATED {
         StreamError::DeviceNotAvailable
     } else {
-        let description = format!("{}", error);
+        let description = format!("{error}");
         StreamError::BackendSpecific(description)
     }
 }

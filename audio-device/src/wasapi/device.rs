@@ -84,7 +84,7 @@ impl IAudioClientWrapper {
                 return Err(BuildStreamError::DeviceNotAvailable);
             }
             Err(e) => {
-                let description = format!("{}", e);
+                let description = format!("{e}");
                 return Err(BuildStreamError::BackendSpecific(description));
             }
             Ok(()) => (),
@@ -99,7 +99,7 @@ impl IAudioClientWrapper {
                 Err(BuildStreamError::DeviceNotAvailable)
             }
             Err(e) => {
-                let description = format!("failed to obtain buffer size: {}", e);
+                let description = format!("failed to obtain buffer size: {e}");
                 Err(BuildStreamError::BackendSpecific(description))
             }
             Ok(max_frames_in_buffer) => Ok(max_frames_in_buffer),
@@ -111,14 +111,13 @@ impl IAudioClientWrapper {
             Ok(event) => event,
             Err(err) => {
                 return Err(BuildStreamError::BackendSpecific(format!(
-                    "Failed to create event: {:?}",
-                    err
+                    "Failed to create event: {err:?}"
                 )))
             }
         };
 
         if let Err(e) = unsafe { self.0.SetEventHandle(event) } {
-            let description = format!("failed to call SetEventHandle: {}", e);
+            let description = format!("failed to call SetEventHandle: {e}");
             return Err(BuildStreamError::BackendSpecific(description));
         }
 
@@ -131,7 +130,7 @@ impl IAudioClientWrapper {
                 Err(BuildStreamError::DeviceNotAvailable)
             }
             Err(e) => {
-                let description = format!("failed to build render client: {}", e);
+                let description = format!("failed to build render client: {e}");
                 Err(BuildStreamError::BackendSpecific(description))
             }
             Ok(client) => Ok(client),
@@ -161,7 +160,7 @@ impl IAudioClientWrapper {
                 return Err(DefaultFormatError::DeviceNotAvailable);
             }
             Err(e) => {
-                let description = format!("{}", e);
+                let description = format!("{e}");
                 return Err(BackendSpecific(description));
             }
             Ok(format) => format,
@@ -201,7 +200,7 @@ impl IMMDeviceWrapper {
         } {
             Ok(property_value) => property_value,
             Err(err) => {
-                let description = format!("failed to retrieve name from property store: {}", err);
+                let description = format!("failed to retrieve name from property store: {err}");
                 return Err(DeviceNameError { description });
             }
         };
@@ -261,7 +260,7 @@ impl IMMDeviceWrapper {
         // TODO: This is kinda nasty -- thanks Billy Gates
         unsafe {
             let device_count = filled_collection.GetCount().unwrap();
-            println!("Found {} audio devices", device_count);
+            println!("Found {device_count} audio devices");
 
             let mut result: Vec<IMMDeviceWrapper> = Vec::new();
             for i in 0..device_count {

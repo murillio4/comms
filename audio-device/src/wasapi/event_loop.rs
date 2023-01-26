@@ -172,7 +172,7 @@ fn wait_for_handle_signal(handles: &[HANDLE]) -> Result<usize, String> {
     let result = unsafe { Threading::WaitForMultipleObjectsEx(handles, false, u32::MAX, false) };
     if result == Foundation::WAIT_FAILED {
         let err = unsafe { Foundation::GetLastError() };
-        let description = format!("WaitForMultipleObjectsEx failed: {:?}", err);
+        let description = format!("WaitForMultipleObjectsEx failed: {err:?}");
         return Err(description);
     }
 

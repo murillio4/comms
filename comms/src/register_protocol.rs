@@ -67,7 +67,7 @@ pub fn run() {
             key,
             PCSTR::null(),
             Registry::REG_SZ,
-            Some(PCSTR::from_raw(format!("\"{}\" \"%1\"\0", comms_path).as_ptr()).as_bytes()),
+            Some(PCSTR::from_raw(format!("\"{comms_path}\" \"%1\"\0").as_ptr()).as_bytes()),
         )
         .ok()
         .unwrap();

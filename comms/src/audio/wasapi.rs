@@ -46,16 +46,16 @@ impl AudioPlatform for WasapiAudioPlatform {
                             EventLoopCreationError::NoOutputDevice
                         }
                         WasapiCreationError::NoInputFormat(e) => {
-                            EventLoopCreationError::InputDeviceError(format!("{:?}", e))
+                            EventLoopCreationError::InputDeviceError(format!("{e:?}"))
                         }
                         WasapiCreationError::NoOutputFormat(e) => {
-                            EventLoopCreationError::OutputDeviceError(format!("{:?}", e))
+                            EventLoopCreationError::OutputDeviceError(format!("{e:?}"))
                         }
                         WasapiCreationError::InputInitializationFailure(e) => {
-                            EventLoopCreationError::InputDeviceError(format!("{:?}", e))
+                            EventLoopCreationError::InputDeviceError(format!("{e:?}"))
                         }
                         WasapiCreationError::OutputInitializationFailure(e) => {
-                            EventLoopCreationError::OutputDeviceError(format!("{:?}", e))
+                            EventLoopCreationError::OutputDeviceError(format!("{e:?}"))
                         }
                     };
                     return Err(e);

@@ -146,7 +146,7 @@ impl AudioPlot {
 
         samples_to_line(buckets)
             .color(Color32::from_rgb(100, 220, 100))
-            .name(format!("Samples (groups of {})", SAMPLES_IN_BUCKET))
+            .name(format!("Samples (groups of {SAMPLES_IN_BUCKET})"))
     }
 
     fn rmses(&mut self) -> Line {

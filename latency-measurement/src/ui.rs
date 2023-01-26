@@ -163,7 +163,7 @@ impl eframe::App for App {
                             };
                         }
                         ref state => {
-                            panic!("Unexpected state after measuring latency: {:?}", state)
+                            panic!("Unexpected state after measuring latency: {state:?}")
                         }
                     }
                 }
@@ -178,7 +178,7 @@ impl eframe::App for App {
                             local_latency: Some(local_latency),
                         }
                     }
-                    ref state => panic!("Unexpected state after measuring latency: {:?}", state),
+                    ref state => panic!("Unexpected state after measuring latency: {state:?}"),
                 },
                 AudioData::MeasuredLatency(latency) => match self.ui_state {
                     UiState::LocalMeasuring { .. } => {
@@ -239,7 +239,7 @@ impl eframe::App for App {
                         UiState::LocalMeasuring {
                             noise_threshold, ..
                         } => {
-                            ui.label(format!("Noise floor detected at {}", noise_threshold));
+                            ui.label(format!("Noise floor detected at {noise_threshold}"));
                             ui.label("Detecting latency...");
                             None
                         }
@@ -254,7 +254,7 @@ impl eframe::App for App {
                         UiState::RemoteMeasuring {
                             noise_threshold, ..
                         } => {
-                            ui.label(format!("Noise floor detected at {}", noise_threshold));
+                            ui.label(format!("Noise floor detected at {noise_threshold}"));
                             ui.label("Detecting latency...");
                             None
                         }
