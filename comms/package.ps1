@@ -71,6 +71,8 @@ if (-not (Test-Path -Path $package_dir) -or -not $reuse_package_dir) {
         }
     }
 
+    cp (where.exe vcruntime140.dll) $package_dir
+    cp (where.exe vcruntime140_1.dll) $package_dir
     CopyWithDependencies $comms_path
     CopyWithDependencies (where.exe gdbus.exe)
     [void](mkdir $package_dir/share/glib-2.0)
