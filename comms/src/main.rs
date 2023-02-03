@@ -1,4 +1,8 @@
+#[cfg(not(debug_assertions))]
+use sentry::Hub;
 use std::sync::mpsc;
+#[cfg(not(debug_assertions))]
+use std::sync::Arc;
 use std::{panic, process};
 
 use crate::audio::ipc::AudioHandle;
@@ -17,18 +21,20 @@ mod warp_wrapper_path;
 
 fn main() {
     #[cfg(not(debug_assertions))]
-    let _guard = {
+    let (_guard, sentry_hub) = {
         use std::borrow::Cow;
-        sentry::init((
-            "https://acf304e45177402c94af33eecfc31ded@o1316575.ingest.sentry.io/6569253",
-            sentry::ClientOptions {
-                release: std::option_env!("CI_COMMIT_SHA")
-                    .map(|sha| Cow::from(format!("commit-{}", sha))),
-                send_default_pii: true,
-                environment: Some(Cow::from("production")),
-                ..Default::default()
-            },
-        ))
+        (
+            sentry::init((
+                "https://acf304e45177402c94af33eecfc31ded@o1316575.ingest.sentry.io/6569253",
+                sentry::ClientOptions {
+                    release: Some(Cow::from("local-dev")),
+                    send_default_pii: true,
+                    environment: Some(Cow::from("production")),
+                    ..Default::default()
+                },
+            )),
+            Hub::current(),
+        )
     };
 
     #[cfg(windows)]
@@ -57,17 +63,31 @@ fn main() {
     let (network_handle, network_event_receiver, network_event_sender, network_worker_init) =
         { NetworkHandle::new_handle_and_worker(audio_handle.clone()) };
 
-    std::thread::spawn(move || {
-        audio_device::priority::bump_priority().unwrap();
-        if let Err(e) = Worker::new()
-            .map_err(|e| NetworkError::Io(Some(e)))
-            .and_then(|w| w.run(network_worker_init))
-        {
-            eprintln!("Encountered an error in network operations, stopping");
-            eprintln!("Error details: {e:?}");
-            process::exit(1);
-        }
-    });
+    {
+        #[cfg(not(debug_assertions))]
+        let sentry_hub = sentry_hub.clone();
+        std::thread::spawn(move || {
+            let closure = move || {
+                audio_device::priority::bump_priority().unwrap();
+                if let Err(e) = Worker::new()
+                    .map_err(|e| NetworkError::Io(Some(e)))
+                    .and_then(|w| w.run(network_worker_init))
+                {
+                    eprintln!("Encountered an error in network operations, stopping");
+                    eprintln!("Error details: {e:?}");
+                    process::exit(1);
+                }
+            };
+
+            #[cfg(debug_assertions)]
+            closure();
+            #[cfg(not(debug_assertions))]
+            {
+                let thread_hub = Arc::new(Hub::new_from_top(&sentry_hub));
+                Hub::run(thread_hub, closure);
+            }
+        });
+    }
 
     #[cfg(windows)]
     {
@@ -78,17 +98,27 @@ fn main() {
         let parameters = AudioPlatformImpl::create_parameters();
         let network_handle = network_handle.clone();
         std::thread::spawn(move || {
-            audio_device::priority::bump_priority().unwrap();
-            if let Err(e) = audio::run(
-                parameters,
-                network_handle,
-                ui_handle,
-                audio_registration,
-                audio_receiver,
-            ) {
-                eprintln!("Encountered an error in audio operations, stopping");
-                eprintln!("Error details: {e:?}");
-                process::exit(1);
+            let closure = move || {
+                audio_device::priority::bump_priority().unwrap();
+                if let Err(e) = audio::run(
+                    parameters,
+                    network_handle,
+                    ui_handle,
+                    audio_registration,
+                    audio_receiver,
+                ) {
+                    eprintln!("Encountered an error in audio operations, stopping");
+                    eprintln!("Error details: {e:?}");
+                    process::exit(1);
+                }
+            };
+
+            #[cfg(debug_assertions)]
+            closure();
+            #[cfg(not(debug_assertions))]
+            {
+                let thread_hub = Arc::new(Hub::new_from_top(&sentry_hub));
+                Hub::run(thread_hub, closure);
             }
         });
     }
