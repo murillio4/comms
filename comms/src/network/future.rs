@@ -230,6 +230,8 @@ pub async fn attempt_p2p(
 
 pub async fn keep_alive(handle: NetworkHandle, mut network_event_sender: Sender<NetworkEvent>) {
     loop {
+        sleep(Duration::from_secs(10)).await;
+
         let timeout = Delay::new(Duration::from_secs(5));
         let keepalive_future = request_expect(&handle, Protocol::Tcp, None, KeepAlive);
         pin_mut!(keepalive_future);
@@ -263,8 +265,6 @@ pub async fn keep_alive(handle: NetworkHandle, mut network_event_sender: Sender<
             return;
         }
         handle.command(NetworkCommand::KeepAliveP2pClients);
-
-        sleep(Duration::from_secs(10)).await;
     }
 }
 

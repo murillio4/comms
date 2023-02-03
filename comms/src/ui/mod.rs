@@ -21,7 +21,9 @@ use gtk::{
 };
 use serde::{Deserialize, Serialize};
 
-use comms_lib::packet::{ClientId, Packet, PacketBody, UserId, UserJoined, UserLeft};
+use comms_lib::packet::{
+    ClientId, ErrorResponse, Packet, PacketBody, UserId, UserJoined, UserLeft,
+};
 
 use crate::audio::ipc::{AudioCommand, AudioHandle, EventLoopCreationError};
 use crate::network;
@@ -926,108 +928,157 @@ async fn handle_network_events(
                 }
             }
             NetworkEvent::Packet(packet) => {
-                if let UiState::Main {
-                    users,
-                    user_list,
-                    client_id,
-                    round_trip_latency,
-                    saved_volumes,
-                    ..
-                } = ui.borrow_mut().state_mut()
-                {
-                    let result: Result<(), CommsNetworkError> = (|| {
-                        match packet.kind() {
-                            UserJoined::KIND_ID => {
-                                let packet: Packet<UserJoined> = packet.finish_parse()?;
-                                audio
-                                    .send(AudioCommand::NewClient(packet.body.user.client_id))
-                                    .unwrap();
-                                let glib_context = glib::MainContext::default();
-                                glib_context.spawn_local(attempt_p2p(
-                                    network.clone(),
-                                    network_event_sender.clone(),
-                                    *client_id,
-                                    P2pDestination {
-                                        client_id: packet.body.user.client_id,
-                                        local_udp_addr: packet.body.user.local_udp_addr,
-                                        public_udp_addr: packet.body.user.public_udp_addr,
-                                    },
-                                    false,
-                                ));
-
-                                let one_way_latency = packet
-                                    .body
-                                    .user
-                                    .round_trip_latency
-                                    .saturating_add(*round_trip_latency)
-                                    / 2;
-
-                                let volume = if let Some(volume) =
-                                    saved_volumes.get(&packet.body.user.user_id)
-                                {
-                                    audio
-                                        .send({
-                                            AudioCommand::ChangeClientVolume(
-                                                packet.body.user.client_id,
-                                                *volume,
-                                            )
-                                        })
-                                        .unwrap();
-                                    *volume
-                                } else {
-                                    100u16
-                                };
-
-                                let (row_widget, latency_widget) = UiUser::create_widgets(
-                                    &packet.body.user.name,
-                                    *round_trip_latency,
-                                );
-                                let user = UiUser {
+                let result = (|| async {
+                    match packet.kind() {
+                        UserJoined::KIND_ID => {
+                            let mut ui_ref = ui.borrow_mut();
+                            let UiState::Main {
+                                users,
+                                user_list,
+                                client_id,
+                                round_trip_latency,
+                                saved_volumes,
+                                ..
+                            } = ui_ref.state_mut() else {
+                                return Ok(())
+                            };
+                            let packet: Packet<UserJoined> = packet.finish_parse()?;
+                            audio
+                                .send(AudioCommand::NewClient(packet.body.user.client_id))
+                                .unwrap();
+                            let glib_context = glib::MainContext::default();
+                            glib_context.spawn_local(attempt_p2p(
+                                network.clone(),
+                                network_event_sender.clone(),
+                                *client_id,
+                                P2pDestination {
                                     client_id: packet.body.user.client_id,
-                                    user_id: packet.body.user.user_id,
-                                    volume,
-                                    is_current_user: false,
-                                    network_latency: one_way_latency,
-                                    is_peer_to_peer: false,
-                                    root_widget: row_widget,
-                                    latency_widget,
-                                    is_speaking: false,
-                                    speaking_duration: Duration::ZERO,
-                                };
-                                user_list.append(&user.root_widget);
-                                let user = Rc::new(RefCell::new(user));
-                                UiUser::attach_signal_handlers(
-                                    user.clone(),
-                                    audio.clone(),
-                                    ui.clone(),
-                                );
-                                users.insert(packet.body.user.client_id, user);
-                            }
-                            UserLeft::KIND_ID => {
-                                let packet: Packet<UserLeft> = packet.finish_parse()?;
+                                    local_udp_addr: packet.body.user.local_udp_addr,
+                                    public_udp_addr: packet.body.user.public_udp_addr,
+                                },
+                                false,
+                            ));
+
+                            let one_way_latency = packet
+                                .body
+                                .user
+                                .round_trip_latency
+                                .saturating_add(*round_trip_latency)
+                                / 2;
+
+                            let volume = if let Some(volume) =
+                                saved_volumes.get(&packet.body.user.user_id)
+                            {
                                 audio
-                                    .send(AudioCommand::DropClient(packet.body.client_id))
+                                    .send({
+                                        AudioCommand::ChangeClientVolume(
+                                            packet.body.user.client_id,
+                                            *volume,
+                                        )
+                                    })
                                     .unwrap();
+                                *volume
+                            } else {
+                                100u16
+                            };
 
-                                network.command(NetworkCommand::RemoveP2pClient {
-                                    client_id: packet.body.client_id,
-                                });
-
-                                let user = users.remove(&packet.body.client_id).unwrap();
-                                user_list.remove(&user.borrow().root_widget.parent().unwrap());
-                            }
-                            _ => (),
+                            let (row_widget, latency_widget) =
+                                UiUser::create_widgets(&packet.body.user.name, *round_trip_latency);
+                            let user = UiUser {
+                                client_id: packet.body.user.client_id,
+                                user_id: packet.body.user.user_id,
+                                volume,
+                                is_current_user: false,
+                                network_latency: one_way_latency,
+                                is_peer_to_peer: false,
+                                root_widget: row_widget,
+                                latency_widget,
+                                is_speaking: false,
+                                speaking_duration: Duration::ZERO,
+                            };
+                            user_list.append(&user.root_widget);
+                            let user = Rc::new(RefCell::new(user));
+                            UiUser::attach_signal_handlers(user.clone(), audio.clone(), ui.clone());
+                            users.insert(packet.body.user.client_id, user);
                         }
+                        UserLeft::KIND_ID => {
+                            let mut ui_ref = ui.borrow_mut();
+                            let UiState::Main {
+                                users,
+                                user_list,
+                                ..
+                            } = ui_ref.state_mut() else {
+                                return Ok(())
+                            };
+                            let packet: Packet<UserLeft> = packet.finish_parse()?;
+                            audio
+                                .send(AudioCommand::DropClient(packet.body.client_id))
+                                .unwrap();
 
-                        Ok(())
-                    })();
-                    if result.is_err() {
-                        let builder = &ui.borrow().builder;
-                        let connect_failure_status: gtk::Label =
-                            builder.object("connect_failure_status").unwrap();
-                        connect_failure_status
-                            .set_text("Disconnecting from the server because of a network issue");
+                            network.command(NetworkCommand::RemoveP2pClient {
+                                client_id: packet.body.client_id,
+                            });
+
+                            let user = users.remove(&packet.body.client_id).unwrap();
+                            user_list.remove(&user.borrow().root_widget.parent().unwrap());
+                        }
+                        ErrorResponse::KIND_ID => {
+                            let packet: Packet<ErrorResponse> = packet.finish_parse()?;
+                            let Some((users, user_list, user_id, saved_volumes)) =
+                                ui.borrow_mut().use_state(|state| {
+                                    if let UiState::Main {
+                                        users,
+                                        user_list,
+                                        user_id,
+                                        saved_volumes,
+                                        ..
+                                    } = state
+                                    {
+                                        (
+                                            UiState::Disconnecting,
+                                            Some((users, user_list, user_id, saved_volumes)),
+                                        )
+                                    } else {
+                                        (state, None)
+                                    }
+                                }) else {
+                                return Ok(());
+                            };
+
+                            disconnect_from_server(
+                                users,
+                                user_list,
+                                ui.clone(),
+                                network.clone(),
+                                audio.clone(),
+                            )
+                            .await;
+
+                            ui.borrow_mut().set_state(UiState::ChooseServer {
+                                user_id,
+                                saved_volumes,
+                            });
+
+                            let builder = &ui.borrow().builder;
+                            let connect_failure_status: gtk::Label =
+                                builder.object("connect_failure_status").unwrap();
+                            connect_failure_status.set_text(&format!(
+                                "Disconnecting from the server because an error occurred: {:?}",
+                                packet.body
+                            ));
+                        }
+                        _ => (),
                     }
+
+                    Ok::<(), CommsNetworkError>(())
+                })()
+                .await;
+                if result.is_err() {
+                    let builder = &ui.borrow().builder;
+                    let connect_failure_status: gtk::Label =
+                        builder.object("connect_failure_status").unwrap();
+                    connect_failure_status
+                        .set_text("Disconnecting from the server because of a network issue");
                 }
             }
         }
