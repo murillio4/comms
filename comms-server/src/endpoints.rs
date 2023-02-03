@@ -197,19 +197,8 @@ async fn receive_disonnect_packet(context: Context, packet: Packet<Disconnect>) 
     .await
 }
 
-async fn receive_keep_alive_tcp(context: Context, packet: Packet<KeepAlive>) -> FutureResult {
+async fn receive_keep_alive(context: Context, packet: Packet<KeepAlive>) -> FutureResult {
     SendPacket::tcp(
-        Target::One(context.client_id),
-        Some(packet.id),
-        KeepAliveAck,
-    )?
-    .send(&context.network_handle)
-    .await;
-    Ok(())
-}
-
-async fn receive_keep_alive_udp(context: Context, packet: Packet<KeepAlive>) -> FutureResult {
-    SendPacket::udp(
         Target::One(context.client_id),
         Some(packet.id),
         KeepAliveAck,
@@ -296,7 +285,7 @@ fn tcp_packet_to_endpoint(
             .spawn(receive_disonnect_packet(context, packet.finish_parse()?)),
         KeepAlive::KIND_ID => spawner
             .borrow()
-            .spawn(receive_keep_alive_tcp(context, packet.finish_parse()?)),
+            .spawn(receive_keep_alive(context, packet.finish_parse()?)),
         KeepAliveAck::KIND_ID => (),
         _ => spawner
             .borrow()
@@ -315,9 +304,7 @@ fn udp_packet_to_endpoint(
             spawner.spawn(audio_from_client(context, packet.finish_parse()?))
         }
         P2pEstablished::KIND_ID => spawner.spawn(p2p_established(context, packet.finish_parse()?)),
-        KeepAlive::KIND_ID => {
-            spawner.spawn(receive_keep_alive_udp(context, packet.finish_parse()?))
-        }
+        KeepAlive::KIND_ID => (),
         KeepAliveAck::KIND_ID => (),
         _ => spawner.spawn(sent_wrong_packet(context, packet.header.id)),
     };
