@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
@@ -617,6 +618,21 @@ pub enum NetworkError {
     ReceiveFromAudioThread(RecvError),
 }
 
+impl Display for NetworkError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetworkError::Io(None) => f.write_str("Io error (unclear which, though)"),
+            NetworkError::Io(Some(e)) => e.fmt(f),
+            NetworkError::SendCommandToAudioThread => {
+                f.write_str("Failed to send command to audio thread")
+            }
+            NetworkError::ReceiveFromAudioThread(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for NetworkError {}
+
 impl From<io::Error> for NetworkError {
     fn from(e: io::Error) -> Self {
         NetworkError::Io(Some(e))
@@ -640,6 +656,16 @@ pub enum SendToNetworkThreadError {
     Network(CommsNetworkError),
     ThreadSend,
     SetReadiness(io::Error),
+}
+
+impl Display for SendToNetworkThreadError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SendToNetworkThreadError::Network(e) => e.fmt(f),
+            SendToNetworkThreadError::ThreadSend => f.write_str("Failed to send between threads"),
+            SendToNetworkThreadError::SetReadiness(e) => e.fmt(f),
+        }
+    }
 }
 
 impl From<CommsNetworkError> for SendToNetworkThreadError {

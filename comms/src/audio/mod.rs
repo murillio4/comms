@@ -9,6 +9,7 @@ use crate::network::ipc::NetworkHandle;
 use crate::network::SendToNetworkThreadError;
 use crate::ui::ipc::{AudioIPCInitStatus, UICommand};
 use audio_device::audio_connection::EventLoop;
+use std::fmt::{Display, Formatter};
 use std::sync::mpsc::Receiver;
 
 #[cfg(windows)]
@@ -59,6 +60,17 @@ pub enum AudioError {
     SendToNetworkThread(SendToNetworkThreadError),
     Opus(audiopus::Error),
 }
+
+impl Display for AudioError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AudioError::SendToNetworkThread(e) => e.fmt(f),
+            AudioError::Opus(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for AudioError {}
 
 impl From<SendToNetworkThreadError> for AudioError {
     fn from(err: SendToNetworkThreadError) -> Self {

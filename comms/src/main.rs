@@ -74,8 +74,7 @@ fn main() {
                     .and_then(|w| w.run(network_worker_init))
                 {
                     eprintln!("Encountered an error in network operations, stopping");
-                    eprintln!("Error details: {e:?}");
-                    process::exit(1);
+                    panic!("{e:?}");
                 }
             };
 
@@ -108,8 +107,7 @@ fn main() {
                     audio_receiver,
                 ) {
                     eprintln!("Encountered an error in audio operations, stopping");
-                    eprintln!("Error details: {e:?}");
-                    process::exit(1);
+                    panic!("{e:?}");
                 }
             };
 
