@@ -1,5 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt::Formatter;
 use std::fs::File;
 use std::io;
 use std::io::Write;
@@ -77,6 +79,27 @@ impl From<io::Error> for CheckForUpdateError {
 impl From<ParseIntError> for CheckForUpdateError {
     fn from(_: ParseIntError) -> Self {
         Self::Parse
+    }
+}
+
+#[derive(Debug)]
+struct UpdateIoError {
+    path: PathBuf,
+    wrapped: io::Error,
+}
+
+impl std::fmt::Display for UpdateIoError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "Self-update failed to operate on {:?} due to {}",
+            self.path, self.wrapped
+        ))
+    }
+}
+
+impl Error for UpdateIoError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.wrapped)
     }
 }
 
@@ -297,24 +320,30 @@ async fn check_for_updates(
                     }
                 };
 
-                ignore_not_found_error(std::fs::remove_file(&old_comms_cache_path))?;
-                ignore_not_found_error(std::fs::remove_file(&new_comms_cache_path))?;
-                ignore_not_found_error(std::fs::remove_dir_all(&extracted_comms_dir_backup_path))?;
+                let add_err_context = |path: PathBuf, e: io::Error| UpdateIoError {
+                    path,
+                    wrapped: e
+                };
 
-                std::fs::create_dir_all(new_comms_cache_path.parent().ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{new_comms_cache_path:?} does not have a parent")))?)?;
-                std::fs::create_dir_all(&extracted_comms_dir_backup_path)?;
+                ignore_not_found_error(std::fs::remove_file(&old_comms_cache_path)).map_err(|e| add_err_context(old_comms_cache_path.clone(), e))?;
+                ignore_not_found_error(std::fs::remove_file(&new_comms_cache_path)).map_err(|e| add_err_context(new_comms_cache_path.clone(), e))?;
+                ignore_not_found_error(std::fs::remove_dir_all(&extracted_comms_dir_backup_path)).map_err(|e| add_err_context(extracted_comms_dir_backup_path.clone(), e))?;
+
+                let comms_cache_parent_path = new_comms_cache_path.parent().ok_or_else(|| Box::<dyn std::error::Error>::from(format!("{new_comms_cache_path:?} does not have a parent")))?;
+                std::fs::create_dir_all(comms_cache_parent_path).map_err(|e| add_err_context(comms_cache_parent_path.to_path_buf(), e))?;
+                std::fs::create_dir_all(&extracted_comms_dir_backup_path).map_err(|e| add_err_context(extracted_comms_dir_backup_path.clone(), e))?;
                 {
-                    let mut new_comms = File::create(&new_comms_cache_path)?;
+                    let mut new_comms = File::create(&new_comms_cache_path).map_err(|e| add_err_context(new_comms_cache_path.clone(), e))?;
                     new_comms.write_all(&buf)?;
                 }
 
                 for path in std::fs::read_dir(&extracted_comms_dir_path)? {
                     let path = path?;
-                    std::fs::rename(path.path(), extracted_comms_dir_backup_path.join(path.file_name()))?;
+                    std::fs::rename(path.path(), extracted_comms_dir_backup_path.join(path.file_name())).map_err(|e| add_err_context(path.path(), e))?;
                 }
 
-                std::fs::rename(&entry_comms_path, &old_comms_cache_path)?;
-                std::fs::rename(&new_comms_cache_path, &entry_comms_path)?;
+                std::fs::rename(&entry_comms_path, &old_comms_cache_path).map_err(|e| add_err_context(entry_comms_path.clone(), e))?;
+                std::fs::rename(&new_comms_cache_path, &entry_comms_path).map_err(|e| add_err_context(new_comms_cache_path, e))?;
 
                 std::process::Command::new(entry_comms_path).spawn()?;
                 Ok(())
@@ -322,6 +351,8 @@ async fn check_for_updates(
 
             if let Err(e) = result {
                 show_update_failure(format!("{e:?}"));
+                #[cfg(not(debug_assertions))]
+                sentry::capture_error(&*e);
             } else {
                 std::process::exit(0);
             }
