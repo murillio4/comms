@@ -413,5 +413,6 @@ fn main() {
                 command_tx,
             })
         }),
-    );
+    )
+    .unwrap();
 }

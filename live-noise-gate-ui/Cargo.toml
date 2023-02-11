@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 dasp = "0.11.0"
-eframe = "0.20"
+eframe = "0.21"
 ringbuffer = "0.12"
 rfd = "0.11"
 

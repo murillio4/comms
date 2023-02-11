@@ -360,5 +360,6 @@ pub fn run(command_tx: Sender<Command>, time_plot_receiver: Receiver<IncomingAud
                 command_tx,
             })
         }),
-    );
+    )
+    .unwrap();
 }

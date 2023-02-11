@@ -217,9 +217,9 @@ async fn check_for_updates(
     update_button.connect_clicked(move |button| {
         let update_progress_css_provider = update_progress_css_provider.clone();
         let update_progress_css = move |progress: u16| {
-            update_progress_css_provider.load_from_data(format!(".horizontal {{
+            update_progress_css_provider.load_from_data(&format!(".horizontal {{
                 background: linear-gradient(to right, rgba(0, 0, 0, 0.15) {progress}%, transparent {progress}%);
-            }}").as_bytes());
+            }}"));
         };
 
         button.set_sensitive(false);
@@ -626,7 +626,7 @@ impl UiUser {
                 .build(),
         );
         let latency_label = gtk::Label::builder()
-            .label(&Self::format_latency_text(network_latency, false))
+            .label(Self::format_latency_text(network_latency, false))
             .xalign(1.0)
             .build();
         row_container.append(&latency_label);
@@ -656,7 +656,7 @@ impl UiUser {
         let user = this.borrow();
         let click_gesture = gtk::GestureClick::new();
         click_gesture.set_button(3);
-        user.root_widget.add_controller(&click_gesture);
+        user.root_widget.add_controller(click_gesture.clone());
         {
             let this = this.clone();
             click_gesture.connect_pressed(move |_, _, x, y| {
@@ -674,7 +674,7 @@ impl UiUser {
 
                 let adjustment =
                     gtk::Adjustment::new(user.volume as f64, 0.0, 400.0, 2.0, 10.0, 0.0);
-                let scale = gtk::builders::ScaleBuilder::new()
+                let scale = gtk::Scale::builder()
                     .adjustment(&adjustment)
                     .value_pos(PositionType::Left)
                     .orientation(Orientation::Horizontal)
@@ -689,7 +689,7 @@ impl UiUser {
 
                 popover_box.insert_child_after(&scale, None::<&gtk::Widget>);
                 popover_box.insert_child_after(
-                    &gtk::builders::LabelBuilder::new().label(label_text).build(),
+                    &gtk::Label::builder().label(label_text).build(),
                     None::<&gtk::Widget>,
                 );
 
@@ -1283,7 +1283,13 @@ pub fn run(
 
     gtk_start(move |app| {
         let css_provider = gtk::CssProvider::new();
-        css_provider.load_from_data(RESOURCES_DIR.get_file("theme.css").unwrap().contents());
+        css_provider.load_from_data(
+            RESOURCES_DIR
+                .get_file("theme.css")
+                .unwrap()
+                .contents_utf8()
+                .unwrap(),
+        );
 
         StyleContext::add_provider_for_display(
             &Display::default().unwrap(),
