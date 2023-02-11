@@ -41,10 +41,6 @@ impl AudioPlatform for WasapiAudioPlatform {
                 Ok(c) => c,
                 Err(e) => {
                     let e = match e {
-                        WasapiCreationError::NoInputDevice => EventLoopCreationError::NoInputDevice,
-                        WasapiCreationError::NoOutputDevice => {
-                            EventLoopCreationError::NoOutputDevice
-                        }
                         WasapiCreationError::NoInputFormat(e) => {
                             EventLoopCreationError::InputDeviceError(format!("{e:?}"))
                         }

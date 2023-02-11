@@ -1194,12 +1194,6 @@ async fn handle_ui_commands(
             UICommand::AudioIPCInitStatus(audio_status) => {
                 if let AudioIPCInitStatus::Error(e) = audio_status {
                     let error_message = match e {
-                        EventLoopCreationError::NoInputDevice => {
-                            "No microphone was detected".to_string()
-                        }
-                        EventLoopCreationError::NoOutputDevice => {
-                            "No headphones/speakers were detected".to_string()
-                        }
                         EventLoopCreationError::InputDeviceError(m) => {
                             format!("Failed to set up microphone: {m}")
                         }

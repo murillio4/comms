@@ -126,10 +126,19 @@ impl<
     type AudioConnection = WasapiAudioConnection<M, P, SP>;
 
     fn run(mut self) -> ! {
-        let mut handles: Vec<WasapiHandle> = vec![
-            WasapiHandle::MicStream(self.connection.mic_stream.notify.win_handle),
-            WasapiHandle::PlaybackStream(self.connection.playback_stream.notify.win_handle),
-        ];
+        let mut handles: Vec<WasapiHandle> = [
+            self.connection
+                .mic_stream
+                .as_ref()
+                .map(|s| WasapiHandle::MicStream(s.notify.win_handle)),
+            self.connection
+                .playback_stream
+                .as_ref()
+                .map(|s| WasapiHandle::PlaybackStream(s.notify.win_handle)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         if let Some(receiver) = &self.receiver {
             handles.push(WasapiHandle::Receiver(receiver.registration().win_handle));
         }
@@ -140,12 +149,20 @@ impl<
                     unimplemented!("Failed to select WASAPI handle: {:?}", e)
                 }
                 Ok(WasapiHandle::MicStream(_)) => {
-                    if let Err(e) = self.connection.mic_stream.invoke() {
+                    let Some(stream) = &mut self.connection.mic_stream else {
+                        continue;
+                    };
+
+                    if let Err(e) = stream.invoke() {
                         unimplemented!("Mic error: {:?}", e);
                     }
                 }
                 Ok(WasapiHandle::PlaybackStream(_)) => {
-                    if let Err(e) = self.connection.playback_stream.invoke() {
+                    let Some(stream) = &mut self.connection.playback_stream else {
+                        continue;
+                    };
+
+                    if let Err(e) = stream.invoke() {
                         unimplemented!("Playback error: {:?}", e);
                     }
                 }
