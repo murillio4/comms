@@ -80,16 +80,21 @@ deploy_release:
     - |-
       sftp comms-ci@getcomms.app <<EOD
       put target/release/comms-server
+      put comms.exe
       EOD
     - |-
       ssh -T comms-ci@getcomms.app <<EOD
       set -ex
       cd /opt/comms
       chmod 774 ~/comms-server
+      chmod 644 ~/comms.exe
       chown comms-ci:comms ~/comms-server
+      chown comms-ci:www-data ~/comms.exe
       mv ~/comms-server .
+      mv ~/comms.exe /usr/share/nginx/www.getcomms.app/
       sudo /bin/systemctl restart comms.service
       EOD
     - ssh-agent -k
   dependencies:
     - build_release_linux
+    - build_release_windows
