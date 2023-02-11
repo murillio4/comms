@@ -1,4 +1,4 @@
-use crate::buffer::{MicSink, PlaybackSource};
+use crate::buffer::{MaybeSharedPlaybackSource, MicSink, PlaybackSource};
 use crate::wasapi::device::IAudioClientWrapper;
 use crate::wasapi::event_loop::WasapiEventLoopRegistration;
 use crate::wasapi::sample_rate_conversion::{MicSampleRateConverter, PlaybackSampleRateConverter};
@@ -75,6 +75,7 @@ pub struct WasapiMicStream<M: MicSink> {
     capture_client: Audio::IAudioCaptureClient,
     pub notify: WasapiEventLoopRegistration,
     sample_rate_converter: Box<dyn MicSampleRateConverter<M>>,
+    pub sink: M,
 }
 
 impl<M: MicSink> WasapiMicStream<M> {
@@ -83,16 +84,18 @@ impl<M: MicSink> WasapiMicStream<M> {
         capture_client: Audio::IAudioCaptureClient,
         notify: WasapiEventLoopRegistration,
         raw_stream: RawWasapiStream,
+        sink: M,
     ) -> Self {
         Self {
             raw_stream,
             capture_client,
             notify,
             sample_rate_converter,
+            sink,
         }
     }
 
-    pub fn invoke(&mut self, mic_buffer: &mut M) -> Result<(), StreamError> {
+    pub fn invoke(&mut self) -> Result<(), StreamError> {
         let mut buffer = MaybeUninit::<*mut u8>::uninit();
         let mut flags = 0u32;
 
@@ -154,7 +157,7 @@ impl<M: MicSink> WasapiMicStream<M> {
                         }
 
                         self.sample_rate_converter
-                            .feed_next(next_sample, mic_buffer)
+                            .feed_next(next_sample, &mut self.sink)
                     }
 
                     if let Err(err) = unsafe { self.capture_client.ReleaseBuffer(frames_available) }
@@ -190,7 +193,7 @@ impl<M: MicSink> WasapiMicStream<M> {
                         }
 
                         self.sample_rate_converter
-                            .feed_next(next_sample, mic_buffer)
+                            .feed_next(next_sample, &mut self.sink)
                     }
 
                     if let Err(err) = unsafe { self.capture_client.ReleaseBuffer(frames_available) }
@@ -199,87 +202,93 @@ impl<M: MicSink> WasapiMicStream<M> {
                     }
                 }
             }
-            mic_buffer.publish_chunks();
+            self.sink.publish_chunks();
         }
     }
 }
 
-pub struct WasapiPlaybackStream<P: PlaybackSource> {
+pub struct WasapiPlaybackStream<P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> {
     pub raw_stream: RawWasapiStream,
     render_client: Audio::IAudioRenderClient,
     pub notify: WasapiEventLoopRegistration,
     sample_rate_converter: Box<dyn PlaybackSampleRateConverter<P>>,
+    pub source: SP,
 }
 
-impl<P: PlaybackSource> WasapiPlaybackStream<P> {
+impl<P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> WasapiPlaybackStream<P, SP> {
     pub fn new(
         sample_rate_converter: Box<dyn PlaybackSampleRateConverter<P>>,
         render_client: Audio::IAudioRenderClient,
         notify: WasapiEventLoopRegistration,
         raw_stream: RawWasapiStream,
+        source: SP,
     ) -> Self {
         Self {
             raw_stream,
             render_client,
             notify,
             sample_rate_converter,
+            source,
         }
     }
 
-    pub fn invoke(&mut self, playback_source: &mut P) -> Result<(), StreamError> {
-        loop {
-            let padding = unsafe { (*self.raw_stream.audio_client).GetCurrentPadding() }
-                .map_err(stream_error_from_win_error)?;
-            let frames_available = self.raw_stream.max_frames_in_buffer - padding;
+    pub fn invoke(&mut self) -> Result<(), StreamError> {
+        self.source.with(|playback| {
+            loop {
+                let padding = unsafe { (*self.raw_stream.audio_client).GetCurrentPadding() }
+                    .map_err(stream_error_from_win_error)?;
+                let frames_available = self.raw_stream.max_frames_in_buffer - padding;
 
-            if frames_available == 0 {
-                return Ok(());
-            }
-
-            let raw_buffer = unsafe { self.render_client.GetBuffer(frames_available) }
-                .map_err(stream_error_from_win_error)?;
-
-            let sample_size = self.raw_stream.sample_format.sample_size();
-            let buffer_len =
-                frames_available as usize * self.raw_stream.bytes_per_frame as usize / sample_size;
-
-            match self.raw_stream.sample_format {
-                SampleFormat::F32 => {
-                    // When the AudioClient is initialized, it is configured to align its buffer
-                    // according to the audio format in use.
-                    #[allow(clippy::cast_ptr_alignment)]
-                    let buffer_data = raw_buffer as *mut f32;
-                    let sample_buffer =
-                        unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
-
-                    self.sample_rate_converter.convert_f32(
-                        sample_buffer,
-                        playback_source,
-                        self.raw_stream.channel_count,
-                    );
-
-                    unsafe { self.render_client.ReleaseBuffer(frames_available, 0) }
-                        .map_err(stream_error_from_win_error)?;
+                if frames_available == 0 {
+                    return Ok(());
                 }
-                SampleFormat::I16 => {
-                    // When the AudioClient is initialized, it is configured to align its buffer
-                    // according to the audio format in use.
-                    #[allow(clippy::cast_ptr_alignment)]
-                    let buffer_data = raw_buffer as *mut i16;
-                    let sample_buffer =
-                        unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
 
-                    self.sample_rate_converter.convert_i16(
-                        sample_buffer,
-                        playback_source,
-                        self.raw_stream.channel_count,
-                    );
+                let raw_buffer = unsafe { self.render_client.GetBuffer(frames_available) }
+                    .map_err(stream_error_from_win_error)?;
 
-                    unsafe { self.render_client.ReleaseBuffer(frames_available, 0) }
-                        .map_err(stream_error_from_win_error)?;
+                let sample_size = self.raw_stream.sample_format.sample_size();
+                let buffer_len = frames_available as usize
+                    * self.raw_stream.bytes_per_frame as usize
+                    / sample_size;
+
+                match self.raw_stream.sample_format {
+                    SampleFormat::F32 => {
+                        // When the AudioClient is initialized, it is configured to align its buffer
+                        // according to the audio format in use.
+                        #[allow(clippy::cast_ptr_alignment)]
+                        let buffer_data = raw_buffer as *mut f32;
+                        let sample_buffer =
+                            unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
+
+                        self.sample_rate_converter.convert_f32(
+                            sample_buffer,
+                            playback,
+                            self.raw_stream.channel_count,
+                        );
+
+                        unsafe { self.render_client.ReleaseBuffer(frames_available, 0) }
+                            .map_err(stream_error_from_win_error)?;
+                    }
+                    SampleFormat::I16 => {
+                        // When the AudioClient is initialized, it is configured to align its buffer
+                        // according to the audio format in use.
+                        #[allow(clippy::cast_ptr_alignment)]
+                        let buffer_data = raw_buffer as *mut i16;
+                        let sample_buffer =
+                            unsafe { slice::from_raw_parts_mut(buffer_data, buffer_len) };
+
+                        self.sample_rate_converter.convert_i16(
+                            sample_buffer,
+                            playback,
+                            self.raw_stream.channel_count,
+                        );
+
+                        unsafe { self.render_client.ReleaseBuffer(frames_available, 0) }
+                            .map_err(stream_error_from_win_error)?;
+                    }
                 }
             }
-        }
+        })
     }
 }
 

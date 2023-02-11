@@ -140,22 +140,14 @@ impl<
                     unimplemented!("Failed to select WASAPI handle: {:?}", e)
                 }
                 Ok(WasapiHandle::MicStream(_)) => {
-                    if let Err(e) = self
-                        .connection
-                        .mic_stream
-                        .invoke(&mut self.connection.mic_sink)
-                    {
+                    if let Err(e) = self.connection.mic_stream.invoke() {
                         unimplemented!("Mic error: {:?}", e);
                     }
                 }
                 Ok(WasapiHandle::PlaybackStream(_)) => {
-                    let source = &mut self.connection.playback_source;
-                    let stream = &mut self.connection.playback_stream;
-                    source.with(|playback| {
-                        if let Err(e) = stream.invoke(playback) {
-                            unimplemented!("Playback error: {:?}", e);
-                        }
-                    });
+                    if let Err(e) = self.connection.playback_stream.invoke() {
+                        unimplemented!("Playback error: {:?}", e);
+                    }
                 }
                 Ok(WasapiHandle::Receiver(_)) => {
                     if let Some(receiver) = &mut self.receiver {

@@ -211,9 +211,9 @@ impl RcMultiplexer {
 }
 
 impl MaybeSharedPlaybackSource<Multiplexer> for RcMultiplexer {
-    fn with(&mut self, cb: impl FnOnce(&mut Multiplexer)) {
+    fn with<T>(&mut self, cb: impl FnOnce(&mut Multiplexer) -> T) -> T {
         let mut multiplexer = self.0.borrow_mut();
-        cb(&mut multiplexer);
+        cb(&mut multiplexer)
     }
 }
 

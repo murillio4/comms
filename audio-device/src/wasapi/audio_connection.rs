@@ -11,9 +11,7 @@ pub struct WasapiParameters;
 
 pub struct WasapiAudioConnection<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> {
     pub mic_stream: WasapiMicStream<M>,
-    pub playback_stream: WasapiPlaybackStream<P>,
-    pub playback_source: SP,
-    pub mic_sink: M,
+    pub playback_stream: WasapiPlaybackStream<P, SP>,
 }
 
 #[derive(Debug)]
@@ -63,6 +61,7 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>>
             input_device.create_client().unwrap(),
             input_device.audio_client.create_notify().unwrap(),
             RawWasapiStream::new(waveformatex, input_device.audio_client, input_format),
+            mic_sink,
         );
         mic_stream.raw_stream.start();
 
@@ -77,13 +76,12 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>>
             output_device.create_client().unwrap(),
             output_device.audio_client.create_notify().unwrap(),
             RawWasapiStream::new(waveformatex, output_device.audio_client, output_format),
+            playback_source,
         );
         playback_stream.raw_stream.start();
         Ok(WasapiEventLoopBuilder::new(Self {
             mic_stream,
             playback_stream,
-            playback_source,
-            mic_sink,
         }))
     }
 }

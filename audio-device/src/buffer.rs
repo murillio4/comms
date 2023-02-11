@@ -3,13 +3,13 @@ use crate::audio_connection::AudioConnection;
 pub struct UnsharedPlaybackSource<P: PlaybackSource>(pub P);
 
 impl<P: PlaybackSource> MaybeSharedPlaybackSource<P> for UnsharedPlaybackSource<P> {
-    fn with(&mut self, cb: impl FnOnce(&mut P)) {
+    fn with<T>(&mut self, cb: impl FnOnce(&mut P) -> T) -> T {
         cb(&mut self.0)
     }
 }
 
 pub trait MaybeSharedPlaybackSource<P: PlaybackSource> {
-    fn with(&mut self, cb: impl FnOnce(&mut P));
+    fn with<T>(&mut self, cb: impl FnOnce(&mut P) -> T) -> T;
 }
 
 pub trait PlaybackSource {
