@@ -23,7 +23,7 @@ pub trait EventLoop {
     type Notify: EventLoopNotify;
     type AudioConnection: AudioConnection;
 
-    fn run(self);
+    fn run(self) -> !;
 }
 
 pub trait EventLoopNotify {

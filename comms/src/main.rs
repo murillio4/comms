@@ -69,13 +69,13 @@ fn main() {
         std::thread::spawn(move || {
             let closure = move || {
                 audio_device::priority::bump_priority().unwrap();
-                if let Err(e) = Worker::new()
+                let worker = Worker::new()
                     .map_err(|e| NetworkError::Io(Some(e)))
-                    .and_then(|w| w.run(network_worker_init))
-                {
-                    eprintln!("Encountered an error in network operations, stopping");
-                    panic!("{e:#?}");
-                }
+                    .unwrap();
+
+                let error = worker.run(network_worker_init);
+                eprintln!("Encountered an error in network operations, stopping");
+                panic!("{error:#?}");
             };
 
             #[cfg(debug_assertions)]
@@ -99,16 +99,15 @@ fn main() {
         std::thread::spawn(move || {
             let closure = move || {
                 audio_device::priority::bump_priority().unwrap();
-                if let Err(e) = audio::run(
+                let error = audio::run(
                     parameters,
                     network_handle,
                     ui_handle,
                     audio_registration,
                     audio_receiver,
-                ) {
-                    eprintln!("Encountered an error in audio operations, stopping");
-                    panic!("{e:#?}");
-                }
+                );
+                eprintln!("Encountered an error in audio operations, stopping");
+                panic!("{error:#?}");
             };
 
             #[cfg(debug_assertions)]

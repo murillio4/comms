@@ -89,7 +89,8 @@ impl EventLoop for PulseEventLoop {
     type Notify = PulseEventLoopNotify;
     type AudioConnection = PulseAudioConnection;
 
-    fn run(mut self) {
+    fn run(mut self) -> ! {
         self.mainloop.run().unwrap();
+        panic!("Pulse event loop should never exit on its own");
     }
 }

@@ -28,7 +28,7 @@ pub fn run(
     ui_handle: async_channel::Sender<UICommand>,
     registration: <AudioPlatformImpl as AudioPlatform>::Registration,
     receiver: Receiver<AudioCommand>,
-) -> Result<(), AudioError> {
+) -> AudioError {
     let multiplexer = RcMultiplexer::new();
     let receiver = AudioReceiver::new(
         multiplexer.clone(),
@@ -37,7 +37,10 @@ pub fn run(
         ui_handle.clone(),
         network_handle.clone(),
     );
-    let mic_buffer = MicBuffer::new(network_handle, ui_handle.clone())?;
+    let mic_buffer = match MicBuffer::new(network_handle, ui_handle.clone()) {
+        Ok(b) => b,
+        Err(e) => return e.into(),
+    };
     let event_loop =
         match AudioPlatformImpl::create_event_loop(parameters, receiver, mic_buffer, multiplexer) {
             Ok(l) => l,
@@ -45,18 +48,18 @@ pub fn run(
                 ui_handle
                     .try_send(UICommand::AudioIPCInitStatus(AudioIPCInitStatus::Error(e)))
                     .unwrap();
-                return Ok(());
+                return AudioError::InitializationError;
             }
         };
     ui_handle
         .try_send(UICommand::AudioIPCInitStatus(AudioIPCInitStatus::Ready))
         .unwrap();
     event_loop.run();
-    Ok(())
 }
 
 #[derive(Debug)]
 pub enum AudioError {
+    InitializationError,
     SendToNetworkThread(SendToNetworkThreadError),
     Opus(audiopus::Error),
 }
@@ -64,6 +67,7 @@ pub enum AudioError {
 impl Display for AudioError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            AudioError::InitializationError => f.write_str("Initialization failed"),
             AudioError::SendToNetworkThread(e) => e.fmt(f),
             AudioError::Opus(e) => e.fmt(f),
         }

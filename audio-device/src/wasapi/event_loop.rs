@@ -125,7 +125,7 @@ impl<
     type Notify = WasapiEventLoopNotify;
     type AudioConnection = WasapiAudioConnection<M, P, SP>;
 
-    fn run(mut self) {
+    fn run(mut self) -> ! {
         let mut handles: Vec<WasapiHandle> = vec![
             WasapiHandle::MicStream(self.connection.mic_stream.notify.win_handle),
             WasapiHandle::PlaybackStream(self.connection.playback_stream.notify.win_handle),

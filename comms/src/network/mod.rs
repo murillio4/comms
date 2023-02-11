@@ -294,7 +294,7 @@ impl Worker {
         Ok(Worker { connection: None })
     }
 
-    pub fn run(mut self, worker_init: WorkerInit) -> Result<(), NetworkError> {
+    pub fn run(mut self, worker_init: WorkerInit) -> NetworkError {
         let command_queue = CommandQueue::new(worker_init.command_receiver);
         let mut audio_handle = worker_init.audio_handle;
         let network_handle = worker_init.network_handle;
@@ -307,7 +307,9 @@ impl Worker {
         let mut events = Events::with_capacity(1024);
 
         loop {
-            poll.poll(&mut events, None)?;
+            if let Err(e) = poll.poll(&mut events, None) {
+                return e.into();
+            }
             for event in events.iter() {
                 let token = event.token();
                 if token == command_token && event.is_readable() {
@@ -364,7 +366,7 @@ impl Worker {
                                                             ));
                                                         }
                                                     }
-                                                    Err(e) => return Err(e.into()),
+                                                    Err(e) => return e.into(),
                                                 }
                                             }
                                             Protocol::UdpP2p(addr) => {
@@ -385,7 +387,7 @@ impl Worker {
                                                             ));
                                                         }
                                                     }
-                                                    Err(e) => return Err(e.into()),
+                                                    Err(e) => return e.into(),
                                                 }
                                             }
                                         }
@@ -441,7 +443,7 @@ impl Worker {
                                                             .done(Err(ConnectError::NetworkError));
                                                     }
                                                 }
-                                                Err(e) => return Err(e.into()),
+                                                Err(e) => return e.into(),
                                             }
                                         }
                                     }
@@ -497,7 +499,7 @@ impl Worker {
                                                             ));
                                                         }
                                                     }
-                                                    Err(e) => return Err(e.into()),
+                                                    Err(e) => return e.into(),
                                                 }
                                             }
                                         }
