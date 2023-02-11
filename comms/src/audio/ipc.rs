@@ -26,10 +26,6 @@ pub enum AudioCommand {
     DropClient(ClientId),
     ServerDisconnect,
     AudioFromClient(ClientId, OpusAudioFrame, bool),
-    #[allow(dead_code)]
-    SwitchInputDevice(String),
-    #[allow(dead_code)]
-    SwitchOutputDevice(String),
     ListDevices,
     ChangeMainVolume(u16),
     ChangeClientVolume(ClientId, u16),
@@ -42,8 +38,6 @@ impl Display for AudioCommand {
             AudioCommand::DropClient(_) => f.write_str("DropClient"),
             AudioCommand::ServerDisconnect => f.write_str("ServerDisconnect"),
             AudioCommand::AudioFromClient(..) => f.write_str("AudioFromClient"),
-            AudioCommand::SwitchInputDevice(_) => f.write_str("SwitchInputDevice"),
-            AudioCommand::SwitchOutputDevice(_) => f.write_str("SwitchOutputDevice"),
             AudioCommand::ListDevices => f.write_str("ListDevices"),
             AudioCommand::ChangeMainVolume(..) => f.write_str("ChangeMainVolume"),
             AudioCommand::ChangeClientVolume(..) => f.write_str("ChangeClientVolume"),
@@ -139,8 +133,6 @@ impl<R> InterruptReceiver<R> for AudioReceiver<R> {
                             .expect("Failed to decode audio from multiplexer client")
                     })
                 }
-                AudioCommand::SwitchInputDevice(device_id) => AC::change_input_device(device_id),
-                AudioCommand::SwitchOutputDevice(device_id) => AC::change_output_device(device_id),
                 AudioCommand::ListDevices => {
                     let ui_handle = self.ui_handle.clone();
                     connection.list_devices(move |devices| {

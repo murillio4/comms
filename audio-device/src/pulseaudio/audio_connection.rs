@@ -132,14 +132,6 @@ impl AudioConnection for PulseAudioConnection {
             ListResult::Error => panic!("Failed to get audio outputs"),
         });
     }
-
-    fn change_input_device(_: String) {
-        eprintln!("can't change input device yet")
-    }
-
-    fn change_output_device(_: String) {
-        eprintln!("can't change output device yet")
-    }
 }
 
 #[derive(Debug)]

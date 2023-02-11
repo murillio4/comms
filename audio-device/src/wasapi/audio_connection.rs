@@ -111,12 +111,4 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> AudioConne
                 .collect(),
         });
     }
-
-    fn change_input_device(_: String) {
-        eprintln!("can't change input device yet")
-    }
-
-    fn change_output_device(_: String) {
-        eprintln!("can't change output device yet")
-    }
 }

@@ -14,8 +14,6 @@ pub struct FoundDevices {
 
 pub trait AudioConnection {
     fn list_devices(&self, callback: impl FnOnce(FoundDevices) + 'static);
-    fn change_input_device(device_id: String);
-    fn change_output_device(device_id: String);
 }
 
 pub trait EventLoop {
