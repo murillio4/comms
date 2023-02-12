@@ -106,8 +106,13 @@ impl AudioPlot {
                             / SAMPLES_IN_BUCKET as f32;
 
                         let now = Instant::now();
-                        let bonk = last_bucket_instant.duration_since(now);
-                        let bucket_instant = if bonk < DURATION_BETWEEN_BUCKETS {
+
+                        if last_bucket_instant.elapsed() > GRAPH_DURATION {
+                            *last_bucket_instant = Instant::now();
+                        }
+
+                        let bucket_duration = last_bucket_instant.duration_since(now);
+                        let bucket_instant = if bucket_duration < DURATION_BETWEEN_BUCKETS {
                             *last_bucket_instant = last_bucket_instant
                                 .checked_add(DURATION_BETWEEN_BUCKETS)
                                 .unwrap();

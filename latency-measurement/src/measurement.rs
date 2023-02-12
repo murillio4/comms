@@ -183,6 +183,8 @@ impl PlaybackSource for CalculateDelayPlayback {
 
         callback((&samples, None));
     }
+
+    fn drop_samples(&mut self) {}
 }
 
 pub fn create_measurement_pipeline(

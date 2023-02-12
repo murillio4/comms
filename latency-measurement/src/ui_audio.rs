@@ -288,6 +288,8 @@ impl PlaybackSource for Beep {
 
         callback((&samples, None));
     }
+
+    fn drop_samples(&mut self) {}
 }
 
 pub fn run(audio_tx: Sender<AudioData>, command_rx: Receiver<AudioCommand>) {

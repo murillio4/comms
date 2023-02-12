@@ -214,6 +214,10 @@ mod tests {
         fn next_samples(&mut self, count: usize, callback: impl FnOnce((&[f32], Option<&[f32]>))) {
             callback((&self.0[..1], Some(&self.0[1..count])));
         }
+
+        fn drop_samples(&mut self) {
+            self.0.clear();
+        }
     }
 
     #[test]

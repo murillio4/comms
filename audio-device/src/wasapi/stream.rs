@@ -71,31 +71,31 @@ impl RawWasapiStream {
 }
 
 pub struct WasapiMicStream<M: MicSink> {
+    pub device_id: String,
     pub raw_stream: RawWasapiStream,
     capture_client: Audio::IAudioCaptureClient,
     pub notify: WasapiEventLoopRegistration,
     sample_rate_converter: Box<dyn MicSampleRateConverter<M>>,
-    pub sink: M,
 }
 
 impl<M: MicSink> WasapiMicStream<M> {
     pub fn new(
         sample_rate_converter: Box<dyn MicSampleRateConverter<M>>,
+        device_id: String,
         capture_client: Audio::IAudioCaptureClient,
         notify: WasapiEventLoopRegistration,
         raw_stream: RawWasapiStream,
-        sink: M,
     ) -> Self {
         Self {
             raw_stream,
+            device_id,
             capture_client,
             notify,
             sample_rate_converter,
-            sink,
         }
     }
 
-    pub fn invoke(&mut self) -> Result<(), StreamError> {
+    pub fn invoke(&mut self, sink: &mut M) -> Result<(), StreamError> {
         let mut buffer = MaybeUninit::<*mut u8>::uninit();
         let mut flags = 0u32;
 
@@ -156,8 +156,7 @@ impl<M: MicSink> WasapiMicStream<M> {
                             }
                         }
 
-                        self.sample_rate_converter
-                            .feed_next(next_sample, &mut self.sink)
+                        self.sample_rate_converter.feed_next(next_sample, sink)
                     }
 
                     if let Err(err) = unsafe { self.capture_client.ReleaseBuffer(frames_available) }
@@ -192,8 +191,7 @@ impl<M: MicSink> WasapiMicStream<M> {
                             }
                         }
 
-                        self.sample_rate_converter
-                            .feed_next(next_sample, &mut self.sink)
+                        self.sample_rate_converter.feed_next(next_sample, sink)
                     }
 
                     if let Err(err) = unsafe { self.capture_client.ReleaseBuffer(frames_available) }
@@ -202,38 +200,41 @@ impl<M: MicSink> WasapiMicStream<M> {
                     }
                 }
             }
-            self.sink.publish_chunks();
+            sink.publish_chunks();
         }
     }
 }
 
-pub struct WasapiPlaybackStream<P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> {
+pub struct WasapiPlaybackStream<P: PlaybackSource> {
+    pub device_id: String,
     pub raw_stream: RawWasapiStream,
     render_client: Audio::IAudioRenderClient,
     pub notify: WasapiEventLoopRegistration,
     sample_rate_converter: Box<dyn PlaybackSampleRateConverter<P>>,
-    pub source: SP,
 }
 
-impl<P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> WasapiPlaybackStream<P, SP> {
+impl<P: PlaybackSource> WasapiPlaybackStream<P> {
     pub fn new(
         sample_rate_converter: Box<dyn PlaybackSampleRateConverter<P>>,
+        device_id: String,
         render_client: Audio::IAudioRenderClient,
         notify: WasapiEventLoopRegistration,
         raw_stream: RawWasapiStream,
-        source: SP,
     ) -> Self {
         Self {
             raw_stream,
+            device_id,
             render_client,
             notify,
             sample_rate_converter,
-            source,
         }
     }
 
-    pub fn invoke(&mut self) -> Result<(), StreamError> {
-        self.source.with(|playback| {
+    pub fn invoke<SP: MaybeSharedPlaybackSource<P>>(
+        &mut self,
+        source: &mut SP,
+    ) -> Result<(), StreamError> {
+        source.with(|playback| {
             loop {
                 let padding = unsafe { (*self.raw_stream.audio_client).GetCurrentPadding() }
                     .map_err(stream_error_from_win_error)?;

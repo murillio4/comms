@@ -14,6 +14,7 @@ pub trait MaybeSharedPlaybackSource<P: PlaybackSource> {
 
 pub trait PlaybackSource {
     fn next_samples(&mut self, count: usize, callback: impl FnOnce((&[f32], Option<&[f32]>)));
+    fn drop_samples(&mut self);
 }
 
 pub trait MicSink {

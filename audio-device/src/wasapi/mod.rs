@@ -1,5 +1,6 @@
 pub mod audio_connection;
-mod com;
+pub mod com;
+pub mod default_device_change_notifier;
 mod device;
 pub mod event_loop;
 mod ms_multimedia;

@@ -209,6 +209,13 @@ impl PlaybackSource for Multiplexer {
         }
         self.sample_buffer_start = end_index;
     }
+
+    fn drop_samples(&mut self) {
+        for queue in self.client_queues.values_mut() {
+            queue.sample_buffer_offset = 0;
+        }
+        self.sample_buffer.iter_mut().for_each(|x| *x = 0f32);
+    }
 }
 
 #[derive(Clone)]

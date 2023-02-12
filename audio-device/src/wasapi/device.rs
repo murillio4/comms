@@ -1,3 +1,5 @@
+use crate::buffer::{MicSink, PlaybackSource};
+use crate::wasapi::audio_connection::WasapiCreationError;
 use crate::wasapi::com;
 use crate::wasapi::device::DefaultFormatError::BackendSpecific;
 use crate::wasapi::event_loop::WasapiEventLoopRegistration;
@@ -5,7 +7,10 @@ use crate::wasapi::ms_multimedia::{
     format_from_waveformatex_ptr, format_to_waveformatextensible, is_format_supported,
     MmregSupportedFormatsError, WaveFormatExPtr,
 };
-use crate::wasapi::stream::Format;
+use crate::wasapi::sample_rate_conversion::{
+    create_mic_sample_rate_converter, create_playback_sample_rate_converter,
+};
+use crate::wasapi::stream::{Format, RawWasapiStream, WasapiMicStream, WasapiPlaybackStream};
 use std::ffi::OsString;
 use std::ops::Deref;
 use std::os::windows::ffi::OsStringExt;
@@ -31,9 +36,12 @@ pub struct OutputDevice {
 pub struct IAudioClientWrapper(Audio::IAudioClient3);
 
 impl IAudioClientWrapper {
-    pub fn initialize(&self, format: &Format) -> Result<Audio::WAVEFORMATEX, BuildStreamError> {
+    pub fn initialize(&self) -> Result<(Format, Audio::WAVEFORMATEX), WasapiCreationError> {
         let audio_client = &self.0;
-        let mut format_attempt = format_to_waveformatextensible(format);
+        let format = self
+            .default_format()
+            .map_err(WasapiCreationError::NoInputFormat)?;
+        let mut format_attempt = format_to_waveformatextensible(&format);
 
         match is_format_supported(audio_client, &format_attempt.Format) {
             Ok(None) => {}
@@ -46,13 +54,17 @@ impl IAudioClientWrapper {
                 format_attempt.Format.cbSize = format.cbSize;
             }
             Err(MmregSupportedFormatsError::DeviceNotAvailable) => {
-                return Err(BuildStreamError::DeviceNotAvailable)
+                return Err(WasapiCreationError::InputInitializationFailure(
+                    BuildStreamError::DeviceNotAvailable,
+                ))
             }
             Err(MmregSupportedFormatsError::Other(hresult)) => {
-                return Err(BuildStreamError::BackendSpecific(format!(
-                    "Unexpected failure during format-support checking: {}",
-                    hresult.0,
-                )))
+                return Err(WasapiCreationError::InputInitializationFailure(
+                    BuildStreamError::BackendSpecific(format!(
+                        "Unexpected failure during format-support checking: {}",
+                        hresult.0,
+                    )),
+                ))
             }
         }
 
@@ -81,16 +93,20 @@ impl IAudioClientWrapper {
             )
         } {
             Err(ref e) if e.code() == Audio::AUDCLNT_E_DEVICE_INVALIDATED => {
-                return Err(BuildStreamError::DeviceNotAvailable);
+                return Err(WasapiCreationError::InputInitializationFailure(
+                    BuildStreamError::DeviceNotAvailable,
+                ));
             }
             Err(e) => {
                 let description = format!("{e}");
-                return Err(BuildStreamError::BackendSpecific(description));
+                return Err(WasapiCreationError::InputInitializationFailure(
+                    BuildStreamError::BackendSpecific(description),
+                ));
             }
             Ok(()) => (),
         };
 
-        Ok(format_attempt.Format)
+        Ok((format, format_attempt.Format))
     }
 
     pub fn get_buffer_max_frames(&self) -> Result<u32, BuildStreamError> {
@@ -136,24 +152,7 @@ impl IAudioClientWrapper {
             Ok(client) => Ok(client),
         }
     }
-}
 
-impl Deref for IAudioClientWrapper {
-    type Target = Audio::IAudioClient3;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[derive(Debug)]
-pub enum DefaultFormatError {
-    DeviceNotAvailable,
-    StreamTypeNotSupported,
-    BackendSpecific(String),
-}
-
-impl IAudioClientWrapper {
     fn default_format(&self) -> Result<Format, DefaultFormatError> {
         let format_ptr = match unsafe { self.0.GetMixFormat() } {
             Err(ref e) if e.code() == Audio::AUDCLNT_E_DEVICE_INVALIDATED => {
@@ -180,6 +179,21 @@ impl IAudioClientWrapper {
             unsafe { immdevice.Activate(Com::CLSCTX_ALL, None) }?;
         Ok(IAudioClientWrapper(audio_client))
     }
+}
+
+impl Deref for IAudioClientWrapper {
+    type Target = Audio::IAudioClient3;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug)]
+pub enum DefaultFormatError {
+    DeviceNotAvailable,
+    StreamTypeNotSupported,
+    BackendSpecific(String),
 }
 
 struct IMMDeviceWrapper(Audio::IMMDevice);
@@ -229,8 +243,15 @@ impl IMMDeviceWrapper {
     }
 
     fn id(&self) -> String {
-        // TODO: Return the actual ID --- more pointer work
-        "LATER NERD".to_string()
+        unsafe {
+            self.0
+                .GetId()
+                .expect(
+                    "Getting ImmDevice ID should only fail if out of memory or pointer is wrong",
+                )
+                .to_string()
+                .expect("Could not convert ImmDevice ID to string")
+        }
     }
 
     fn default(data_flow: Audio::EDataFlow) -> Option<IMMDeviceWrapper> {
@@ -257,18 +278,13 @@ impl IMMDeviceWrapper {
         }
         .unwrap();
 
-        // TODO: This is kinda nasty -- thanks Billy Gates
         unsafe {
             let device_count = filled_collection.GetCount().unwrap();
-            println!("Found {device_count} audio devices");
 
             let mut result: Vec<IMMDeviceWrapper> = Vec::new();
             for i in 0..device_count {
                 let device = filled_collection.Item(i).unwrap();
-                let device_wrapper = IMMDeviceWrapper(device);
-                println!("Found {}", device_wrapper.name().unwrap());
-
-                result.push(device_wrapper);
+                result.push(IMMDeviceWrapper(device));
             }
 
             result
@@ -283,10 +299,6 @@ impl InputDevice {
 
     pub fn id(&self) -> String {
         self.device.id()
-    }
-
-    pub fn default_format(&self) -> Result<Format, DefaultFormatError> {
-        self.audio_client.default_format()
     }
 
     pub fn create_client(&self) -> Result<Audio::IAudioCaptureClient, BuildStreamError> {
@@ -315,6 +327,22 @@ impl InputDevice {
             })
             .collect()
     }
+
+    pub fn into_stream<M: MicSink>(self) -> Result<WasapiMicStream<M>, WasapiCreationError> {
+        println!(
+            "Using \"{}\" as the microphone.",
+            self.name().expect("Failed to determine mic name")
+        );
+        let (format, waveformatex) = self.audio_client.initialize()?;
+        let mic_converter = create_mic_sample_rate_converter(format.sample_rate.0, 48000);
+        Ok(WasapiMicStream::new(
+            mic_converter,
+            self.id(),
+            self.create_client().unwrap(),
+            self.audio_client.create_notify().unwrap(),
+            RawWasapiStream::new(waveformatex, self.audio_client, format),
+        ))
+    }
 }
 
 impl OutputDevice {
@@ -324,10 +352,6 @@ impl OutputDevice {
 
     pub fn id(&self) -> String {
         self.device.id()
-    }
-
-    pub fn default_format(&self) -> Result<Format, DefaultFormatError> {
-        self.audio_client.default_format()
     }
 
     pub fn create_client(&self) -> Result<Audio::IAudioRenderClient, BuildStreamError> {
@@ -355,6 +379,25 @@ impl OutputDevice {
                 device: wrapper,
             })
             .collect()
+    }
+
+    pub fn into_stream<P: PlaybackSource>(
+        self,
+    ) -> Result<WasapiPlaybackStream<P>, WasapiCreationError> {
+        println!(
+            "Using \"{}\" as the playback device.",
+            self.name()
+                .expect("Failed to determine playback device name")
+        );
+        let (format, waveformatex) = self.audio_client.initialize()?;
+        let mic_converter = create_playback_sample_rate_converter(format.sample_rate.0, 48000);
+        Ok(WasapiPlaybackStream::new(
+            mic_converter,
+            self.id(),
+            self.create_client().unwrap(),
+            self.audio_client.create_notify().unwrap(),
+            RawWasapiStream::new(waveformatex, self.audio_client, format),
+        ))
     }
 }
 

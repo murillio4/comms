@@ -28,6 +28,10 @@ impl PlaybackSource for PlaybackForLoopback {
 
         callback((&samples, None));
     }
+
+    fn drop_samples(&mut self) {
+        self.receiver.try_iter().last();
+    }
 }
 
 pub fn create_pipeline() -> (MicForLoopback, UnsharedPlaybackSource<PlaybackForLoopback>) {

@@ -1,17 +1,20 @@
 use crate::audio_connection::{AudioConnection, DeviceInfo, FoundDevices};
 use crate::buffer::{InterruptReceiver, MaybeSharedPlaybackSource, MicSink, PlaybackSource};
+use crate::wasapi::default_device_change_notifier::{
+    CommsImmNotificationClient, DefaultDeviceChangeHandle,
+};
 use crate::wasapi::device::{BuildStreamError, DefaultFormatError, InputDevice, OutputDevice};
 use crate::wasapi::event_loop::{WasapiEventLoopBuilder, WasapiEventLoopRegistration};
-use crate::wasapi::sample_rate_conversion::{
-    create_mic_sample_rate_converter, create_playback_sample_rate_converter,
-};
-use crate::wasapi::stream::{RawWasapiStream, WasapiMicStream, WasapiPlaybackStream};
+use crate::wasapi::stream::{WasapiMicStream, WasapiPlaybackStream};
 
 pub struct WasapiParameters;
 
 pub struct WasapiAudioConnection<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>> {
     pub mic_stream: Option<WasapiMicStream<M>>,
-    pub playback_stream: Option<WasapiPlaybackStream<P, SP>>,
+    pub playback_stream: Option<WasapiPlaybackStream<P>>,
+    pub on_default_device_change: DefaultDeviceChangeHandle,
+    pub mic_sink: M,
+    pub playback_source: SP,
 }
 
 #[derive(Debug)]
@@ -29,48 +32,20 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>>
         mic_sink: M,
         playback_source: SP,
     ) -> Result<WasapiEventLoopBuilder<M, P, SP, I>, WasapiCreationError> {
+        let on_default_device_change =
+            CommsImmNotificationClient::listen_for_default_device_changes();
+
         let mic_stream = InputDevice::default()
-            .map(|device| device.default_format().map(|f| (device, f)))
-            .transpose()
-            .map_err(WasapiCreationError::NoInputFormat)?
-            .map(|(device, format)| {
-                let mic_converter = create_mic_sample_rate_converter(format.sample_rate.0, 48000);
-
-                let waveformatex = match device.audio_client.initialize(&format) {
-                    Ok(w) => w,
-                    Err(e) => return Err(WasapiCreationError::InputInitializationFailure(e)),
-                };
-
-                let mic_stream = WasapiMicStream::new(
-                    mic_converter,
-                    device.create_client().unwrap(),
-                    device.audio_client.create_notify().unwrap(),
-                    RawWasapiStream::new(waveformatex, device.audio_client, format),
-                    mic_sink,
-                );
+            .map(|device| {
+                let mic_stream = device.into_stream()?;
                 mic_stream.raw_stream.start();
                 Ok(mic_stream)
             })
             .transpose()?;
 
         let playback_stream = OutputDevice::default()
-            .map(|device| device.default_format().map(|f| (device, f)))
-            .transpose()
-            .map_err(WasapiCreationError::NoOutputFormat)?
-            .map(|(device, format)| {
-                let playback_converter =
-                    create_playback_sample_rate_converter(48000, format.sample_rate.0);
-                let waveformatex = match device.audio_client.initialize(&format) {
-                    Ok(w) => w,
-                    Err(e) => return Err(WasapiCreationError::OutputInitializationFailure(e)),
-                };
-                let playback_stream = WasapiPlaybackStream::new(
-                    playback_converter,
-                    device.create_client().unwrap(),
-                    device.audio_client.create_notify().unwrap(),
-                    RawWasapiStream::new(waveformatex, device.audio_client, format),
-                    playback_source,
-                );
+            .map(|device| {
+                let playback_stream = device.into_stream()?;
                 playback_stream.raw_stream.start();
                 Ok(playback_stream)
             })
@@ -79,6 +54,9 @@ impl<M: MicSink, P: PlaybackSource, SP: MaybeSharedPlaybackSource<P>>
         Ok(WasapiEventLoopBuilder::new(Self {
             mic_stream,
             playback_stream,
+            on_default_device_change,
+            mic_sink,
+            playback_source,
         }))
     }
 }
