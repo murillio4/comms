@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::ops::Deref;
 use std::os::windows::ffi::OsStringExt;
 use std::slice;
-use windows::core::Interface;
+use windows::core::ComInterface;
 use windows::Win32::Devices::Properties;
 use windows::Win32::Foundation;
 use windows::Win32::Foundation::WIN32_ERROR;
@@ -124,7 +124,7 @@ impl IAudioClientWrapper {
         Ok(WasapiEventLoopRegistration { win_handle: event })
     }
 
-    fn create_client<T: Interface>(&self) -> Result<T, BuildStreamError> {
+    fn create_client<T: ComInterface>(&self) -> Result<T, BuildStreamError> {
         match unsafe { self.0.GetService() } {
             Err(ref e) if e.code() == Audio::AUDCLNT_E_DEVICE_INVALIDATED => {
                 Err(BuildStreamError::DeviceNotAvailable)
