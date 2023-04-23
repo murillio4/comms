@@ -1285,7 +1285,7 @@ pub fn run(
                 .unwrap(),
         );
 
-        StyleContext::add_provider_for_display(
+        gtk::style_context_add_provider_for_display(
             &Display::default().unwrap(),
             &css_provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
