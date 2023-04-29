@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::error::Error;
@@ -101,6 +102,12 @@ impl Error for UpdateIoError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&self.wrapped)
     }
+}
+
+pub fn comms_version() -> Cow<'static, str> {
+    option_env!("CI_COMMIT_SHA")
+        .map(|sha| Cow::from(format!("commit-{sha}")))
+        .unwrap_or("local-dev".into())
 }
 
 async fn spawn_worker<T: std::fmt::Debug + Send + 'static>(
@@ -1418,7 +1425,8 @@ pub fn run(
             });
         }
         if let Some(timestamp) = BUILD_TIMESTAMP {
-            connect_button.set_tooltip_text(Some(&format!("Build {timestamp}")));
+            connect_button
+                .set_tooltip_text(Some(&format!("Build {timestamp} ({})", comms_version())));
             connect_button.set_has_tooltip(true);
         }
 

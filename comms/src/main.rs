@@ -22,12 +22,13 @@ mod warp_wrapper_path;
 fn main() {
     #[cfg(not(debug_assertions))]
     let (_guard, sentry_hub) = {
+        use crate::ui::comms_version;
         use std::borrow::Cow;
         (
             sentry::init((
                 "https://acf304e45177402c94af33eecfc31ded@o1316575.ingest.sentry.io/6569253",
                 sentry::ClientOptions {
-                    release: Some(Cow::from("local-dev")),
+                    release: Some(comms_version()),
                     send_default_pii: true,
                     environment: Some(Cow::from("production")),
                     ..Default::default()
