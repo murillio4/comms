@@ -20,7 +20,8 @@ use gio::prelude::*;
 use gio::ApplicationFlags;
 use gtk::prelude::*;
 use gtk::{
-    gdk, DialogFlags, Orientation, PositionType, ResponseType, RevealerTransitionType, StyleContext,
+    gdk, Button, DialogFlags, Label, Orientation, PositionType, ResponseType,
+    RevealerTransitionType, StyleContext,
 };
 use serde::{Deserialize, Serialize};
 
@@ -199,6 +200,15 @@ async fn check_for_updates(
         })();
         result
     }).await;
+
+    let show_update_failure =
+        move |button: &Button, update_button_label: &Label, description: String| {
+            button.remove_css_class("suggested-action");
+            button.add_css_class("destructive-action");
+            update_button_label.set_text("Failed to update");
+            button.set_tooltip_text(Some(&description));
+        };
+
     let (job_id, entry_comms_path) = match result {
         Ok(Some(tuple)) => tuple,
         Ok(None) => {
@@ -214,7 +224,11 @@ async fn check_for_updates(
             return;
         }
         Err(CheckForUpdateError::NoWarpWrapper) => {
-            eprintln!("Failed to find warp wrapper executable");
+            let error_text = "Failed to find warp wrapper executable";
+            eprintln!("{error_text}");
+            header_bar.pack_end(&update_button_revealer);
+            update_button_revealer.set_reveal_child(true);
+            show_update_failure(&update_button, &update_button_label, error_text.to_string());
             return;
         }
     };
@@ -266,14 +280,11 @@ async fn check_for_updates(
             }
         });
 
-        let show_update_failure = {
+        let show_mid_update_failure = {
             let button = button.clone();
             let update_button_label = update_button_label.clone();
             move |description: String| {
-                button.remove_css_class("suggested-action");
-                button.add_css_class("destructive-action");
-                update_button_label.set_text("Failed to update");
-                button.set_tooltip_text(Some(&description));
+                show_update_failure(&button, &update_button_label, description);
             }
         };
 
@@ -293,7 +304,7 @@ async fn check_for_updates(
                             CheckForUpdateError::Parse => "Failed to parse JSON/headers/etc".to_string(),
                             CheckForUpdateError::NoWarpWrapper => unimplemented!(),
                         };
-                        show_update_failure(text);
+                        show_mid_update_failure(text);
                         return;
                     }
                     _ => panic!("Loop should always exit before receiving 'channel closed' error"),
@@ -357,7 +368,7 @@ async fn check_for_updates(
             })();
 
             if let Err(e) = result {
-                show_update_failure(format!("{e:?}"));
+                show_mid_update_failure(format!("{e:?}"));
                 #[cfg(not(debug_assertions))]
                 sentry::capture_error(&*e);
             } else {

@@ -77,18 +77,19 @@ if (-not (Test-Path -Path $package_dir) -or -not $reuse_package_dir) {
     CopyWithDependencies (where.exe gdbus.exe)
     [void](mkdir $package_dir/share/glib-2.0)
     cp -r "$gtk_build_dir/share/glib-2.0/schemas" $package_dir/share/glib-2.0
+    mv $package_dir/comms.exe $package_dir/comms-embedded.exe
 } else {
-    cp $comms_path $package_dir
+    cp $comms_path $package_dir/comms-embedded.exe
 }
 
 Remove-Item comms.exe -ErrorAction Ignore
 Remove-Item comms-with-console.exe -ErrorAction Ignore
-warp-packer --arch windows-x64 --input_dir $package_dir --exec comms.exe --output comms.exe
+warp-packer --arch windows-x64 --input_dir $package_dir --exec comms-embedded.exe --output comms.exe
 
 if ($hide_console) {
     mv comms.exe comms-with-console.exe
-    &$editbin /subsystem:windows $package_dir/comms.exe
-    warp-packer --arch windows-x64 --input_dir $package_dir --exec comms.exe --output comms.exe
+    &$editbin /subsystem:windows $package_dir/comms-embedded.exe
+    warp-packer --arch windows-x64 --input_dir $package_dir --exec comms-embedded.exe --output comms.exe
     &$editbin /subsystem:windows comms.exe
 }
 
