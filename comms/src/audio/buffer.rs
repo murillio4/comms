@@ -81,36 +81,43 @@ impl Multiplexer {
             // This audio data is older than data we've already received, so throw it out
             return Ok(());
         }
-
-        let mut decode_buffer = [0f32; 480];
-        let size = queue.decoder.decode_float(
-            Some(&data.bytes),
-            &mut decode_buffer as &mut [f32],
-            false,
-        )?;
-
-        ui_handle
-            .try_send(UICommand::UserIsSpeaking {
-                client_id: id,
-                duration: Duration::from_millis((size as f64 / 48.0).round() as u64),
-            })
-            .unwrap();
-
-        for new_sample in &decode_buffer[..size] {
-            let sample_buffer_index =
-                (self.sample_buffer_start + queue.sample_buffer_offset) % BUFFER_SIZE;
-            let existing_sample = self.sample_buffer[sample_buffer_index];
-            let sample =
-                existing_sample.add_amp(*new_sample * self.main_volume * queue.current_volume);
-            self.sample_buffer[sample_buffer_index] = if sample == f32::INFINITY {
-                f32::MAX
-            } else {
-                sample
-            };
-            queue.sample_buffer_offset = (queue.sample_buffer_offset + 1) % BUFFER_SIZE;
-        }
-
         queue.current_index = data.index;
+
+        // If we've received data faster than we can play it (e.g. due to a sudden burst
+        // of packets), then throw it away without processing it through opus.
+        // (By avoiding processing it through opus, we allow opus to "bridge the wave" for the
+        // next packet that _can_ fit).
+        if queue.sample_buffer_offset + 480 < BUFFER_SIZE {
+            let mut decode_buffer = [0f32; 480];
+            let size = queue.decoder.decode_float(
+                Some(&data.bytes),
+                &mut decode_buffer as &mut [f32],
+                false,
+            )?;
+
+            ui_handle
+                .try_send(UICommand::UserIsSpeaking {
+                    client_id: id,
+                    duration: Duration::from_millis((size as f64 / 48.0).round() as u64),
+                })
+                .unwrap();
+
+            for new_sample in &decode_buffer[..size] {
+                let sample_buffer_index =
+                    (self.sample_buffer_start + queue.sample_buffer_offset) % BUFFER_SIZE;
+                let existing_sample = self.sample_buffer[sample_buffer_index];
+                let sample =
+                    existing_sample.add_amp(*new_sample * self.main_volume * queue.current_volume);
+                self.sample_buffer[sample_buffer_index] = if sample == f32::INFINITY {
+                    f32::MAX
+                } else {
+                    sample
+                };
+                queue.sample_buffer_offset += 1;
+            }
+
+            debug_assert!(queue.sample_buffer_offset <= BUFFER_SIZE);
+        }
 
         if !queue.is_peer_to_peer && is_peer_to_peer {
             queue.is_peer_to_peer = true;
@@ -169,8 +176,11 @@ impl PlaybackSource for Multiplexer {
                     } else {
                         sample
                     };
-                    queue.sample_buffer_offset = (queue.sample_buffer_offset + 1) % BUFFER_SIZE;
+                    queue.sample_buffer_offset += 1;
                 }
+                // temporary: identify if this is the cause of intermittent droppage when chatting
+                // with Caius. Turn into debug_assert after testing.
+                assert!(queue.sample_buffer_offset <= BUFFER_SIZE);
             }
             queue.sample_buffer_offset = queue.sample_buffer_offset.saturating_sub(count);
         }
