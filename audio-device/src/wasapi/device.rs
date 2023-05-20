@@ -258,7 +258,7 @@ impl IMMDeviceWrapper {
         let device = match unsafe {
             com::ENUMERATOR
                 .0
-                .GetDefaultAudioEndpoint(data_flow, Audio::eConsole)
+                .GetDefaultAudioEndpoint(data_flow, Audio::eCommunications)
         } {
             Ok(device) => device,
             Err(ref e) if WIN32_ERROR::from_error(e) == Some(Foundation::ERROR_NOT_FOUND) => {
