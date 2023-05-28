@@ -5,6 +5,11 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::{panic, process};
 
+#[cfg(windows)]
+use windows::w;
+#[cfg(windows)]
+use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
 use crate::audio::ipc::AudioHandle;
 use crate::audio::{AudioPlatform, AudioPlatformImpl};
 use crate::network::ipc::NetworkHandle;
@@ -40,6 +45,9 @@ fn main() {
 
     #[cfg(windows)]
     {
+        // Set app user model ID (and set the same for the warp bundle) so that pinning
+        // Comms will pin the top-level executable, not the nested one.
+        unsafe { SetCurrentProcessExplicitAppUserModelID(w!("mitchhentges.comms")) }.unwrap();
         // Memory usage on Windows with the opengl/gl/vulkan renderers are much higher,
         // so explicitly fall back to tried 'n true "cairo".
         std::env::set_var("GSK_RENDERER", "cairo");

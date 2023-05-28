@@ -1311,6 +1311,21 @@ pub fn run(
 
         let window = gtk::ApplicationWindow::new(app);
 
+        #[cfg(windows)]
+        if let Some(handle) = std::env::var_os("WARP_WINDOW_HANDLE")
+            .as_ref()
+            .and_then(|h| h.to_str())
+        {
+            let handle = handle.parse().unwrap();
+            window.connect_show(move |_| {
+                use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+                use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+                use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
+
+                unsafe { SendMessageW(HWND(handle), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+            });
+        }
+
         let disconnect_button = gtk::Button::builder().label("Disconnect").build();
 
         let disconnect_button_revealer = gtk::Revealer::builder()

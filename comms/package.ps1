@@ -84,12 +84,12 @@ if (-not (Test-Path -Path $package_dir) -or -not $reuse_package_dir) {
 
 Remove-Item comms.exe -ErrorAction Ignore
 Remove-Item comms-with-console.exe -ErrorAction Ignore
-warp-packer --arch windows-x64 --input_dir $package_dir --exec comms-embedded.exe --output comms.exe
+warp-packer --arch windows-x64 --input_dir $package_dir --exec comms-embedded.exe --output comms.exe --coalesce_window_with_app_id mitchhentges.comms
 
 if ($hide_console) {
     mv comms.exe comms-with-console.exe
     &$editbin /subsystem:windows $package_dir/comms-embedded.exe
-    warp-packer --arch windows-x64 --input_dir $package_dir --exec comms-embedded.exe --output comms.exe
+    warp-packer --arch windows-x64 --input_dir $package_dir --exec comms-embedded.exe --output comms.exe --coalesce_window_with_app_id mitchhentges.comms
     &$editbin /subsystem:windows comms.exe
 }
 
