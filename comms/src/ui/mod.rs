@@ -1312,17 +1312,33 @@ pub fn run(
         let window = gtk::ApplicationWindow::new(app);
 
         #[cfg(windows)]
-        if let Some(handle) = std::env::var_os("WARP_WINDOW_HANDLE")
+        if let Some(warp_window) = std::env::var_os("WARP_WINDOW_HANDLE")
             .as_ref()
             .and_then(|h| h.to_str())
         {
-            let handle = handle.parse().unwrap();
-            window.connect_show(move |_| {
+            window.minimize();
+            let warp_window = warp_window.parse().unwrap();
+            window.connect_show(move |window| {
+                use gdk4_win32::Win32Surface;
                 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
                 use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
-                use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
+                use windows::Win32::UI::WindowsAndMessaging::WM_COMMAND;
+                use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_RESTORE};
 
-                unsafe { SendMessageW(HWND(handle), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+                let native = window.native().unwrap();
+                let surface = native.surface();
+                let surface: Win32Surface = surface.downcast().unwrap();
+                let app_window: HWND = HWND(surface.handle().0);
+
+                unsafe {
+                    SendMessageW(
+                        HWND(warp_window),
+                        WM_COMMAND,
+                        WPARAM(app_window.0 as usize),
+                        LPARAM(0),
+                    );
+                    ShowWindow(app_window, SW_RESTORE);
+                };
             });
         }
 

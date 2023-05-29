@@ -37,6 +37,9 @@ features = [
     "v4_6",
 ]
 
+[target.'cfg(target_os = "windows")'.dependencies.gdk4-win32]
+version = "0.6"
+
 [target.'cfg(target_os = "windows")'.dependencies.windows]
 version = "0.48.0"
 features = [
