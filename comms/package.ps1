@@ -4,6 +4,7 @@
 param(
     [switch]$reuse_package_dir,
     [switch]$hide_console,
+    [string]$cargo_profile = "release-windows",
     [string]$gtk_build_dir = "C:\gtk-build\gtk\x64\release\"
 )
 
@@ -18,14 +19,14 @@ if ($hide_console -and -not $editbin) {
 
 $repo_dir = (Get-Item $MyInvocation.MyCommand.Path).Directory.Parent.FullName
 Push-Location $repo_dir
-cargo build --bin comms --profile release-windows
+cargo build --bin comms --profile $cargo_profile
 if ($LASTEXITCODE -ne 0) {
     Pop-Location
     exit 1
 }
 Pop-Location
 
-$comms_path = Join-Path -Path $repo_dir -ChildPath "target\release-windows\comms.exe"
+$comms_path = Join-Path -Path $repo_dir -ChildPath "target\$cargo_profile\comms.exe"
 if (-not (Test-Path -Path $comms_path)) {
     echo "$comms_path does not exist"
     exit 1
