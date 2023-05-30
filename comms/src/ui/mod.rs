@@ -1316,30 +1316,40 @@ pub fn run(
             .as_ref()
             .and_then(|h| h.to_str())
         {
+            use gdk4_win32::Win32Surface;
+            use glib::SignalHandlerId;
+            use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+            use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+            use windows::Win32::UI::WindowsAndMessaging::WM_COMMAND;
+            use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_NORMAL};
+
             window.minimize();
             let warp_window = warp_window.parse().unwrap();
-            window.connect_show(move |window| {
-                use gdk4_win32::Win32Surface;
-                use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-                use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
-                use windows::Win32::UI::WindowsAndMessaging::WM_COMMAND;
-                use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_RESTORE};
+            let handler_id = Rc::new(RefCell::new(None::<SignalHandlerId>));
+            *handler_id.borrow_mut() = {
+                let handler_id = handler_id.clone();
+                Some(window.connect_show(move |window| {
+                    if let Some(signal_id) = handler_id.take() {
+                        window.disconnect(signal_id);
+                    }
 
-                let native = window.native().unwrap();
-                let surface = native.surface();
-                let surface: Win32Surface = surface.downcast().unwrap();
-                let app_window: HWND = HWND(surface.handle().0);
+                    let native = window.native().unwrap();
+                    let surface = native.surface();
+                    let surface: Win32Surface = surface.downcast().unwrap();
+                    let app_window: HWND = HWND(surface.handle().0);
 
-                unsafe {
-                    SendMessageW(
-                        HWND(warp_window),
-                        WM_COMMAND,
-                        WPARAM(app_window.0 as usize),
-                        LPARAM(0),
-                    );
-                    ShowWindow(app_window, SW_RESTORE);
-                };
-            });
+                    unsafe {
+                        SendMessageW(
+                            HWND(warp_window),
+                            WM_COMMAND,
+                            WPARAM(app_window.0 as usize),
+                            LPARAM(0),
+                        );
+                        ShowWindow(app_window, SW_NORMAL);
+                    };
+                    window.show();
+                }))
+            };
         }
 
         let disconnect_button = gtk::Button::builder().label("Disconnect").build();
