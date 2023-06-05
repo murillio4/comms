@@ -255,17 +255,26 @@ impl IMMDeviceWrapper {
     }
 
     fn default(data_flow: Audio::EDataFlow) -> Option<IMMDeviceWrapper> {
-        let device = match unsafe {
+        let communication_device_id = match unsafe {
             com::ENUMERATOR
                 .0
                 .GetDefaultAudioEndpoint(data_flow, Audio::eCommunications)
+                .and_then(|d| d.GetId())
         } {
-            Ok(device) => device,
+            Ok(id) => id,
             Err(ref e) if WIN32_ERROR::from_error(e) == Some(Foundation::ERROR_NOT_FOUND) => {
-                // TODO test that !mic doesn't fail here due to no default device existing
                 return None;
             }
-            Err(e) => panic!("{}", e), // hmm, should we bubble up the error instead?
+            Err(e) => panic!("{}", e),
+        };
+
+        let communication_device_id = unsafe { communication_device_id.to_hstring() }.ok()?;
+        let device = match unsafe { com::ENUMERATOR.0.GetDevice(&communication_device_id) } {
+            Ok(device) => device,
+            Err(ref e) if WIN32_ERROR::from_error(e) == Some(Foundation::ERROR_NOT_FOUND) => {
+                return None;
+            }
+            Err(e) => panic!("{}", e),
         };
         Some(IMMDeviceWrapper(device))
     }
