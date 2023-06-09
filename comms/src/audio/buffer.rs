@@ -88,35 +88,21 @@ impl Multiplexer {
         // (By avoiding processing it through opus, we allow opus to "bridge the wave" for the
         // next packet that _can_ fit).
         if queue.sample_buffer_offset + 480 < BUFFER_SIZE {
-            let mut decode_buffer = [0f32; 480];
-            let size = queue.decoder.decode_float(
+            let number_of_samples = decode_opus_frame(
                 Some(&data.bytes),
-                &mut decode_buffer as &mut [f32],
-                false,
-            )?;
-
+                queue,
+                self.sample_buffer_start,
+                &mut self.sample_buffer,
+                self.main_volume,
+            );
             ui_handle
                 .try_send(UICommand::UserIsSpeaking {
                     client_id: id,
-                    duration: Duration::from_millis((size as f64 / 48.0).round() as u64),
+                    duration: Duration::from_millis(
+                        (number_of_samples as f64 / 48.0).round() as u64
+                    ),
                 })
                 .unwrap();
-
-            for new_sample in &decode_buffer[..size] {
-                let sample_buffer_index =
-                    (self.sample_buffer_start + queue.sample_buffer_offset) % BUFFER_SIZE;
-                let existing_sample = self.sample_buffer[sample_buffer_index];
-                let sample =
-                    existing_sample.add_amp(*new_sample * self.main_volume * queue.current_volume);
-                self.sample_buffer[sample_buffer_index] = if sample == f32::INFINITY {
-                    f32::MAX
-                } else {
-                    sample
-                };
-                queue.sample_buffer_offset += 1;
-            }
-
-            debug_assert!(queue.sample_buffer_offset <= BUFFER_SIZE);
         }
 
         if !queue.is_peer_to_peer && is_peer_to_peer {
@@ -159,28 +145,13 @@ impl PlaybackSource for Multiplexer {
 
         for queue in self.client_queues.values_mut() {
             if queue.sample_buffer_offset < count {
-                let mut decode_buffer = [0f32; 480];
-                let decoded_sample_count = queue
-                    .decoder
-                    .decode_float(None::<&Vec<u8>>, &mut decode_buffer as &mut [f32], false)
-                    .expect("Failed to produce generated opus audio");
-
-                for new_sample in &decode_buffer[..decoded_sample_count] {
-                    let sample_buffer_index =
-                        (self.sample_buffer_start + queue.sample_buffer_offset) % BUFFER_SIZE;
-                    let existing_sample = self.sample_buffer[sample_buffer_index];
-                    let sample = existing_sample
-                        .add_amp(*new_sample * self.main_volume * queue.current_volume);
-                    self.sample_buffer[sample_buffer_index] = if sample == f32::INFINITY {
-                        f32::MAX
-                    } else {
-                        sample
-                    };
-                    queue.sample_buffer_offset += 1;
-                }
-                // temporary: identify if this is the cause of intermittent droppage when chatting
-                // with Caius. Turn into debug_assert after testing.
-                assert!(queue.sample_buffer_offset <= BUFFER_SIZE);
+                decode_opus_frame(
+                    None,
+                    queue,
+                    self.sample_buffer_start,
+                    &mut self.sample_buffer,
+                    self.main_volume,
+                );
             }
             queue.sample_buffer_offset = queue.sample_buffer_offset.saturating_sub(count);
         }
@@ -316,4 +287,38 @@ impl MicSink for MicBuffer {
             self.sample_buffer_start = (self.sample_buffer_start + 480) % BUFFER_SIZE;
         }
     }
+}
+
+fn decode_opus_frame(
+    opus_bytes: Option<&Vec<u8>>,
+    queue: &mut ClientQueue,
+    sample_buffer_start: usize,
+    sample_buffer: &mut Box<[f32; BUFFER_SIZE]>,
+    main_volume: f32,
+) -> usize {
+    let mut decode_buffer = [0f32; 480];
+    let number_of_decoded_samples = queue
+        .decoder
+        .decode_float(opus_bytes, &mut decode_buffer as &mut [f32], false)
+        .expect("Failed to produce generated opus audio");
+
+    for (i, new_sample) in decode_buffer[..number_of_decoded_samples]
+        .iter()
+        .enumerate()
+    {
+        let sample_buffer_index =
+            (sample_buffer_start + queue.sample_buffer_offset + i) % BUFFER_SIZE;
+        let existing_sample = sample_buffer[sample_buffer_index];
+        let sample = existing_sample.add_amp(*new_sample * main_volume * queue.current_volume);
+        sample_buffer[sample_buffer_index] = if sample == f32::INFINITY {
+            f32::MAX
+        } else {
+            sample
+        };
+    }
+
+    queue.sample_buffer_offset += number_of_decoded_samples;
+    debug_assert!(queue.sample_buffer_offset <= BUFFER_SIZE);
+
+    number_of_decoded_samples
 }
