@@ -30,11 +30,11 @@ use comms_lib::packet::{
 };
 
 use crate::audio::ipc::{AudioCommand, AudioHandle, EventLoopCreationError};
-use crate::network;
 use crate::network::future::{attempt_p2p, keep_alive, P2pDestination};
 use crate::network::ipc::{ConnectError, NetworkCommand, NetworkEvent, NetworkHandle};
 use crate::ui::ipc::{AudioIPCInitStatus, UICommand};
 use crate::warp_wrapper_path::get_warp_wrapper_path;
+use crate::{network, RESOURCES_DIR};
 use comms_lib::network::CommsNetworkError;
 use comms_lib::packet;
 use glib::timeout_add_local;
@@ -469,6 +469,8 @@ async fn try_connect(
                 network_handle.clone(),
                 network_event_sender.clone(),
             ));
+
+            audio_handle.send(AudioCommand::ServerConnect).unwrap();
 
             for user in existing_users.iter() {
                 audio_handle
@@ -1049,6 +1051,7 @@ async fn handle_network_events(
                             let user = Rc::new(RefCell::new(user));
                             UiUser::attach_signal_handlers(user.clone(), audio.clone(), ui.clone());
                             users.insert(packet.body.user.client_id, user);
+                            audio.send(AudioCommand::UserJoined).unwrap();
                         }
                         UserLeft::KIND_ID => {
                             let mut ui_ref = ui.borrow_mut();
@@ -1070,6 +1073,7 @@ async fn handle_network_events(
 
                             let user = users.remove(&packet.body.client_id).unwrap();
                             user_list.remove(&user.borrow().root_widget.parent().unwrap());
+                            audio.send(AudioCommand::UserLeft).unwrap();
                         }
                         ErrorResponse::KIND_ID => {
                             let packet: Packet<ErrorResponse> = packet.finish_parse()?;
@@ -1254,9 +1258,6 @@ fn gtk_start(f: impl FnOnce(&adw::Application) + 'static) {
     application.connect_activate(|_| {});
     application.run();
 }
-
-static RESOURCES_DIR: include_dir::Dir =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/resources/embedded");
 
 pub fn run(
     network: NetworkHandle,

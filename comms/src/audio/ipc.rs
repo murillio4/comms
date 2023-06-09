@@ -2,12 +2,14 @@ use std::sync::mpsc::{Receiver, SendError, Sender};
 
 use crate::ui::ipc::UICommand;
 use comms_lib::packet::{AudioIndex, ClientId};
+use lewton::inside_ogg::OggStreamReader;
 use std::fmt;
 use std::fmt::{Display, Formatter};
+use std::io::Cursor;
 
 use crate::audio::buffer::RcMultiplexer;
 use crate::audio::{AudioPlatform, AudioPlatformImpl};
-use crate::NetworkHandle;
+use crate::{NetworkHandle, RESOURCES_DIR};
 use audio_device::audio_connection::{AudioConnection, EventLoopNotify};
 use audio_device::buffer::{InterruptReceiver, MaybeSharedPlaybackSource};
 use comms_lib::OpusAudioFrame;
@@ -27,6 +29,9 @@ pub enum AudioCommand {
     ListDevices,
     ChangeMainVolume(u16),
     ChangeClientVolume(ClientId, u16),
+    UserJoined,
+    UserLeft,
+    ServerConnect,
 }
 
 impl Display for AudioCommand {
@@ -39,6 +44,9 @@ impl Display for AudioCommand {
             AudioCommand::ListDevices => f.write_str("ListDevices"),
             AudioCommand::ChangeMainVolume(..) => f.write_str("ChangeMainVolume"),
             AudioCommand::ChangeClientVolume(..) => f.write_str("ChangeClientVolume"),
+            AudioCommand::UserJoined => f.write_str("UserJoined"),
+            AudioCommand::UserLeft => f.write_str("UserLeft"),
+            AudioCommand::ServerConnect => f.write_str("ServerConnect"),
         }
     }
 }
@@ -115,9 +123,15 @@ impl<R> InterruptReceiver<R> for AudioReceiver<R> {
                 AudioCommand::DropClient(id) => self.multiplexer.with(|multiplexer| {
                     multiplexer.drop_client(id);
                 }),
-                AudioCommand::ServerDisconnect => self.multiplexer.with(|multiplexer| {
-                    multiplexer.clear();
-                }),
+                AudioCommand::ServerDisconnect => {
+                    let file =
+                        Cursor::new(RESOURCES_DIR.get_file("self-left.ogg").unwrap().contents());
+                    let ogg_reader = OggStreamReader::new(file).unwrap();
+                    self.multiplexer.with(|multiplexer| {
+                        multiplexer.clear();
+                        multiplexer.play_sound_effect(ogg_reader);
+                    })
+                }
                 AudioCommand::AudioFromClient(client_id, chunk, is_peer_to_peer) => {
                     self.multiplexer.with(|multiplexer| {
                         multiplexer
@@ -148,7 +162,36 @@ impl<R> InterruptReceiver<R> for AudioReceiver<R> {
                 AudioCommand::ChangeClientVolume(id, volume) => {
                     self.multiplexer.with(|multiplexer| {
                         multiplexer.change_client_volume(id, volume as f32 / 100.0);
-                    })
+                    });
+                }
+                AudioCommand::ServerConnect => {
+                    let file = Cursor::new(
+                        RESOURCES_DIR
+                            .get_file("self-joined.ogg")
+                            .unwrap()
+                            .contents(),
+                    );
+                    let ogg_reader = OggStreamReader::new(file).unwrap();
+                    self.multiplexer
+                        .with(|multiplexer| multiplexer.play_sound_effect(ogg_reader))
+                }
+                AudioCommand::UserJoined => {
+                    let file = Cursor::new(
+                        RESOURCES_DIR
+                            .get_file("other-joined.ogg")
+                            .unwrap()
+                            .contents(),
+                    );
+                    let ogg_reader = OggStreamReader::new(file).unwrap();
+                    self.multiplexer
+                        .with(|multiplexer| multiplexer.play_sound_effect(ogg_reader))
+                }
+                AudioCommand::UserLeft => {
+                    let file =
+                        Cursor::new(RESOURCES_DIR.get_file("other-left.ogg").unwrap().contents());
+                    let ogg_reader = OggStreamReader::new(file).unwrap();
+                    self.multiplexer
+                        .with(|multiplexer| multiplexer.play_sound_effect(ogg_reader))
                 }
             }
         }

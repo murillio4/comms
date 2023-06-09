@@ -22,7 +22,8 @@ mod register_protocol;
 mod ui;
 mod warp_wrapper_path;
 
-// const OPUS_PACKET_MAX_LENGTH: usize = 1276;
+pub static RESOURCES_DIR: include_dir::Dir =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/resources/embedded");
 
 fn main() {
     #[cfg(not(debug_assertions))]

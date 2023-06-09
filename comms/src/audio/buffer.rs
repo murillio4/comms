@@ -9,7 +9,9 @@ use comms_lib::serialization::OutgoingPacketFrame;
 use comms_lib::OpusAudioFrame;
 use dasp::Sample;
 use glib::bitflags::_core::cell::RefCell;
+use lewton::inside_ogg::OggStreamReader;
 use std::collections::HashMap;
+use std::io::{Read, Seek};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -37,6 +39,7 @@ impl ClientQueue {
 
 pub struct Multiplexer {
     client_queues: HashMap<ClientId, ClientQueue>,
+    sound_effect_queues: Vec<Vec<i16>>,
     main_volume: f32,
     // The capacity chosen here is a spit-ball number. The host usually asks for 400 or
     // 800 samples at a time, so it's unlikely to back up this much unless a burst of
@@ -49,6 +52,7 @@ impl Multiplexer {
     pub fn new() -> Self {
         Multiplexer {
             client_queues: HashMap::new(),
+            sound_effect_queues: Vec::new(),
             main_volume: 1.0,
             sample_buffer: Box::new([Sample::EQUILIBRIUM; BUFFER_SIZE]),
             sample_buffer_start: 0,
@@ -137,6 +141,22 @@ impl Multiplexer {
             client.current_volume = volume;
         }
     }
+
+    pub fn play_sound_effect<T: Read + Seek>(&mut self, mut effect: OggStreamReader<T>) {
+        let mut sample_buffer = Vec::new();
+        loop {
+            match effect.read_dec_packet().unwrap() {
+                None => break,
+                Some(mut samples) => {
+                    // Ignore other streams for now for simplicity
+                    if let Some(samples) = samples.get_mut(0) {
+                        sample_buffer.append(samples);
+                    }
+                }
+            }
+        }
+        self.sound_effect_queues.push(sample_buffer);
+    }
 }
 
 impl PlaybackSource for Multiplexer {
@@ -155,6 +175,23 @@ impl PlaybackSource for Multiplexer {
             }
             queue.sample_buffer_offset = queue.sample_buffer_offset.saturating_sub(count);
         }
+
+        for sound_effect in self.sound_effect_queues.iter_mut() {
+            for (i, sample) in sound_effect
+                .drain(..count.min(sound_effect.len()))
+                .enumerate()
+            {
+                let sample_buffer_index = (self.sample_buffer_start + i) % BUFFER_SIZE;
+                let existing_sample = self.sample_buffer[sample_buffer_index];
+                let sample = existing_sample.add_amp(sample.to_sample::<f32>() * self.main_volume);
+                self.sample_buffer[sample_buffer_index] = if sample == f32::INFINITY {
+                    f32::MAX
+                } else {
+                    sample
+                };
+            }
+        }
+        self.sound_effect_queues.retain(|effect| !effect.is_empty());
 
         if end_index >= self.sample_buffer_start {
             let windows = (
