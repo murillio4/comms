@@ -7,7 +7,7 @@ edition = "2021"
 [dependencies]
 dasp = "0.11.0"
 eframe = "0.22"
-ringbuffer = "0.13"
+ringbuffer = "0.14"
 rfd = "0.11"
 
 [dependencies.audio-device]
