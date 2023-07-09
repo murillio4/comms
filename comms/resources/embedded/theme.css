@@ -10,7 +10,15 @@ scale value {
     opacity: 0;
 }
 
-row.active {
+list row {
+    padding: 0;
+}
+
+list row box {
+    padding: 2px;
+}
+
+list row.active box {
     background-color: rgba(144, 207, 175, 0.2);
 }
 
