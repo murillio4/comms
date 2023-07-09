@@ -65,6 +65,7 @@
     <property name="child">
       <object class="GtkListBox" id="user_list">
         <property name="vexpand">1</property>
+        <property name="selection-mode">GTK_SELECTION_NONE</property>
       </object>
     </property>
   </object>
