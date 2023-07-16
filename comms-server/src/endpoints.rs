@@ -31,7 +31,7 @@ async fn associate_udp(
 ) -> FutureResult {
     let outgoing = {
         let mut clients = clients.borrow_mut();
-        let mut client = match clients.connecting.get_mut(&packet.body.client_id) {
+        let client = match clients.connecting.get_mut(&packet.body.client_id) {
             Some(client) => client,
             None => return Ok(()),
         };
