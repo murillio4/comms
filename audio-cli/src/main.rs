@@ -2,27 +2,131 @@ use audiopus::coder::Encoder;
 use audiopus::{Application, Channels, SampleRate};
 use comms_lib::packet::{
     AssociateUdp, AssociateUdpAccepted, AudioFromClient, AudioIndex, FinishConnect,
-    FinishConnectAccepted, Hello, Packet, PacketBody,
+    FinishConnectAccepted, Hello, KeepAlive, KeepAliveAck, Packet, PacketBody, PacketId,
 };
-use comms_lib::serialization::{IncomingPacketFrame, OutgoingPacketFrame, SerializeError};
+use comms_lib::serialization::{
+    IncomingPacketFrame, IncomingPacketFrameRef, OutgoingPacketFrame, SerializeError,
+};
+use comms_lib::{PacketHeader, PACKET_HEADER_SIZE};
 use std::io::{Read, Write};
 use std::net::{TcpStream, UdpSocket};
 use std::num::NonZeroU64;
+use std::process::exit;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime};
 use std::{env, io};
 use uuid::Uuid;
 
-fn read_next_tcp(tcp: &mut TcpStream) -> Result<IncomingPacketFrame, SerializeError> {
-    let mut buffer = [0u8; 65535];
-    let size = tcp.read(&mut buffer).unwrap();
-    IncomingPacketFrame::from_bytes(&buffer[..size])
-}
-
 fn read_next_udp(udp: &UdpSocket) -> Result<IncomingPacketFrame, SerializeError> {
     let mut buffer = [0u8; 65535];
     let size = udp.recv(&mut buffer).unwrap();
     IncomingPacketFrame::from_bytes(&buffer[..size])
+}
+
+struct TcpConnection {
+    raw: TcpStream,
+    buffer: Box<[u8; 48_000]>,
+    start: usize,
+    end: usize,
+    next_header: Option<PacketHeader>,
+}
+
+impl TcpConnection {
+    fn update_from_socket(&mut self, wait_for_single_read: bool) -> io::Result<()> {
+        self.raw.set_nonblocking(!wait_for_single_read)?;
+        loop {
+            let mut buf = [0; 4096];
+            match self.raw.read(&mut buf) {
+                Ok(0) => {
+                    println!("TCP connection closed");
+                    exit(0);
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => {
+                    if !wait_for_single_read && e.kind() == io::ErrorKind::WouldBlock {
+                        break;
+                    }
+                    panic!("{}", e)
+                }
+                Ok(amount) => {
+                    let buf = &buf[..amount];
+                    let end_gap = self.buffer.len() - self.end;
+                    if end_gap > amount {
+                        self.buffer[self.end..self.end + amount].copy_from_slice(buf);
+                        self.end = (self.end + amount) % self.buffer.len();
+                    } else {
+                        let remainder = amount - end_gap;
+                        self.buffer[self.end..].copy_from_slice(&buf[..end_gap]);
+                        self.buffer[..remainder].copy_from_slice(&buf[end_gap..]);
+                        self.end = remainder;
+                    }
+
+                    if wait_for_single_read {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn read_next(&mut self) -> io::Result<IncomingPacketFrameRef> {
+        self.update_from_socket(true)?;
+        self.maybe_read_next()
+            .transpose()
+            .expect("Expecting packet to be available")
+    }
+
+    fn maybe_read_next(&mut self) -> io::Result<Option<IncomingPacketFrameRef>> {
+        self.update_from_socket(false)?;
+
+        let header = if let Some(header) = self.next_header.take() {
+            header
+        } else {
+            let buffer_size: usize = if self.end >= self.start {
+                self.end - self.start
+            } else {
+                self.buffer.len() - self.start + self.end
+            };
+
+            if buffer_size < PACKET_HEADER_SIZE {
+                return Ok(None);
+            }
+
+            let header = if self.end > self.start {
+                let buffer = &self.buffer[self.start..self.start + PACKET_HEADER_SIZE];
+                PacketHeader::from_bytes(buffer)
+            } else {
+                let slices = &mut [
+                    &self.buffer[self.start..],
+                    &self.buffer[..PACKET_HEADER_SIZE - (self.buffer.len() - self.start)],
+                ];
+                PacketHeader::from_multiple_byte_slices(slices)
+            }
+            .unwrap();
+
+            self.start = (self.start + PACKET_HEADER_SIZE) % self.buffer.len();
+            header
+        };
+
+        let buffer_size = if self.end >= self.start {
+            self.end - self.start
+        } else {
+            (self.buffer.len() - self.start) + self.end
+        };
+
+        if buffer_size < header.body_len as usize {
+            self.next_header = Some(header);
+            return Ok(None);
+        }
+
+        Ok(Some(IncomingPacketFrameRef::new(
+            header,
+            &*self.buffer,
+            &mut self.start,
+            self.buffer.len(),
+        )))
+    }
 }
 
 struct BeepPacketSerializer {
@@ -34,13 +138,17 @@ impl BeepPacketSerializer {
         Self { next_packet_id: 1 }
     }
 
-    fn serialize<P>(&mut self, packet: &P) -> Result<Vec<u8>, BeepClientErr>
+    fn serialize<P>(
+        &mut self,
+        reply_to: Option<PacketId>,
+        packet: &P,
+    ) -> Result<Vec<u8>, AudioCliError>
     where
         P: PacketBody,
     {
         let packet_id = self.next_packet_id;
         self.next_packet_id += 1;
-        OutgoingPacketFrame::from_packet(None, packet)
+        OutgoingPacketFrame::from_packet(reply_to, packet)
             .map_err(|e| e.into())
             .and_then(|p| {
                 p.into_raw(NonZeroU64::new(packet_id).unwrap())
@@ -51,7 +159,7 @@ impl BeepPacketSerializer {
 
 fn parse_arguments(
     args: impl Iterator<Item = String>,
-) -> Result<(Option<String>, Option<String>, bool), BeepClientErr> {
+) -> Result<(Option<String>, Option<String>, bool), AudioCliError> {
     let mut server_address = None;
     let mut client_name = None;
     let mut use_interactive_mode = false;
@@ -67,15 +175,37 @@ fn parse_arguments(
         } else if !argument.starts_with("--") && client_name.is_none() {
             client_name = Some(argument)
         } else {
-            eprintln!("Usage: beep-cli server_address [client_name] [--interactive]");
-            return Err(BeepClientErr::Usage);
+            eprintln!("Usage: audio-cli server_address [client_name] [--interactive]");
+            return Err(AudioCliError::Usage);
         }
     }
 
     Ok((server_address, client_name, use_interactive_mode))
 }
 
-fn main() -> Result<(), BeepClientErr> {
+fn handle_runtime_tcp_events(
+    serializer: &mut BeepPacketSerializer,
+    tcp: &mut TcpConnection,
+) -> io::Result<()> {
+    loop {
+        let packet = tcp.maybe_read_next()?;
+        let packet = if let Some(packet) = packet {
+            packet
+        } else {
+            break;
+        };
+
+        let packet = IncomingPacketFrame::from(packet);
+        let id = packet.header.id;
+        if packet.header.kind == KeepAlive::KIND_ID {
+            tcp.raw
+                .write_all(&serializer.serialize(Some(id), &KeepAliveAck).unwrap())?;
+        }
+    }
+    Ok(())
+}
+
+fn main() -> Result<(), AudioCliError> {
     let mut serializer = BeepPacketSerializer::new();
 
     let (server_address, client_name, use_interactive_mode) = parse_arguments(env::args().skip(1))?;
@@ -83,41 +213,54 @@ fn main() -> Result<(), BeepClientErr> {
     let server_address = match server_address {
         Some(server_address) => server_address,
         None => {
-            eprintln!("Usage: beep-cli server_address [client_name] [--interactive]");
-            return Err(BeepClientErr::Usage);
+            eprintln!("Usage: audio-cli server_address [client_name] [--interactive]");
+            return Err(AudioCliError::Usage);
         }
     };
 
-    let client_name = client_name.unwrap_or_else(|| "beep".to_string());
+    let client_name = client_name.unwrap_or_else(|| "audio-cli".to_string());
 
     let server_address_with_port = format!("{server_address}:18847");
     println!("Connecting to {server_address_with_port}...");
 
-    let mut tcp = TcpStream::connect(server_address_with_port.clone())?;
+    let tcp = TcpStream::connect(server_address_with_port.clone())?;
+    let mut tcp = TcpConnection {
+        raw: tcp,
+        buffer: Box::new([0u8; 48_000]),
+        start: 0,
+        end: 0,
+        next_header: None,
+    };
     let udp = UdpSocket::bind("0.0.0.0:0")?;
     udp.connect(server_address_with_port)?;
 
-    let parsed_packet = read_next_tcp(&mut tcp)?;
+    let parsed_packet = tcp.read_next()?;
     assert_eq!(parsed_packet.header.kind, Hello::KIND_ID);
     let hello: Packet<Hello> = parsed_packet.finish_parse()?;
     dbg!(&hello);
 
-    udp.send(&serializer.serialize(&AssociateUdp {
-        client_id: hello.body.client_id,
-        local_udp_addr: udp.local_addr().unwrap(),
-    })?)?;
+    udp.send(&serializer.serialize(
+        None,
+        &AssociateUdp {
+            client_id: hello.body.client_id,
+            local_udp_addr: udp.local_addr().unwrap(),
+        },
+    )?)?;
 
     let parsed_packet = read_next_udp(&udp)?;
     assert_eq!(parsed_packet.header.kind, AssociateUdpAccepted::KIND_ID);
     let accepted: Packet<AssociateUdpAccepted> = parsed_packet.finish_parse()?;
     dbg!(&accepted);
 
-    tcp.write_all(&serializer.serialize(&FinishConnect {
-        name: client_name,
-        user_id: Uuid::default(),
-    })?)?;
+    tcp.raw.write_all(&serializer.serialize(
+        None,
+        &FinishConnect {
+            name: client_name,
+            user_id: Uuid::default(),
+        },
+    )?)?;
 
-    let parsed_packet = read_next_tcp(&mut tcp)?;
+    let parsed_packet = tcp.read_next()?;
     assert_eq!(parsed_packet.header.kind, FinishConnectAccepted::KIND_ID);
     let finish_connect_accepted: Packet<FinishConnectAccepted> = parsed_packet.finish_parse()?;
     dbg!(&finish_connect_accepted);
@@ -161,13 +304,17 @@ fn main() -> Result<(), BeepClientErr> {
                     let mut opus_buffer = [0u8; 2048];
                     let size = encoder.encode_float(&chunk, &mut opus_buffer)?;
                     let opus_bytes = opus_buffer[..size].to_vec();
-                    udp.send(&serializer.serialize(&AudioFromClient {
-                        index: audio_id,
-                        bytes: opus_bytes,
-                    })?)?;
+                    udp.send(&serializer.serialize(
+                        None,
+                        &AudioFromClient {
+                            index: audio_id,
+                            bytes: opus_bytes,
+                        },
+                    )?)?;
                     audio_id = AudioIndex::new(audio_id.get() + 1).unwrap();
                 }
 
+                handle_runtime_tcp_events(&mut serializer, &mut tcp)?;
                 sleep(Duration::from_millis(3));
             }
         }
@@ -189,39 +336,44 @@ fn main() -> Result<(), BeepClientErr> {
                 let mut opus_buffer = [0u8; 2048];
                 let size = encoder.encode_float(&chunk, &mut opus_buffer)?;
                 let opus_bytes = opus_buffer[..size].to_vec();
-                udp.send(&serializer.serialize(&AudioFromClient {
-                    index: audio_id,
-                    bytes: opus_bytes,
-                })?)?;
+                udp.send(&serializer.serialize(
+                    None,
+                    &AudioFromClient {
+                        index: audio_id,
+                        bytes: opus_bytes,
+                    },
+                )?)?;
                 audio_id = AudioIndex::new(audio_id.get() + 1).unwrap();
+
+                handle_runtime_tcp_events(&mut serializer, &mut tcp)?;
             }
         }
     }
 }
 
 #[derive(Debug)]
-enum BeepClientErr {
+enum AudioCliError {
     Usage,
     Io(io::Error),
     Serialize,
     Opus,
 }
 
-impl From<io::Error> for BeepClientErr {
+impl From<io::Error> for AudioCliError {
     fn from(e: io::Error) -> Self {
-        BeepClientErr::Io(e)
+        AudioCliError::Io(e)
     }
 }
 
-impl From<SerializeError> for BeepClientErr {
+impl From<SerializeError> for AudioCliError {
     fn from(_: SerializeError) -> Self {
-        BeepClientErr::Serialize
+        AudioCliError::Serialize
     }
 }
 
-impl From<audiopus::Error> for BeepClientErr {
+impl From<audiopus::Error> for AudioCliError {
     fn from(_: audiopus::Error) -> Self {
-        BeepClientErr::Opus
+        AudioCliError::Opus
     }
 }
 

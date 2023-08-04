@@ -2,7 +2,7 @@
 
 members = [
     "audio-device",
-    "beep-cli",
+    "audio-cli",
     "comms",
     "comms-lib",
     "comms-server",

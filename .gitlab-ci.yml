@@ -41,7 +41,7 @@ build_release_linux:
     - sentry-cli releases finalize "commit-$CI_COMMIT_SHA" --org comms --project comms-app
   artifacts:
     paths:
-      - target/release/beep-cli
+      - target/release/audio-cli
       - target/release/comms
       - target/release/comms-server
   tags:
@@ -64,7 +64,7 @@ build_release_windows:
     paths:
       - comms.exe
       - comms-with-console.exe
-      - target/release-windows/beep-cli.exe
+      - target/release-windows/audio-cli.exe
       - target/release-windows/comms.exe
       - target/release-windows/comms-server.exe
   tags:
