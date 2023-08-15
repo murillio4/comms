@@ -21,6 +21,7 @@ use windows::Win32::Foundation;
 use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::Media::Audio;
 use windows::Win32::System::Com::StructuredStorage;
+use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::System::{Com, Threading};
 
 pub struct InputDevice {
@@ -219,7 +220,7 @@ impl IMMDeviceWrapper {
             }
         };
 
-        if unsafe { property_value.Anonymous.Anonymous.vt } != Com::VT_LPWSTR {
+        if unsafe { property_value.Anonymous.Anonymous.vt } != VT_LPWSTR {
             let description = format!("property store produced invalid data: {:?}", unsafe {
                 property_value.Anonymous.Anonymous.vt
             });

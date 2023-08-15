@@ -18,6 +18,7 @@ use futures::stream::StreamExt;
 use futures_timer::Delay;
 use gio::prelude::*;
 use gio::ApplicationFlags;
+use glib::ControlFlow::{Break, Continue};
 use gtk::prelude::*;
 use gtk::{
     gdk, Button, DialogFlags, Label, Orientation, PositionType, ResponseType,
@@ -430,9 +431,9 @@ async fn try_connect(
         timeout_add_local(Duration::from_millis(80), move || {
             if !finished.get() {
                 connect_progress.pulse();
-                Continue(true)
+                Continue
             } else {
-                Continue(false)
+                Break
             }
         });
     }

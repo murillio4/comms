@@ -5,7 +5,7 @@ authors = ["Mitchell Hentges <mitch9654@gmail.com>"]
 edition = "2021"
 
 [dependencies]
-adw = { version = "0.4", package = "libadwaita", features = ["gtk_v4_4", "v1_2"] }
+adw = { version = "0.5", package = "libadwaita", features = ["gtk_v4_4", "v1_2"] }
 async-channel = "1.7.1"
 async-std = "1.4"
 audiopus = "0.2.0"
@@ -13,9 +13,9 @@ chrono = "0.4.22"
 directories = "5.0"
 futures = "0.3"
 futures-timer = "3.0"
-gdk-pixbuf = "0.17"
-gio = "0.17"
-glib = "0.17"
+gdk-pixbuf = "0.18"
+gio = "0.18"
+glib = "0.18"
 include_dir = "0.7"
 lewton = "0.10.2"
 mio = { version = "0.8", features = ["net", "os-poll"] }
@@ -33,16 +33,16 @@ path = "../comms-lib"
 
 [dependencies.gtk]
 package = "gtk4"
-version = "0.6"
+version = "0.7"
 features = [
     "v4_6",
 ]
 
 [target.'cfg(target_os = "windows")'.dependencies.gdk4-win32]
-version = "0.6"
+version = "0.7"
 
 [target.'cfg(target_os = "windows")'.dependencies.windows]
-version = "0.48.0"
+version = "0.51.0"
 features = [
     "implement",
     "Win32_Foundation",

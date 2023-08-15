@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::{panic, process};
 
 #[cfg(windows)]
-use windows::w;
+use windows::core::w;
 #[cfg(windows)]
 use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
 

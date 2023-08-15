@@ -1,5 +1,5 @@
 use dasp::Sample;
-use ringbuffer::{AllocRingBuffer, RingBufferExt, RingBufferWrite};
+use ringbuffer::{AllocRingBuffer, RingBuffer};
 
 const ATTACK_SAMPLE_COUNT: usize = 400;
 const HOLD_SAMPLE_COUNT: usize = 10000;
@@ -116,7 +116,7 @@ pub enum ChangedState {
 impl GateNoiseFilter {
     pub fn new(sliding_window_chunk_count: usize) -> Self {
         GateNoiseFilter {
-            recent_chunks: AllocRingBuffer::with_capacity(sliding_window_chunk_count),
+            recent_chunks: AllocRingBuffer::new(sliding_window_chunk_count),
             threshold: 0f32,
             state: State::Off,
             was_active: false,
