@@ -207,15 +207,12 @@ impl AudioPlot {
                 // beginning of current window) - don't show a polygon at all.
                 Polygon::new(PlotPoints::default())
             } else {
-                Polygon::new(PlotPoints::from_iter(
-                    [
-                        [start_x, 0f64],
-                        [start_x, 1f64],
-                        [end_x, 1f64],
-                        [end_x, 0f64],
-                    ]
-                    .into_iter(),
-                ))
+                Polygon::new(PlotPoints::from_iter([
+                    [start_x, 0f64],
+                    [start_x, 1f64],
+                    [end_x, 1f64],
+                    [end_x, 0f64],
+                ]))
             }
         } else {
             Polygon::new(PlotPoints::default())

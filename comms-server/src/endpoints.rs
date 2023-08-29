@@ -14,18 +14,18 @@ use futures::future;
 use std::cell::RefCell;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::time::Instant;
 
 pub struct Context {
-    pub clients: Arc<RefCell<Clients>>,
+    pub clients: Rc<RefCell<Clients>>,
     pub client_id: ClientId,
     pub network_handle: NetworkHandle,
 }
 
 async fn associate_udp(
     udp_handle: NetworkHandle,
-    clients: Arc<RefCell<Clients>>,
+    clients: Rc<RefCell<Clients>>,
     public_addr: SocketAddr,
     packet: Packet<AssociateUdp>,
 ) -> FutureResult {
@@ -88,7 +88,7 @@ async fn p2p_established(context: Context, packet: Packet<P2pEstablished>) -> Fu
 }
 
 async fn finish_connect(
-    spawner: Arc<RefCell<Spawner>>,
+    spawner: Rc<RefCell<Spawner>>,
     context: Context,
     packet: Packet<FinishConnect>,
 ) -> FutureResult {
@@ -268,7 +268,7 @@ pub async fn close_connection(context: Context, reason: CloseConnectionReason) -
 }
 
 fn tcp_packet_to_endpoint(
-    spawner: Arc<RefCell<Spawner>>,
+    spawner: Rc<RefCell<Spawner>>,
     context: Context,
     packet: IncomingPacketFrameRef,
 ) -> Result<(), CommsNetworkError> {
@@ -324,7 +324,7 @@ pub fn spawn_close_connection(
     client_id: ClientId,
     reason: CloseConnectionReason,
     network_handle: &NetworkHandle,
-    clients: Arc<RefCell<Clients>>,
+    clients: Rc<RefCell<Clients>>,
     spawner: &Spawner,
 ) {
     let context = Context {
@@ -362,7 +362,7 @@ impl From<io::Error> for HandlePacketError {
 pub fn handle_udp_packet(
     addr: SocketAddr,
     packet: IncomingPacketFrame,
-    clients: Arc<RefCell<Clients>>,
+    clients: Rc<RefCell<Clients>>,
     spawner: &Spawner,
     network_handle: NetworkHandle,
 ) -> Result<(), SerializeError> {
@@ -415,8 +415,8 @@ pub enum StreamStatus {
 
 pub fn handle_tcp_stream(
     client_id: ClientId,
-    clients: Arc<RefCell<Clients>>,
-    spawner: Arc<RefCell<Spawner>>,
+    clients: Rc<RefCell<Clients>>,
+    spawner: Rc<RefCell<Spawner>>,
     network_handle: &NetworkHandle,
 ) -> Result<StreamStatus, HandlePacketError> {
     let clients_arc = clients.clone();

@@ -514,7 +514,9 @@ impl Worker {
                                     let id = connection.next_packet_id();
                                     for udp_addr in connection.known_sockets.keys() {
                                         let packet = KeepAlive;
-                                        let Ok(outgoing) = OutgoingPacketFrame::from_packet(None, &packet) else {
+                                        let Ok(outgoing) =
+                                            OutgoingPacketFrame::from_packet(None, &packet)
+                                        else {
                                             continue;
                                         };
 

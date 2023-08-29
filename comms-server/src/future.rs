@@ -6,12 +6,12 @@ use futures::channel::oneshot;
 use std::cell::RefCell;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 pub struct SendResponse {
     sender: oneshot::Sender<IncomingPacketFrame>,
-    waker: Arc<RefCell<Option<Waker>>>,
+    waker: Rc<RefCell<Option<Waker>>>,
 }
 
 impl SendResponse {
@@ -25,8 +25,8 @@ impl SendResponse {
 }
 
 pub struct NetworkFuture {
-    receiver: Arc<RefCell<oneshot::Receiver<IncomingPacketFrame>>>,
-    waker: Arc<RefCell<Option<Waker>>>,
+    receiver: Rc<RefCell<oneshot::Receiver<IncomingPacketFrame>>>,
+    waker: Rc<RefCell<Option<Waker>>>,
 }
 
 impl Future for NetworkFuture {
@@ -56,7 +56,7 @@ impl NetworkFuture {
         dest: ClientId,
     ) -> Self {
         let (sender, receiver) = oneshot::channel();
-        let waker = Arc::new(RefCell::new(None));
+        let waker = Rc::new(RefCell::new(None));
 
         handle.send_expect(
             protocol,
@@ -69,7 +69,7 @@ impl NetworkFuture {
         );
 
         NetworkFuture {
-            receiver: Arc::new(RefCell::new(receiver)),
+            receiver: Rc::new(RefCell::new(receiver)),
             waker,
         }
     }

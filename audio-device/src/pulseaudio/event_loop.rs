@@ -57,7 +57,7 @@ impl PulseEventLoopBuilder {
                 fd,
                 io::FlagSet::INPUT,
                 Box::new(move |_, fd, _| {
-                    unsafe { libc::read(fd, std::ptr::null() as *const u64 as _, 8) };
+                    unsafe { libc::read(fd, std::ptr::null::<u64>() as _, 8) };
                     let mut receiver = receiver.borrow_mut();
                     receiver.invoke(&*connection);
                 }),

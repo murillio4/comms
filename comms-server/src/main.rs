@@ -26,6 +26,7 @@ use mio::{Events, Interest, Poll, Token, Waker};
 use std::cell::RefCell;
 use std::io;
 use std::io::Error;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,7 +64,7 @@ async fn ping_keep_alive(
 pub async fn keep_alive(
     network_handle: NetworkHandle,
     client_id: ClientId,
-    clients: Arc<RefCell<Clients>>,
+    clients: Rc<RefCell<Clients>>,
 ) -> FutureResult {
     let context = Context {
         client_id,
@@ -91,11 +92,7 @@ pub async fn keep_alive(
             return Ok(());
         }
 
-        let Ok(packet) = SendPacket::udp(
-            Target::One(client_id),
-            None,
-            packet::KeepAlive {}
-        ) else {
+        let Ok(packet) = SendPacket::udp(Target::One(client_id), None, packet::KeepAlive {}) else {
             eprintln!("{:?}", CloseConnectionReason::MalformedData);
             return Ok(());
         };
@@ -130,7 +127,7 @@ fn main() -> Result<(), CommsServerError> {
     let waker_token = Token(next_client_id() as usize);
     let waker = Arc::new(Waker::new(poll.registry(), waker_token).unwrap());
     let (task_executor, spawner) = task::new(waker.clone());
-    let spawner = Arc::new(RefCell::new(spawner));
+    let spawner = Rc::new(RefCell::new(spawner));
 
     let mut udp_socket = UdpSocket::bind("0.0.0.0:18847".parse().unwrap())?;
     let udp_token = Token(next_client_id() as usize);
@@ -149,7 +146,7 @@ fn main() -> Result<(), CommsServerError> {
 
     let mut events = Events::with_capacity(1024);
     let mut udp = UdpConnection::new(udp_socket);
-    let clients = Arc::new(RefCell::new(Clients::default()));
+    let clients = Rc::new(RefCell::new(Clients::default()));
 
     loop {
         poll.poll(&mut events, None)?;

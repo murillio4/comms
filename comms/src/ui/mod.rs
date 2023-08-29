@@ -980,7 +980,7 @@ async fn handle_network_events(
                 }
             }
             NetworkEvent::Packet(packet) => {
-                let result = (|| async {
+                let result = async {
                     match packet.kind() {
                         UserJoined::KIND_ID => {
                             let mut ui_ref = ui.borrow_mut();
@@ -991,8 +991,9 @@ async fn handle_network_events(
                                 round_trip_latency,
                                 saved_volumes,
                                 ..
-                            } = ui_ref.state_mut() else {
-                                return Ok(())
+                            } = ui_ref.state_mut()
+                            else {
+                                return Ok(());
                             };
                             let packet: Packet<UserJoined> = packet.finish_parse()?;
                             audio
@@ -1057,11 +1058,10 @@ async fn handle_network_events(
                         UserLeft::KIND_ID => {
                             let mut ui_ref = ui.borrow_mut();
                             let UiState::Main {
-                                users,
-                                user_list,
-                                ..
-                            } = ui_ref.state_mut() else {
-                                return Ok(())
+                                users, user_list, ..
+                            } = ui_ref.state_mut()
+                            else {
+                                return Ok(());
                             };
                             let packet: Packet<UserLeft> = packet.finish_parse()?;
                             audio
@@ -1095,7 +1095,8 @@ async fn handle_network_events(
                                     } else {
                                         (state, None)
                                     }
-                                }) else {
+                                })
+                            else {
                                 return Ok(());
                             };
 
@@ -1125,7 +1126,7 @@ async fn handle_network_events(
                     }
 
                     Ok::<(), CommsNetworkError>(())
-                })()
+                }
                 .await;
                 if result.is_err() {
                     let builder = &ui.borrow().builder;

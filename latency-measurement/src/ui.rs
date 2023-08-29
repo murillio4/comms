@@ -117,13 +117,10 @@ impl Widget for &mut TimePlot {
                     let millis = ((now - instant).as_millis() as f64).neg();
 
                     plot.line(
-                        Line::new(PlotPoints::from_iter(
-                            [
-                                [millis, noise_threshold as f64],
-                                [0f64, noise_threshold as f64],
-                            ]
-                            .into_iter(),
-                        ))
+                        Line::new(PlotPoints::from_iter([
+                            [millis, noise_threshold as f64],
+                            [0f64, noise_threshold as f64],
+                        ]))
                         .name("Noise threshold")
                         .color(Color32::from_rgba_unmultiplied(0, 0, 255, 255)),
                     );
