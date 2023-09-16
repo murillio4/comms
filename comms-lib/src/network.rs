@@ -322,13 +322,9 @@ impl<'a> TcpReadIter<'a> {
         if let Some(e) = self.read_error.take() {
             return Err(e);
         }
-        loop {
-            let iter_option = self.next_frame();
-            if let Some(result) = iter_option {
-                result.map_err(|e| e.into()).and_then(&mut f)?
-            } else {
-                break;
-            }
+
+        while let Some(result) = self.next_frame() {
+            result.map_err(|e| e.into()).and_then(&mut f)?;
         }
         Ok(())
     }
