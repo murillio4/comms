@@ -400,7 +400,7 @@ impl OutputDevice {
                 .expect("Failed to determine playback device name")
         );
         let (format, waveformatex) = self.audio_client.initialize()?;
-        let mic_converter = create_playback_sample_rate_converter(format.sample_rate.0, 48000);
+        let mic_converter = create_playback_sample_rate_converter(48000, format.sample_rate.0);
         Ok(WasapiPlaybackStream::new(
             mic_converter,
             self.id(),
