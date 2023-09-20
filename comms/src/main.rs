@@ -1,9 +1,9 @@
-#[cfg(not(debug_assertions))]
-use sentry::Hub;
+use std::borrow::Cow;
 use std::sync::mpsc;
-#[cfg(not(debug_assertions))]
 use std::sync::Arc;
 use std::{panic, process};
+
+use sentry::Hub;
 
 #[cfg(windows)]
 use windows::core::w;
@@ -14,6 +14,7 @@ use crate::audio::ipc::AudioHandle;
 use crate::audio::{AudioPlatform, AudioPlatformImpl};
 use crate::network::ipc::NetworkHandle;
 use crate::network::{NetworkError, SendToNetworkThreadError, Worker};
+use crate::ui::comms_version;
 
 mod audio;
 mod network;
@@ -26,13 +27,10 @@ pub static RESOURCES_DIR: include_dir::Dir =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/resources/embedded");
 
 fn main() {
-    #[cfg(not(debug_assertions))]
-    let (_guard, sentry_hub) = {
-        use crate::ui::comms_version;
-        use std::borrow::Cow;
+    let sentry = option_env!("SENTRY_DSN").map(|sentry_dsn| {
         (
             sentry::init((
-                "https://acf304e45177402c94af33eecfc31ded@o1316575.ingest.sentry.io/6569253",
+                sentry_dsn,
                 sentry::ClientOptions {
                     release: Some(comms_version()),
                     send_default_pii: true,
@@ -42,7 +40,7 @@ fn main() {
             )),
             Hub::current(),
         )
-    };
+    });
 
     #[cfg(windows)]
     {
@@ -74,8 +72,7 @@ fn main() {
         { NetworkHandle::new_handle_and_worker(audio_handle.clone()) };
 
     {
-        #[cfg(not(debug_assertions))]
-        let sentry_hub = sentry_hub.clone();
+        let sentry_hub = sentry.as_ref().map(|s| s.1.clone());
         std::thread::spawn(move || {
             let closure = move || {
                 audio_device::priority::bump_priority().unwrap();
@@ -88,12 +85,11 @@ fn main() {
                 panic!("{error:#?}");
             };
 
-            #[cfg(debug_assertions)]
-            closure();
-            #[cfg(not(debug_assertions))]
-            {
+            if let Some(sentry_hub) = sentry_hub {
                 let thread_hub = Arc::new(Hub::new_from_top(&sentry_hub));
                 Hub::run(thread_hub, closure);
+            } else {
+                closure();
             }
         });
     }
@@ -120,12 +116,11 @@ fn main() {
                 panic!("{error:#?}");
             };
 
-            #[cfg(debug_assertions)]
-            closure();
-            #[cfg(not(debug_assertions))]
-            {
+            if let Some((_, sentry_hub)) = sentry {
                 let thread_hub = Arc::new(Hub::new_from_top(&sentry_hub));
                 Hub::run(thread_hub, closure);
+            } else {
+                closure();
             }
         });
     }
