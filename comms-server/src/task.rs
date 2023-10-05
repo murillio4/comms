@@ -90,7 +90,7 @@ impl TaskExecutor {
     pub fn run(&self) {
         loop {
             match self.waker_queue.try_recv() {
-                Err(e) if e == TryRecvError::Empty => break,
+                Err(TryRecvError::Empty) => break,
                 Err(e) => panic!("{}", e),
                 Ok(futures_waker) => {
                     let mut future = {
