@@ -21,6 +21,7 @@ mod network;
 #[cfg(windows)]
 mod register_protocol;
 mod ui;
+#[cfg(windows)]
 mod warp_wrapper_path;
 
 pub static RESOURCES_DIR: include_dir::Dir =
