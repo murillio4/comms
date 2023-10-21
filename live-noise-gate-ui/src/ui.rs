@@ -6,11 +6,11 @@ use std::time::{Duration, Instant};
 
 use crate::audio::{NOISE_GATE_CHUNK_LEN, SAMPLES_IN_CHUNK};
 use eframe::egui;
-use eframe::egui::plot::{Legend, PlotPoints, Polygon};
 use eframe::egui::Context;
 use eframe::Frame;
-use egui::plot::{HLine, Line, Plot};
 use egui::*;
+use egui_plot::{HLine, Line, Plot};
+use egui_plot::{Legend, PlotPoints, Polygon};
 
 const SAMPLES_IN_BUCKET: usize = 16;
 const GRAPH_DURATION_IN_SAMPLES: usize = NOISE_GATE_CHUNK_LEN * SAMPLES_IN_CHUNK;
@@ -217,7 +217,7 @@ impl AudioPlot {
         } else {
             Polygon::new(PlotPoints::default())
         }
-        .color(Color32::from_rgba_unmultiplied(180, 120, 120, 128))
+        .fill_color(Color32::from_rgba_unmultiplied(180, 120, 120, 128))
         .name("Recording")
     }
 }
@@ -292,7 +292,7 @@ impl eframe::App for App {
                                 }),
                         )
                         .set_file_name(
-                            &last_playback_recording
+                            last_playback_recording
                                 .as_ref()
                                 .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
                                 .unwrap_or_else(|| "comms-audio-dump.dmp".to_string()),

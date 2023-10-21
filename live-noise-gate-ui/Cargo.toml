@@ -6,9 +6,10 @@ edition = "2021"
 
 [dependencies]
 dasp = "0.11.0"
-eframe = "0.22"
-ringbuffer = "0.14"
-rfd = "0.11"
+eframe = "0.23"
+egui_plot = "0.23"
+ringbuffer = "0.15"
+rfd = "0.12"
 
 [dependencies.audio-device]
 path = "../audio-device"

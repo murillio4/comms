@@ -1,11 +1,11 @@
 mod ui_audio;
 
-use crate::egui::plot::{Legend, Line, Plot, PlotPoint, PlotPoints};
-use crate::egui::{Button, Color32, ProgressBar, Response, Ui, Widget};
 use crate::ui_audio::AudioCommand;
 use eframe::egui;
 use eframe::egui::Context;
 use eframe::Frame;
+use egui::{Button, Color32, ProgressBar, Response, Ui, Widget};
+use egui_plot::{Legend, Line, Plot, PlotPoint, PlotPoints};
 use std::ops::Neg;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
