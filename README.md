@@ -1,6 +1,10 @@
 # Comms
 
-[😎 Fetch the most recently built Comms for Windows here! 😎](https://gitlab.com/comms-app/comms/-/jobs/artifacts/main/raw/comms.exe?job=build_release_windows)
+> **About this fork:** This is a fork of [Comms](https://gitlab.com/comms-app/comms)
+> by Mitchell Hentges, based on commit `c13b2343` (2023-10-21). Per the original
+> project's delayed-license grant, all work over two years old is licensed under
+> the GNU AGPLv3, so this fork is distributed under the
+> [GNU AGPLv3](LICENSE).
 
 ![screenshot of the connect pane](doc/screenshot-connect.png)
 ![screenshot of the user-list pane](doc/screenshot-user-list.png)
