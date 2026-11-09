@@ -44,15 +44,15 @@ pub struct CpalConnection;
 impl AudioConnection for CpalConnection {
     fn list_devices(&self, callback: impl FnOnce(FoundDevices) + 'static) {
         fn collect(
-            devices: Result<impl Iterator<Item = Device>, ::cpal::DevicesError>,
+            devices: Result<impl Iterator<Item = Device>, ::cpal::Error>,
         ) -> Vec<DeviceInfo> {
             devices
                 .into_iter()
                 .flatten()
-                .filter_map(|device| device.name().ok())
-                .map(|name| DeviceInfo {
-                    id: name.clone(),
-                    label: name,
+                .filter_map(|device| device.description().ok())
+                .map(|description| DeviceInfo {
+                    id: description.name().to_owned(),
+                    label: description.name().to_owned(),
                 })
                 .collect()
         }
@@ -97,10 +97,10 @@ where
 {
     let channels = config.channels() as usize;
     let mut queue = queue;
-    let mut converter = create_mic_sample_rate_converter(config.sample_rate().0, 48000);
+    let mut converter = create_mic_sample_rate_converter(config.sample_rate(), 48000);
     device
         .build_input_stream(
-            &config.config(),
+            config.config(),
             move |data: &[T], _| {
                 for frame in data.chunks_exact(channels) {
                     let mono =
@@ -126,10 +126,10 @@ where
 {
     let channels = config.channels() as usize;
     let mut queue = queue;
-    let mut converter = create_playback_sample_rate_converter(48000, config.sample_rate().0);
+    let mut converter = create_playback_sample_rate_converter(48000, config.sample_rate());
     device
         .build_output_stream(
-            &config.config(),
+            config.config(),
             move |data: &mut [T], _| {
                 let mut mono = [0.0; 128];
                 for block in data.chunks_mut(128 * channels) {
@@ -196,12 +196,12 @@ impl<
         let output_config = output_device
             .default_output_config()
             .map_err(|e| CreationError::Output(e.to_string()))?;
-        if input_config.sample_rate().0 < 8000 {
+        if input_config.sample_rate() < 8000 {
             return Err(CreationError::Input(
                 "Device sample rate must be at least 8 kHz".into(),
             ));
         }
-        if output_config.sample_rate().0 < 8000 {
+        if output_config.sample_rate() < 8000 {
             return Err(CreationError::Output(
                 "Device sample rate must be at least 8 kHz".into(),
             ));
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn playback_underflow_is_silence_and_consumes_available_samples() {
-        let (mut tx, rx) = HeapRb::<f32>::new(4).split();
+        let (mut tx, rx): (HeapProd<f32>, HeapCons<f32>) = HeapRb::<f32>::new(4).split();
         tx.try_push(0.5).unwrap();
         tx.try_push(-0.5).unwrap();
         let mut source = OutputQueue(rx);
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn capture_overflow_drops_samples_without_waiting() {
-        let (tx, mut rx) = HeapRb::<f32>::new(2).split();
+        let (tx, mut rx): (HeapProd<f32>, HeapCons<f32>) = HeapRb::<f32>::new(2).split();
         let mut sink = InputQueue(tx);
         for sample in [1.0, 2.0, 3.0] {
             sink.append_sample_from_mic(sample);
