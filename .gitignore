@@ -6,3 +6,7 @@ package
 comms.exe
 comms-with-console.exe
 .vscode
+
+node_modules/
+comms/dist/
+comms/gen/

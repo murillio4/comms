@@ -68,8 +68,7 @@ mise run check
 The root `mise.toml` pins Rust 1.91.0 and installs rustfmt and Clippy through
 [mise's Rust support](https://mise.jdx.dev/lang/rust.html). Tasks run from the
 repository root, including when invoked from a crate directory. Shell activation
-is optional: use `mise exec -- cargo run -p comms` to run the client with the
-configured toolchain.
+is optional: prefix commands with `mise exec --` to use the configured toolchain.
 
 Available checks:
 
@@ -81,51 +80,25 @@ Available checks:
 | `mise run test:workspace` | Tests for every crate |
 | `mise run clippy` | Clippy for every crate and target, denying warnings |
 
-Install native build tools and libraries separately; `mise install` manages the
-Rust toolchain. The desktop client requires GTK4, Libadwaita 1.2 or newer, Opus,
-and `pkg-config`. Linux audio also requires ALSA development libraries. Follow
-the platform instructions below before building the client or running the
-workspace checks.
+Install Node.js and native build tools and libraries separately; `mise install`
+manages the Rust toolchain. Follow the client requirements below before building
+the desktop client or running workspace checks.
 
-On macOS, install the Xcode Command Line Tools (`xcode-select --install`) and the
-native libraries with Homebrew:
+## Desktop client (Windows, macOS, Linux)
+
+The `comms` frontend uses Tauri 2 and React, with native Rust audio and
+networking. Set up Rust as described above, install Node.js 22.12+ and the
+[Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/), then:
 
 ```sh
-brew install gtk4 libadwaita opus pkg-config
+cd comms
+npm ci
+mise exec -- npm run tauri dev
 ```
 
-## Linux Build Instructions
-
-1. Set up Rust with mise as described above, and install GTK4, Opus, ALSA development libraries (`libasound2-dev` on Debian/Ubuntu), and `pkg-config`
-2. Install Libadwaita 1.2 (likely by building it from source)
-3. Run `mise exec -- cargo run -p comms` from the repository root
-
-## Windows Build Instructions
-
-1. Install the Visual Studio C++ build tools and set up Rust with mise as described above. Use the MSVC Rust host toolchain.
-2. Follow the [`gvsbuild` steps to build GTK4 with MSVC tools](https://github.com/wingtk/gvsbuild)
-   * When the `gvsbuild` steps recommend setting `$env:Path`, make it a permanent change by doing the following:
-      1. From the Start menu, go to the Control Panel entry for “Edit environment variables for your account”.
-      2. Double-click the `Path` row in the top list of variables. Click “New” to add a new item to the list.
-      3. Paste in `C:\gtk-build\gtk\x64\release\bin`
-      4. Click "OK" twice.
-3. Build Libadwaita with `gvsbuild`: `gvsbuild build libadwaita`
-4. Ensure Rust is using the `msvc` toolchain, if it isn't already: `rustup default stable-msvc`
-5. Run `mise exec -- cargo run -p comms` from the repository root
-
-### Windows _Faster_ Build Instructions
-
-Incremental builds of Comms can be a little slow - one of the main delays here is linking.
-You can speed this up by using the LLVM linker instead of the default MSVC one:
-
-1. Download and run the most recent `LLVM-$version-win64.exe` [from the LLVM releases page](https://github.com/llvm/llvm-project/releases)
-2. Add `C:\Program Files\LLVM\bin` to your `PATH`
-3. Edit `$env:USERPROFILE\.cargo\config.toml` and add the following contents:
-    ```
-    [target.x86_64-pc-windows-msvc]
-    linker = "lld-link.exe"
-    ```
-4. Run `cargo clean`, then `cargo build --bin comms`
+Use `mise exec -- npm run tauri build` for native application bundles/installers.
+See [the client README](comms/README.md) for platform dependencies,
+packaging, migration details, and validation commands.
 
 ## Wireshark Decoder
 See `extras/comms-dissector.lua` for a script that can be used in Wireshark to parse the internet traffic.

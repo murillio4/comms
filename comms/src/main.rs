@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::borrow::Cow;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -5,24 +7,15 @@ use std::{panic, process};
 
 use sentry::Hub;
 
-#[cfg(windows)]
-use windows::core::w;
-#[cfg(windows)]
-use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
-
 use crate::audio::ipc::AudioHandle;
 use crate::audio::{AudioPlatform, AudioPlatformImpl};
 use crate::network::ipc::NetworkHandle;
-use crate::network::{NetworkError, SendToNetworkThreadError, Worker};
+use crate::network::{NetworkError, Worker};
 use crate::ui::comms_version;
 
 mod audio;
 mod network;
-#[cfg(windows)]
-mod register_protocol;
 mod ui;
-#[cfg(windows)]
-mod warp_wrapper_path;
 
 pub static RESOURCES_DIR: include_dir::Dir =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/resources/embedded");
@@ -42,16 +35,6 @@ fn main() {
             Hub::current(),
         )
     });
-
-    #[cfg(windows)]
-    {
-        // Set app user model ID (and set the same for the warp bundle) so that pinning
-        // Comms will pin the top-level executable, not the nested one.
-        unsafe { SetCurrentProcessExplicitAppUserModelID(w!("mitchhentges.comms")) }.unwrap();
-        // Memory usage on Windows with the opengl/gl/vulkan renderers are much higher,
-        // so explicitly fall back to tried 'n true "cairo".
-        std::env::set_var("GSK_RENDERER", "cairo");
-    }
 
     let orig_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
@@ -95,24 +78,23 @@ fn main() {
         });
     }
 
-    #[cfg(windows)]
     {
-        std::thread::spawn(register_protocol::run);
-    }
-
-    {
-        let parameters = AudioPlatformImpl::create_parameters();
+        AudioPlatformImpl::create_parameters();
         let network_handle = network_handle.clone();
         std::thread::spawn(move || {
             let closure = move || {
                 audio_device::priority::bump_priority().unwrap();
                 let error = audio::run(
-                    parameters,
+                    (),
                     network_handle,
                     ui_handle,
                     audio_registration,
                     audio_receiver,
                 );
+                if matches!(error, audio::AudioError::InitializationError) {
+                    // Keep the window alive so the frontend can display the device error.
+                    return;
+                }
                 eprintln!("Encountered an error in audio operations, stopping");
                 panic!("{error:#?}");
             };
@@ -133,28 +115,4 @@ fn main() {
         ui_receiver,
         audio_handle,
     );
-}
-
-#[derive(Debug)]
-enum CommsError {
-    Audio(audio::AudioError),
-    Network(network::NetworkError),
-}
-
-impl From<audio::AudioError> for CommsError {
-    fn from(e: audio::AudioError) -> Self {
-        CommsError::Audio(e)
-    }
-}
-
-impl From<network::NetworkError> for CommsError {
-    fn from(e: network::NetworkError) -> Self {
-        CommsError::Network(e)
-    }
-}
-
-impl From<SendToNetworkThreadError> for CommsError {
-    fn from(e: SendToNetworkThreadError) -> Self {
-        CommsError::Audio(e.into())
-    }
 }
