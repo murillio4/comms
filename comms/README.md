@@ -1,10 +1,16 @@
 # Comms desktop client
 
-The frontend uses Tauri 2, React, TypeScript, and Vite. Rust owns audio,
+The frontend uses Tauri 2, React, TypeScript, Vite, and shadcn/ui with Tailwind CSS. Rust owns audio,
 Opus encoding, networking, peer discovery, session state, and preferences.
 Audio samples never pass through JavaScript. Tauri is the desktop window
 and command/event bridge; it uses WebView2 on Windows, WKWebView on macOS,
 and WebKitGTK on Linux.
+
+The compact interface opens at 360 × 420 and can resize down to 300 × 320.
+Long participant lists, errors, and expanded audio settings scroll with the window.
+The local shadcn components live in `frontend/components/ui`; theme tokens and
+compact layout styles are in `frontend/style.css`. To add a component, run
+`npx shadcn@latest add <component>` from this directory.
 
 ## Requirements
 

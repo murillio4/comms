@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { client, type Snapshot, type User } from "./bridge";
+import { AudioLines, ChevronDown, Headphones, LogOut, Mic, Volume2 } from "lucide-react";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
 
 function Volume({ user, change }: { user: User; change: (volume: number) => Promise<void> }) {
   const [volume, setVolume] = useState(user.volume);
@@ -82,48 +86,68 @@ export default function App() {
 
   return <main className="app">
     <header className="masthead">
-      <div className="brand"><span className="brand-mark" aria-hidden="true">◖◗</span><span>comms<span className="brand-dot">.</span></span></div>
-      <span className={`status ${connected ? "online" : ""}`} role="status"><i />{state?.status ?? "Starting"}</span>
+      <div className="brand"><AudioLines aria-hidden="true" /><h1>Comms</h1></div>
+      <Badge variant="outline" className="status" role="status">
+        <i className={connected ? "online" : ""} />{state?.status ?? "Starting"}
+      </Badge>
     </header>
-    <section className="intro">
-      <p className="eyebrow">A little closer.</p>
-      <h1>{connected ? "You’re in good company." : "Less delay. More conversation."}</h1>
-      <p>{connected ? `Connected to ${state.server}` : "A quiet place for your voice. Connect to a server and join the conversation."}</p>
-    </section>
-    {visibleError && <div className="error" role="alert">{visibleError}</div>}
-    {connected ? <section className="panel" aria-label="Voice session">
-      <div className="panel-heading"><div><p className="eyebrow">Voice room</p><h2>In the conversation <span className="count">{state.users.length}</span></h2></div>
-        <button className="secondary" disabled={transitioning} onClick={() => void run(client.disconnect, true)}>Disconnect</button></div>
-      <ul className="users">{state.users.map((user) => <li key={user.clientId} className={user.isSpeaking ? "speaking" : ""}>
-        <div className="user-line">
-          <span className="avatar" aria-hidden="true">{user.name.slice(0, 1).toLocaleUpperCase()}</span>
-          <div className="user-name"><strong>{user.name}</strong><span>{user.isCurrentUser ? "You" : user.isPeerToPeer ? "Direct connection" : "Via server"}{user.isSpeaking ? " · Speaking" : ""}</span></div>
-          <span className="latency" title={user.isCurrentUser ? "One-way latency to server" : "Estimated one-way latency to participant"}>{user.latencyMs.toFixed(1)} <small>ms</small></span>
+
+    <div className="content">
+      {visibleError && <div className="error" role="alert">{visibleError}</div>}
+      {connected ? <section className="session" aria-label="Voice session">
+        <div className="session-heading">
+          <div className="session-title"><h2>Voice room</h2><p title={state.server}>{state.server}</p></div>
+          <Button variant="outline" size="sm" disabled={transitioning} onClick={() => void run(client.disconnect, true)}>
+            <LogOut aria-hidden="true" />Disconnect
+          </Button>
         </div>
-        <Volume user={user} change={(volume) => run(() => client.volume(user.clientId, volume))} />
-      </li>)}</ul>
-    </section> : <section className="panel connect-panel">
-      <p className="eyebrow">Make yourself heard</p><h2>Join a conversation</h2>
-      <form onSubmit={connect}>
-        <label htmlFor="username">Your name</label>
-        <input id="username" name="username" autoComplete="nickname" required value={username} disabled={transitioning}
-          onChange={(event) => setUsername(event.target.value)} placeholder="What should we call you?" />
-        <label htmlFor="server">Server address</label>
-        <input id="server" name="server" autoCapitalize="none" autoCorrect="off" spellCheck={false} required value={server}
-          disabled={transitioning} onChange={(event) => setServer(event.target.value)} placeholder="voice.example.com" aria-describedby="server-hint" />
-        <p id="server-hint" className="hint">Ask your friends for their server’s hostname. Comms uses port 18847.</p>
-        <button className="primary" type="submit" disabled={transitioning || !state?.audioReady || !username.trim() || !server.trim()}>
-          {transitioning ? "Connecting…" : "Join conversation"}<span aria-hidden="true">↗</span>
-        </button>
-      </form>
-      <p className="audio-status" role="status"><i className={state?.audioReady ? "ready" : ""} />{state?.audioReady ? "Native audio ready" : state?.audioError ? "Audio unavailable" : "Preparing audio…"}</p>
-    </section>}
-    <footer><span>Voice, with room to breathe.</span><button className="text-button" disabled={!state?.audioReady}
-      onClick={() => { setShowDevices(!showDevices); if (!showDevices) void run(client.devices); }}>Audio devices</button><span>v{state?.version ?? "…"}</span></footer>
-    {showDevices && state && <section className="panel devices" aria-label="Audio devices">
-      <h2>Audio devices</h2><p>Comms uses your system’s default input and output. Restart Comms after changing devices.</p>
-      <h3>Microphones</h3><ul>{state.inputDevices.map((device, index) => <li key={`${device.id}-${index}`}>{device.label}</li>)}</ul>
-      <h3>Speakers & headphones</h3><ul>{state.outputDevices.map((device, index) => <li key={`${device.id}-${index}`}>{device.label}</li>)}</ul>
+        <div className="list-heading"><span>Participants</span><span>{state.users.length}</span></div>
+        <ul className="users">{state.users.map((user) => <li key={user.clientId} className={user.isSpeaking ? "speaking" : ""}>
+          <div className="user-line">
+            <span className="avatar" aria-hidden="true">{user.name.slice(0, 1).toLocaleUpperCase()}</span>
+            <div className="user-name"><strong>{user.name}{user.isCurrentUser && <span className="you">you</span>}</strong>
+              <span>{user.isCurrentUser ? "You" : user.isPeerToPeer ? "Direct connection" : "Via server"}{user.isSpeaking ? " · Speaking" : ""}</span>
+            </div>
+            <span className="latency" title={user.isCurrentUser ? "One-way latency to server" : "Estimated one-way latency to participant"}>{user.latencyMs.toFixed(1)} <small>ms</small></span>
+          </div>
+          <Volume user={user} change={(volume) => run(() => client.volume(user.clientId, volume))} />
+        </li>)}</ul>
+        {state.users.length === 0 && <p className="empty-state">Waiting for participants…</p>}
+      </section> : <section className="connect-panel" aria-labelledby="connect-heading">
+        <div className="section-heading"><h2 id="connect-heading">Join a conversation</h2><p>Enter your name and server to get started.</p></div>
+        <form onSubmit={connect}>
+          <div className="field"><label htmlFor="username">Your name</label>
+            <Input id="username" name="username" autoComplete="nickname" required value={username} disabled={!state || transitioning}
+              onChange={(event) => setUsername(event.target.value)} placeholder="Your name" />
+          </div>
+          <div className="field"><label htmlFor="server">Server address</label>
+            <Input id="server" name="server" autoCapitalize="none" autoCorrect="off" spellCheck={false} required value={server}
+              disabled={!state || transitioning} onChange={(event) => setServer(event.target.value)} placeholder="voice.example.com" aria-describedby="server-hint" />
+            <p id="server-hint" className="hint">Hostname or IP · port 18847</p>
+          </div>
+          <Button className="join-button" type="submit" disabled={transitioning || !state?.audioReady || !username.trim() || !server.trim()}>
+            <Headphones aria-hidden="true" />{transitioning ? "Connecting…" : "Join conversation"}
+          </Button>
+        </form>
+      </section>}
+    </div>
+
+    <footer className="footer">
+      <span className="audio-status" role="status"><i className={state?.audioReady ? "online" : ""} />{state?.audioReady ? "Audio ready" : state?.audioError ? "Audio unavailable" : "Preparing audio…"}</span>
+      <Button variant="ghost" size="sm" className="devices-toggle" disabled={!state?.audioReady}
+        aria-expanded={showDevices} aria-controls="audio-devices"
+        onClick={() => { setShowDevices(!showDevices); if (!showDevices) void run(client.devices); }}>
+        Audio devices<ChevronDown className={showDevices ? "rotate-180" : ""} aria-hidden="true" />
+      </Button>
+    </footer>
+    {showDevices && state && <section id="audio-devices" className="devices" aria-label="Audio devices">
+      <h2>Audio devices</h2><p>Uses your system defaults. Restart Comms after changing devices.</p>
+      <h3><Mic aria-hidden="true" />Microphones</h3>
+      <ul>{state.inputDevices.map((device, index) => <li key={`${device.id}-${index}`}>{device.label}</li>)}</ul>
+      {state.inputDevices.length === 0 && <p>No microphones found.</p>}
+      <h3><Volume2 aria-hidden="true" />Speakers & headphones</h3>
+      <ul>{state.outputDevices.map((device, index) => <li key={`${device.id}-${index}`}>{device.label}</li>)}</ul>
+      {state.outputDevices.length === 0 && <p>No output devices found.</p>}
     </section>}
   </main>;
 }
