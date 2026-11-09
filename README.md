@@ -38,9 +38,25 @@ Round-trip audio latency, as casually measured from residential internet:
 +-----------------------------+-------+
 ```
 
+## Audio backend
+
+`audio-device` uses CPAL 0.15 for native audio I/O (ALSA on Linux,
+WASAPI on Windows, CoreAudio on macOS). It opens the default input and
+output devices, converts their native sample formats and rates to/from
+48 kHz mono, and keeps application processing off the audio callback threads
+using bounded queues. Capture overflow drops incoming samples; playback
+underflow produces silence.
+
+The shared network protocol is unchanged. The former PulseAudio/WASAPI
+backend modules are no longer exported; use `audio_device::cpal` or
+`create_minimal_event_loop`. `PULSEAUDIO_SERVER` no longer selects the backend.
+Device IDs in listings are CPAL device names and may not be unique. Restart
+the audio session after a device disconnect or default-device change;
+automatic device switching is not currently implemented.
+
 ## Linux Build Instructions
 
-1. Install `rust`, GTK4 and opus libs
+1. Install `rust`, GTK4, Opus, ALSA development libraries (`libasound2-dev` on Debian/Ubuntu), and `pkg-config`
 2. Install Libadwaita 1.2 (likely by building it from source)
 3. From `comms`, run `cargo run`
 

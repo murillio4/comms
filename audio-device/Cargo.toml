@@ -8,32 +8,6 @@ edition = "2021"
 dasp = { version = "0.11.0", features = ["interpolate", "interpolate-linear"] }
 ringbuffer = "0.15"
 audio_thread_priority = "0.27"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-lazy_static = "1.4"
-
-[target.'cfg(target_os = "windows")'.dependencies.windows]
-version = "0.51.0"
-features = [
-    "implement",
-    "Win32_Devices_Properties",
-    "Win32_Foundation",
-    "Win32_Media_Audio",
-    "Win32_Media_KernelStreaming",
-    "Win32_Media_Multimedia",
-    "Win32_Security",
-    "Win32_System_Com",
-    "Win32_System_Com_StructuredStorage",
-    "Win32_System_Ole",
-    "Win32_System_SystemServices",
-    "Win32_System_Threading",
-    "Win32_System_Variant",
-    "Win32_UI_Shell_PropertiesSystem",
-]
-
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.69"
-libpulse-binding = { version = "2.13", default-features = false }
-
-[dependencies.comms-lib]
-path = "../comms-lib"
+cpal = "0.15.3"
+# Bounded SPSC queues keep application work off CPAL callback threads.
+ringbuf = "0.4"

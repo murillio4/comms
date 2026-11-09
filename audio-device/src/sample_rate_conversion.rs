@@ -15,12 +15,6 @@ pub trait PlaybackSampleRateConverter<P: PlaybackSource> {
         playback_source: &mut P,
         channel_count: usize,
     );
-    fn convert_i16(
-        &mut self,
-        destination: &mut [i16],
-        playback_source: &mut P,
-        channel_count: usize,
-    );
 }
 
 // TODO f32 instead of f64?
@@ -52,23 +46,6 @@ impl<P: PlaybackSource> PlaybackSampleRateConverter<P> for LinearSampleRateConve
     fn convert_f32(
         &mut self,
         destination: &mut [f32],
-        playback_source: &mut P,
-        channel_count: usize,
-    ) {
-        convert(
-            &mut self.interpolator,
-            &mut self.interpolation_value,
-            destination,
-            playback_source,
-            self.source_rate,
-            self.destination_rate,
-            channel_count,
-        );
-    }
-
-    fn convert_i16(
-        &mut self,
-        destination: &mut [i16],
         playback_source: &mut P,
         channel_count: usize,
     ) {
@@ -151,31 +128,12 @@ impl<P: PlaybackSource> PlaybackSampleRateConverter<P> for PassthroughSampleRate
             }
         });
     }
-
-    fn convert_i16(
-        &mut self,
-        destination: &mut [i16],
-        playback_source: &mut P,
-        channel_count: usize,
-    ) {
-        playback_source.next_samples(destination.len() / channel_count, |(window_1, window_2)| {
-            for (i, sample) in window_1
-                .iter()
-                .chain(window_2.unwrap_or_default().iter())
-                .enumerate()
-            {
-                for channel_index in 0..channel_count {
-                    destination[(i * channel_count) + channel_index] = sample.to_sample();
-                }
-            }
-        });
-    }
 }
 
 pub fn create_mic_sample_rate_converter<M: MicSink>(
     source_hz: u32,
     target_hz: u32,
-) -> Box<dyn MicSampleRateConverter<M>> {
+) -> Box<dyn MicSampleRateConverter<M> + Send> {
     if source_hz == target_hz {
         return Box::new(PassthroughSampleRateConverter);
     }
@@ -191,7 +149,7 @@ pub fn create_mic_sample_rate_converter<M: MicSink>(
 pub fn create_playback_sample_rate_converter<P: PlaybackSource>(
     source_hz: u32,
     target_hz: u32,
-) -> Box<dyn PlaybackSampleRateConverter<P>> {
+) -> Box<dyn PlaybackSampleRateConverter<P> + Send> {
     if source_hz == target_hz {
         return Box::new(PassthroughSampleRateConverter);
     }

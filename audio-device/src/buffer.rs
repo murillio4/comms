@@ -24,12 +24,19 @@ pub trait MicSink {
 
 pub trait InterruptReceiver<R> {
     fn registration(&self) -> &R;
+    fn optional_registration(&self) -> Option<&R> {
+        Some(self.registration())
+    }
     fn invoke<AC: AudioConnection>(&mut self, connection: &AC);
 }
 
 pub struct NoopInterruptReceiver;
 
 impl<R> InterruptReceiver<R> for NoopInterruptReceiver {
+    fn optional_registration(&self) -> Option<&R> {
+        None
+    }
+
     fn registration(&self) -> &R {
         unreachable!();
     }

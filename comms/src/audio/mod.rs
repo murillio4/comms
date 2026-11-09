@@ -12,15 +12,8 @@ use audio_device::audio_connection::EventLoop;
 use std::fmt::{Display, Formatter};
 use std::sync::mpsc::Receiver;
 
-#[cfg(windows)]
-mod wasapi;
-#[cfg(windows)]
-pub type AudioPlatformImpl = crate::audio::wasapi::WasapiAudioPlatform;
-
-#[cfg(unix)]
-mod pulseaudio;
-#[cfg(unix)]
-pub type AudioPlatformImpl = crate::audio::pulseaudio::PulseAudioPlatform;
+mod cpal;
+pub type AudioPlatformImpl = crate::audio::cpal::CpalAudioPlatform;
 
 pub fn run(
     parameters: <AudioPlatformImpl as AudioPlatform>::Parameters,

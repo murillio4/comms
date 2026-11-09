@@ -53,10 +53,6 @@ features = [
     "Win32_System_Threading",
 ]
 
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.69"
-libpulse-binding = { version = "2.13", default-features = false }
-
 [dependencies.uuid]
 version = "1.1.1"
 features = [
