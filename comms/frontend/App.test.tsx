@@ -113,6 +113,22 @@ describe("native client interface", () => {
     expect(client.volume).toHaveBeenLastCalledWith(8, 130);
   });
 
+  it("keeps audio devices collapsed until requested and lets the user close them", async () => {
+    await ready();
+    const toggle = screen.getByRole("button", { name: "Audio devices" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("region", { name: "Audio devices" })).toBeNull();
+    expect(client.devices).not.toHaveBeenCalled();
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("region", { name: "Audio devices" })).toBeTruthy();
+    expect(screen.getByText("No microphones found.")).toBeTruthy();
+    await userEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("region", { name: "Audio devices" })).toBeNull();
+    expect(client.devices).toHaveBeenCalledTimes(1);
+  });
+
   it("unsubscribes from native events when unmounted", async () => {
     const view = render(<App />);
     await screen.findByLabelText("Your name");
