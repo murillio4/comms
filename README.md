@@ -54,15 +54,55 @@ Device IDs in listings are CPAL device names and may not be unique. Restart
 the audio session after a device disconnect or default-device change;
 automatic device switching is not currently implemented.
 
+## Development environment
+
+Install [mise](https://mise.jdx.dev/installing-mise.html), then run these commands
+from the repository root:
+
+```sh
+mise trust
+mise install
+mise run check
+```
+
+The root `mise.toml` pins Rust 1.91.0 and installs rustfmt and Clippy through
+[mise's Rust support](https://mise.jdx.dev/lang/rust.html). Tasks run from the
+repository root, including when invoked from a crate directory. Shell activation
+is optional: use `mise exec -- cargo run -p comms` to run the client with the
+configured toolchain.
+
+Available checks:
+
+| Command | Check |
+| --- | --- |
+| `mise run fmt` | Workspace formatting |
+| `mise run test` | Shared library and server tests |
+| `mise run check` | Formatting, shared library and server tests |
+| `mise run test:workspace` | Tests for every crate |
+| `mise run clippy` | Clippy for every crate and target, denying warnings |
+
+Install native build tools and libraries separately; `mise install` manages the
+Rust toolchain. The desktop client requires GTK4, Libadwaita 1.2 or newer, Opus,
+and `pkg-config`. Linux audio also requires ALSA development libraries. Follow
+the platform instructions below before building the client or running the
+workspace checks.
+
+On macOS, install the Xcode Command Line Tools (`xcode-select --install`) and the
+native libraries with Homebrew:
+
+```sh
+brew install gtk4 libadwaita opus pkg-config
+```
+
 ## Linux Build Instructions
 
-1. Install `rust`, GTK4, Opus, ALSA development libraries (`libasound2-dev` on Debian/Ubuntu), and `pkg-config`
+1. Set up Rust with mise as described above, and install GTK4, Opus, ALSA development libraries (`libasound2-dev` on Debian/Ubuntu), and `pkg-config`
 2. Install Libadwaita 1.2 (likely by building it from source)
-3. From `comms`, run `cargo run`
+3. Run `mise exec -- cargo run -p comms` from the repository root
 
 ## Windows Build Instructions
 
-1. Install [`rust`](https://rustup.rs/). Follow the directions and install the Visual Studio tools Rust recommends.
+1. Install the Visual Studio C++ build tools and set up Rust with mise as described above. Use the MSVC Rust host toolchain.
 2. Follow the [`gvsbuild` steps to build GTK4 with MSVC tools](https://github.com/wingtk/gvsbuild)
    * When the `gvsbuild` steps recommend setting `$env:Path`, make it a permanent change by doing the following:
       1. From the Start menu, go to the Control Panel entry for “Edit environment variables for your account”.
@@ -71,7 +111,7 @@ automatic device switching is not currently implemented.
       4. Click "OK" twice.
 3. Build Libadwaita with `gvsbuild`: `gvsbuild build libadwaita`
 4. Ensure Rust is using the `msvc` toolchain, if it isn't already: `rustup default stable-msvc`
-5. From `comms`, run `cargo run --bin comms`
+5. Run `mise exec -- cargo run -p comms` from the repository root
 
 ### Windows _Faster_ Build Instructions
 
