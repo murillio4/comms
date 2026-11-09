@@ -1,0 +1,26 @@
+[tools]
+rust = { version = "1.91.0", profile = "minimal", components = ["rustfmt", "clippy"] }
+
+[tasks.fmt]
+description = "Check workspace formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks.test]
+description = "Test the shared protocol library and server"
+run = ["cargo test -p comms-lib", "cargo test -p comms-server"]
+
+[tasks.check]
+description = "Run the standard contribution checks"
+run = [
+    "cargo fmt --all -- --check",
+    "cargo test -p comms-lib",
+    "cargo test -p comms-server",
+]
+
+[tasks."test:workspace"]
+description = "Test all crates (requires native platform libraries)"
+run = "cargo test --workspace"
+
+[tasks.clippy]
+description = "Lint all crates and targets (requires native platform libraries)"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
