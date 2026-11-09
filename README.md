@@ -54,38 +54,21 @@ Device IDs in listings are CPAL device names and may not be unique. Restart
 the audio session after a device disconnect or default-device change;
 automatic device switching is not currently implemented.
 
-## Linux Build Instructions
+## Desktop client (Windows, macOS, Linux)
 
-1. Install `rust`, GTK4, Opus, ALSA development libraries (`libasound2-dev` on Debian/Ubuntu), and `pkg-config`
-2. Install Libadwaita 1.2 (likely by building it from source)
-3. From `comms`, run `cargo run`
+The `comms` frontend uses Tauri 2 and React, with native Rust audio and
+networking. Install Rust, Node.js, and the
+[Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/), then:
 
-## Windows Build Instructions
+```sh
+cd comms
+npm ci
+npm run tauri dev
+```
 
-1. Install [`rust`](https://rustup.rs/). Follow the directions and install the Visual Studio tools Rust recommends.
-2. Follow the [`gvsbuild` steps to build GTK4 with MSVC tools](https://github.com/wingtk/gvsbuild)
-   * When the `gvsbuild` steps recommend setting `$env:Path`, make it a permanent change by doing the following:
-      1. From the Start menu, go to the Control Panel entry for “Edit environment variables for your account”.
-      2. Double-click the `Path` row in the top list of variables. Click “New” to add a new item to the list.
-      3. Paste in `C:\gtk-build\gtk\x64\release\bin`
-      4. Click "OK" twice.
-3. Build Libadwaita with `gvsbuild`: `gvsbuild build libadwaita`
-4. Ensure Rust is using the `msvc` toolchain, if it isn't already: `rustup default stable-msvc`
-5. From `comms`, run `cargo run --bin comms`
-
-### Windows _Faster_ Build Instructions
-
-Incremental builds of Comms can be a little slow - one of the main delays here is linking.
-You can speed this up by using the LLVM linker instead of the default MSVC one:
-
-1. Download and run the most recent `LLVM-$version-win64.exe` [from the LLVM releases page](https://github.com/llvm/llvm-project/releases)
-2. Add `C:\Program Files\LLVM\bin` to your `PATH`
-3. Edit `$env:USERPROFILE\.cargo\config.toml` and add the following contents:
-    ```
-    [target.x86_64-pc-windows-msvc]
-    linker = "lld-link.exe"
-    ```
-4. Run `cargo clean`, then `cargo build --bin comms`
+Use `npm run tauri build` for native application bundles/installers.
+See [the client README](comms/README.md) for platform dependencies,
+packaging, migration details, and validation commands.
 
 ## Wireshark Decoder
 See `extras/comms-dissector.lua` for a script that can be used in Wireshark to parse the internet traffic.

@@ -1,45 +1,38 @@
+//! Tauri is a presentation layer. This actor owns session state; native audio and
+//! network workers continue to communicate without going through the webview.
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use directories::ProjectDirs;
-use futures::channel::mpsc::Sender;
-use futures::stream::StreamExt;
+use futures::channel::{mpsc, oneshot};
+use futures::future::{AbortHandle, Abortable, Either};
+use futures::{FutureExt, StreamExt};
 use futures_timer::Delay;
-use gio::prelude::*;
-use gio::ApplicationFlags;
-use glib::timeout_add_local;
-use glib::ControlFlow::{Break, Continue};
-use gtk::gdk::Display;
-use gtk::pango::EllipsizeMode;
-use gtk::prelude::*;
-use gtk::{
-    gdk, DialogFlags, Orientation, PositionType, ResponseType, RevealerTransitionType, StyleContext,
-};
 use serde::{Deserialize, Serialize};
+use tauri::{Emitter, Manager, State};
+use tauri_plugin_deep_link::DeepLinkExt;
 use uuid::Uuid;
 
-use comms_lib::network::CommsNetworkError;
-use comms_lib::packet;
-use comms_lib::packet::{
-    ClientId, ErrorResponse, Packet, PacketBody, UserId, UserJoined, UserLeft,
-};
-
 use crate::audio::ipc::{AudioCommand, AudioHandle, EventLoopCreationError};
+use crate::network;
 use crate::network::future::{attempt_p2p, keep_alive, P2pDestination};
 use crate::network::ipc::{ConnectError, NetworkCommand, NetworkEvent, NetworkHandle};
-use crate::ui::ipc::{AudioIPCInitStatus, UICommand};
-use crate::{network, RESOURCES_DIR};
-
-#[cfg(windows)]
-use crate::ui::update::check_for_updates;
+use comms_lib::packet::{
+    ClientId, ErrorResponse, NetworkUser, Packet, PacketBody, UserId, UserJoined, UserLeft,
+};
+use ipc::{AudioIPCInitStatus, UICommand};
 
 pub mod ipc;
-#[cfg(windows)]
-mod update;
 
+pub fn comms_version() -> Cow<'static, str> {
+    option_env!("CI_COMMIT_SHA")
+        .map(|sha| Cow::from(format!("commit-{sha}")))
+        .unwrap_or(env!("CARGO_PKG_VERSION").into())
+}
+
+// Keep the GTK client's storage path and format so existing identities and
+// per-user volume preferences survive the migration.
 #[derive(Serialize, Deserialize)]
 struct LocalStorage {
     username: String,
@@ -48,1212 +41,838 @@ struct LocalStorage {
     volumes: HashMap<UserId, u16>,
 }
 
-pub fn comms_version() -> Cow<'static, str> {
-    option_env!("CI_COMMIT_SHA")
-        .map(|sha| Cow::from(format!("commit-{sha}")))
-        .unwrap_or("local-dev".into())
-}
-
-const BUILD_TIMESTAMP: Option<&str> = option_env!("CI_JOB_STARTED_AT");
-
-async fn try_connect(
-    audio_handle: AudioHandle,
-    network_handle: NetworkHandle,
-    network_event_sender: Sender<NetworkEvent>,
-    ui: Rc<RefCell<UiModel>>,
-) {
-    let (user_id, saved_volumes) = match ui.borrow_mut().use_state(|state| {
-        if let UiState::ChooseServer {
-            user_id,
-            saved_volumes,
-            ..
-        } = state
-        {
-            (UiState::Connecting, Some((user_id, saved_volumes)))
-        } else {
-            (state, None)
-        }
-    }) {
-        Some(m) => m,
-        None => return,
-    };
-
-    let builder = ui.borrow().builder.clone();
-    let username_entry: adw::EntryRow = builder.object("username_entry").unwrap();
-    let server_entry: adw::EntryRow = builder.object("server_entry").unwrap();
-    let connect_button: gtk::Button = builder.object("connect_button").unwrap();
-    let connect_progress: gtk::ProgressBar = builder.object("connect_progress").unwrap();
-    let connect_failure_status: gtk::Label = builder.object("connect_failure_status").unwrap();
-
-    let username: String = username_entry.text().into();
-    let server: String = server_entry.text().into();
-    if username.is_empty() || server.is_empty() {
-        connect_failure_status.set_text("Set both username and server");
-        ui.borrow_mut().set_state(UiState::ChooseServer {
-            user_id,
-            saved_volumes,
-        });
-        return;
-    } else {
-        connect_failure_status.set_text("");
+impl LocalStorage {
+    fn load() -> Self {
+        storage_path()
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|data| serde_json::from_slice(&data).ok())
+            .unwrap_or_else(|| Self {
+                username: std::env::var(if cfg!(windows) { "USERNAME" } else { "USER" })
+                    .unwrap_or_default(),
+                server: "getcomms.app".into(),
+                user_id: Uuid::new_v4(),
+                volumes: HashMap::new(),
+            })
     }
 
-    connect_button.set_sensitive(false);
-    connect_progress.set_opacity(1f64);
-
-    let finished = Rc::new(Cell::new(false));
-    {
-        let finished = finished.clone();
-        let connect_progress = connect_progress.clone();
-        timeout_add_local(Duration::from_millis(80), move || {
-            if !finished.get() {
-                connect_progress.pulse();
-                Continue
-            } else {
-                Break
-            }
-        });
-    }
-
-    if let Some((project_dirs, storage)) =
-        ProjectDirs::from("", "Comms", "Comms").and_then(|project_dirs| {
-            let local_storage = LocalStorage {
-                username: username.clone(),
-                server: server.clone(),
-                user_id,
-                volumes: saved_volumes.clone(),
-            };
-            serde_json::to_string(&local_storage)
-                .ok()
-                .map(|storage| (project_dirs, storage))
-        })
-    {
-        let _ = async_std::fs::create_dir_all(project_dirs.data_dir()).await;
-        let _ = async_std::fs::write(project_dirs.data_dir().join("local_storage"), storage).await;
-    }
-
-    let connect_result =
-        network::future::connect(&network_handle, server, username.clone(), user_id).await;
-
-    finished.replace(true);
-    connect_progress.set_opacity(0f64);
-    connect_button.set_sensitive(true);
-
-    match connect_result {
-        Ok((client_id, existing_users, round_trip_latency)) => {
-            let glib_context = glib::MainContext::default();
-
-            glib_context.spawn_local(keep_alive(
-                network_handle.clone(),
-                network_event_sender.clone(),
-            ));
-
-            audio_handle.send(AudioCommand::ServerConnect).unwrap();
-
-            for user in existing_users.iter() {
-                audio_handle
-                    .send(AudioCommand::NewClient(user.client_id))
-                    .unwrap();
-
-                glib_context.spawn_local(attempt_p2p(
-                    network_handle.clone(),
-                    network_event_sender.clone(),
-                    client_id,
-                    P2pDestination {
-                        client_id: user.client_id,
-                        local_udp_addr: user.local_udp_addr,
-                        public_udp_addr: user.public_udp_addr,
-                    },
-                    true,
-                ));
-            }
-
-            let user_list: gtk::ListBox = {
-                let ui = ui.borrow_mut();
-                ui.builder.object("user_list").unwrap()
-            };
-
-            let (row_widget, latency_widget) =
-                UiUser::create_widgets(&username, round_trip_latency);
-            user_list.append(&row_widget);
-
-            let user = Rc::new(RefCell::new(UiUser {
-                client_id,
-                user_id,
-                volume: *saved_volumes.get(&user_id).unwrap_or(&100u16),
-                is_current_user: true,
-                network_latency: round_trip_latency,
-                is_peer_to_peer: false,
-                root_widget: row_widget,
-                latency_widget,
-                is_speaking: false,
-                speaking_duration: Duration::ZERO,
-            }));
-            UiUser::attach_signal_handlers(user.clone(), audio_handle.clone(), ui.clone());
-            let mut users = HashMap::from([(client_id, user)]);
-
-            for user in existing_users.into_iter() {
-                let one_way_latency =
-                    user.round_trip_latency.saturating_add(round_trip_latency) / 2;
-
-                let volume = if let Some(volume) = saved_volumes.get(&user.user_id) {
-                    audio_handle
-                        .send(AudioCommand::ChangeClientVolume(user.client_id, *volume))
-                        .unwrap();
-                    *volume
-                } else {
-                    100u16
-                };
-
-                let (row_widget, latency_widget) =
-                    UiUser::create_widgets(&user.name, round_trip_latency);
-                user_list.append(&row_widget);
-
-                let user_rc = Rc::new(RefCell::new(UiUser {
-                    client_id: user.client_id,
-                    user_id: user.user_id,
-                    volume,
-                    is_current_user: false,
-                    network_latency: one_way_latency,
-                    is_peer_to_peer: false,
-                    root_widget: row_widget,
-                    latency_widget,
-                    is_speaking: false,
-                    speaking_duration: Duration::ZERO,
-                }));
-                UiUser::attach_signal_handlers(user_rc.clone(), audio_handle.clone(), ui.clone());
-                users.insert(user.client_id, user_rc);
-            }
-
-            let mut ui = ui.borrow_mut();
-            ui.pane_stack
-                .set_transition_type(gtk::StackTransitionType::SlideUp);
-            ui.pane_stack.set_visible_child_name("user_list");
-            ui.disconnect_button_revealer.set_reveal_child(true);
-            ui.set_state(UiState::Main {
-                users,
-                client_id,
-                round_trip_latency,
-                user_id,
-                saved_volumes,
-                user_list,
-            });
-        }
-        Err(e) => {
-            let error_message = match e {
-                ConnectError::DestinationUnusable => {
-                    "Could not find the server provided".to_string()
-                }
-                ConnectError::NetworkError => "Could not connect to the server".to_string(),
-                // AlreadyConnected shouldn't be possible, but it's useful for end-to-end testing network futures right now.
-                ConnectError::AlreadyConnected => {
-                    "Can't connect because you're already connected to a server".to_string()
-                }
-                ConnectError::RequestError(e) => format!("Request failed: {e:?}"),
-                ConnectError::IncompatibleServerProtocolVersion(server_version) => {
-                    if server_version > packet::PROTOCOL_VERSION {
-                        format!(
-                            "App is out-of-date compared to server ({} < {}), please update Comms",
-                            packet::PROTOCOL_VERSION,
-                            server_version
-                        )
-                    } else {
-                        format!(
-                            "App is newer than out-of-date server ({} > {})",
-                            packet::PROTOCOL_VERSION,
-                            server_version
-                        )
-                    }
-                }
-            };
-            connect_failure_status.set_text(&error_message);
-            ui.borrow_mut().set_state(UiState::ChooseServer {
-                user_id,
-                saved_volumes,
-            });
-        }
+    async fn save(&self) -> Result<(), String> {
+        let path = storage_path().ok_or("Cannot find the application data directory")?;
+        async_std::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .map_err(|e| e.to_string())?;
+        let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        // Serialize all writes in the actor and replace only after a full write.
+        let temporary = path.with_extension("tmp");
+        async_std::fs::write(&temporary, bytes)
+            .await
+            .map_err(|e| e.to_string())?;
+        async_std::fs::rename(temporary, path)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
-async fn disconnect_from_server(
-    users: HashMap<ClientId, Rc<RefCell<UiUser>>>,
-    user_list: gtk::ListBox,
-    ui: Rc<RefCell<UiModel>>,
-    handle: NetworkHandle,
-    audio: AudioHandle,
-) {
-    network::future::disconnect(&handle, None).await.unwrap();
-    {
-        let pane_stack = &ui.borrow().pane_stack;
-        pane_stack.set_transition_type(gtk::StackTransitionType::SlideDown);
-        pane_stack.set_visible_child_name("connect");
-        let ui = ui.borrow();
-        let connect_button: gtk::Button = ui.builder.object("connect_button").unwrap();
-        ui.window.set_default_widget(Some(&connect_button));
-        ui.disconnect_button_revealer.set_reveal_child(false);
-    }
-    for user in users.values() {
-        // ListBox implicitly creates a "ListBoxRow" parent for each appended widget
-        user_list.remove(&user.borrow().root_widget.parent().unwrap());
-    }
-    audio.send(AudioCommand::ServerDisconnect).unwrap();
+fn storage_path() -> Option<std::path::PathBuf> {
+    ProjectDirs::from("", "Comms", "Comms").map(|dirs| dirs.data_dir().join("local_storage"))
 }
 
-struct UiUser {
-    client_id: ClientId,
-    user_id: UserId,
-    volume: u16,
-    is_current_user: bool,
-    network_latency: Duration,
-    is_peer_to_peer: bool,
-    root_widget: gtk::Box,
-    latency_widget: gtk::Label,
-    is_speaking: bool,
-    speaking_duration: Duration,
-}
-
-impl UiUser {
-    fn create_widgets(username: &str, network_latency: Duration) -> (gtk::Box, gtk::Label) {
-        let row_container = gtk::Box::new(Orientation::Horizontal, 0);
-        row_container.append(
-            &gtk::Label::builder()
-                .label(username)
-                .xalign(0.0)
-                .hexpand(true)
-                .ellipsize(EllipsizeMode::End)
-                .build(),
-        );
-        let latency_label = gtk::Label::builder()
-            .label(Self::format_latency_text(network_latency, false))
-            .xalign(1.0)
-            .build();
-        row_container.append(&latency_label);
-        (row_container, latency_label)
-    }
-
-    fn format_latency_text(network_latency: Duration, show_link_emoji: bool) -> String {
-        format!(
-            "{:.1}ms {}",
-            (network_latency.as_micros() as f64) / 1000.0 / 2.0,
-            if show_link_emoji { "🔗" } else { "" }
-        )
-    }
-
-    fn update_latency_text(&self) {
-        self.latency_widget.set_text(&Self::format_latency_text(
-            self.network_latency,
-            self.is_peer_to_peer,
-        ));
-    }
-
-    fn attach_signal_handlers(
-        this: Rc<RefCell<Self>>,
-        audio: AudioHandle,
-        ui: Rc<RefCell<UiModel>>,
-    ) {
-        let user = this.borrow();
-        let click_gesture = gtk::GestureClick::new();
-        click_gesture.set_button(3);
-        user.root_widget.add_controller(click_gesture.clone());
-        {
-            let this = this.clone();
-            click_gesture.connect_pressed(move |_, _, x, y| {
-                let x = x.round() as i32;
-                let y = y.round() as i32;
-
-                let user = this.borrow_mut();
-                let popover = gtk::Popover::new();
-                let popover_box = gtk::Box::new(Orientation::Vertical, 0);
-
-                let label_text = match user.is_current_user {
-                    true => "Headphone Volume",
-                    false => "Volume",
-                };
-
-                let adjustment =
-                    gtk::Adjustment::new(user.volume as f64, 0.0, 400.0, 2.0, 10.0, 0.0);
-                let scale = gtk::Scale::builder()
-                    .adjustment(&adjustment)
-                    .value_pos(PositionType::Left)
-                    .orientation(Orientation::Horizontal)
-                    .digits(0)
-                    .draw_value(true)
-                    .build();
-
-                scale.add_mark(100.0, gtk::PositionType::Bottom, None);
-                scale.add_mark(200.0, gtk::PositionType::Bottom, None);
-                scale.add_mark(300.0, gtk::PositionType::Bottom, None);
-                scale.set_width_request(200);
-
-                popover_box.insert_child_after(&scale, None::<&gtk::Widget>);
-                popover_box.insert_child_after(
-                    &gtk::Label::builder().label(label_text).build(),
-                    None::<&gtk::Widget>,
-                );
-
-                let this = this.clone();
-                let audio = audio.clone();
-                let ui = ui.clone();
-                scale.connect_value_changed(move |scale| {
-                    let mut ui = ui.borrow_mut();
-                    let saved_volumes = if let UiState::Main { saved_volumes, .. } = ui.state_mut()
-                    {
-                        saved_volumes
-                    } else {
-                        return;
-                    };
-
-                    let mut user = this.borrow_mut();
-                    user.volume = scale.adjustment().value() as u16;
-                    audio
-                        .send(if user.is_current_user {
-                            AudioCommand::ChangeMainVolume(user.volume)
-                        } else {
-                            AudioCommand::ChangeClientVolume(user.client_id, user.volume)
-                        })
-                        .unwrap();
-
-                    saved_volumes.insert(user.user_id, user.volume);
-                    let glib_context = glib::MainContext::default();
-                    glib_context.spawn_local(update_saved_volumes(saved_volumes.clone()));
-                });
-
-                let rectangle = gdk::Rectangle::new(x, y, 0, 0);
-                popover.set_pointing_to(Some(&rectangle));
-                user.root_widget.prepend(&popover);
-                popover.set_child(Some(&popover_box));
-                popover.popup();
-
-                popover.connect_closed(|popover| {
-                    popover.unparent();
-                });
-            });
-        }
-
-        user.latency_widget.set_property("has-tooltip", true);
-        {
-            let this = this.clone();
-            user.latency_widget
-                .connect_query_tooltip(move |_, _, _, _, tooltip| {
-                    let user = this.borrow();
-                    let latency_text = Self::format_latency_text(user.network_latency, false);
-                    let text = match (user.is_peer_to_peer, user.is_current_user) {
-                        (_, true) => {
-                            format!("Latency to server is {}", &latency_text)
-                        }
-                        (true, _) => {
-                            format!("Latency to other client (direct) is {}", &latency_text)
-                        }
-                        (false, _) => {
-                            format!("Latency to other client (via server) is {}", &latency_text)
-                        }
-                    };
-                    tooltip.set_text(Some(&text));
-                    true
-                });
-        }
-    }
-}
-
-enum UiState {
-    ChooseServer {
-        user_id: UserId,
-        saved_volumes: HashMap<UserId, u16>,
-    },
-    Main {
-        users: HashMap<ClientId, Rc<RefCell<UiUser>>>,
-        user_id: UserId,
-        saved_volumes: HashMap<UserId, u16>,
-        user_list: gtk::ListBox,
-        client_id: ClientId,
-        round_trip_latency: Duration,
-    },
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ConnectionStatus {
+    Disconnected,
     Connecting,
+    Connected,
     Disconnecting,
 }
 
-struct UiModel {
-    state: Option<UiState>,
-    pane_stack: gtk::Stack,
-    builder: gtk::Builder,
-    app: adw::Application,
-    window: gtk::ApplicationWindow,
-    disconnect_button_revealer: gtk::Revealer,
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct User {
+    client_id: ClientId,
+    #[serde(skip)]
+    user_id: UserId,
+    name: String,
+    volume: u16,
+    is_current_user: bool,
+    latency_ms: f64,
+    is_peer_to_peer: bool,
+    is_speaking: bool,
+    #[serde(skip)]
+    speaking_until: Option<Instant>,
 }
 
-impl UiModel {
-    fn state(&self) -> &UiState {
-        self.state.as_ref().unwrap()
+impl User {
+    fn speak_for(&mut self, duration: Duration) -> bool {
+        let changed = !self.is_speaking;
+        self.is_speaking = true;
+        let until = Instant::now() + duration;
+        self.speaking_until = Some(self.speaking_until.map_or(until, |old| old.max(until)));
+        changed
     }
 
-    fn state_mut(&mut self) -> &mut UiState {
-        self.state.as_mut().unwrap()
-    }
-
-    fn set_state(&mut self, state: UiState) {
-        self.state = Some(state);
-    }
-
-    fn use_state<T>(&mut self, f: impl FnOnce(UiState) -> (UiState, T)) -> T {
-        let old = self.state.take().unwrap();
-        let (new, return_value) = f(old);
-        self.state = Some(new);
-        return_value
+    fn expire_speaking(&mut self, now: Instant) -> bool {
+        if self.speaking_until.is_some_and(|until| until <= now) {
+            self.speaking_until = None;
+            self.is_speaking = false;
+            return true;
+        }
+        false
     }
 }
 
-async fn handle_network_events(
-    mut receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
-    network_event_sender: Sender<NetworkEvent>,
-    audio: AudioHandle,
-    network: NetworkHandle,
-    ui: Rc<RefCell<UiModel>>,
-) {
-    while let Some(event) = receiver.next().await {
-        match event {
-            NetworkEvent::SocketClosed => {
-                let (users, user_list, user_id, saved_volumes) =
-                    match ui.borrow_mut().use_state(|state| {
-                        if let UiState::Main {
-                            users,
-                            user_list,
-                            user_id,
-                            saved_volumes,
-                            ..
-                        } = state
-                        {
-                            (
-                                UiState::Disconnecting,
-                                Some((users, user_list, user_id, saved_volumes)),
-                            )
-                        } else {
-                            (state, None)
-                        }
-                    }) {
-                        Some(m) => m,
-                        None => continue,
-                    };
+#[derive(Clone, Serialize)]
+struct Device {
+    id: String,
+    label: String,
+}
 
-                disconnect_from_server(
-                    users,
-                    user_list,
-                    ui.clone(),
-                    network.clone(),
-                    audio.clone(),
-                )
-                .await;
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Snapshot {
+    revision: u64,
+    version: String,
+    username: String,
+    server: String,
+    status: ConnectionStatus,
+    audio_ready: bool,
+    audio_error: Option<String>,
+    error: Option<String>,
+    users: Vec<User>,
+    input_devices: Vec<Device>,
+    output_devices: Vec<Device>,
+}
 
-                ui.borrow_mut().set_state(UiState::ChooseServer {
-                    user_id,
-                    saved_volumes,
-                });
+enum Command {
+    Snapshot,
+    OpenLink(String),
+    Connect { username: String, server: String },
+    Disconnect,
+    Volume { client_id: ClientId, volume: u16 },
+    ListDevices,
+}
 
-                let builder = &ui.borrow().builder;
-                let connect_failure_status: gtk::Label =
-                    builder.object("connect_failure_status").unwrap();
-                connect_failure_status
-                    .set_text("Disconnecting from the server because the socket closed");
-            }
-            NetworkEvent::TimedOut => {
-                let (users, user_list, user_id, saved_volumes) =
-                    match ui.borrow_mut().use_state(|state| {
-                        if let UiState::Main {
-                            users,
-                            user_list,
-                            user_id,
-                            saved_volumes,
-                            ..
-                        } = state
-                        {
-                            (
-                                UiState::Disconnecting,
-                                Some((users, user_list, user_id, saved_volumes)),
-                            )
-                        } else {
-                            (state, None)
-                        }
-                    }) {
-                        Some(m) => m,
-                        None => continue,
-                    };
+type Response = Result<Snapshot, String>;
+struct Request {
+    command: Command,
+    response: oneshot::Sender<Response>,
+}
+struct Bridge(async_channel::Sender<Request>);
 
-                disconnect_from_server(
-                    users,
-                    user_list,
-                    ui.clone(),
-                    network.clone(),
-                    audio.clone(),
-                )
-                .await;
+impl Bridge {
+    async fn request(&self, command: Command) -> Response {
+        let (response, receiver) = oneshot::channel();
+        self.0
+            .send(Request { command, response })
+            .await
+            .map_err(|_| "Client worker stopped")?;
+        receiver
+            .await
+            .map_err(|_| "Client worker stopped".to_string())?
+    }
+}
 
-                ui.borrow_mut().set_state(UiState::ChooseServer {
-                    user_id,
-                    saved_volumes,
-                });
+#[tauri::command]
+async fn get_state(bridge: State<'_, Bridge>) -> Response {
+    bridge.request(Command::Snapshot).await
+}
+#[tauri::command]
+async fn connect(bridge: State<'_, Bridge>, username: String, server: String) -> Response {
+    bridge.request(Command::Connect { username, server }).await
+}
+#[tauri::command]
+async fn disconnect(bridge: State<'_, Bridge>) -> Response {
+    bridge.request(Command::Disconnect).await
+}
+#[tauri::command]
+async fn set_volume(bridge: State<'_, Bridge>, client_id: ClientId, volume: u16) -> Response {
+    bridge.request(Command::Volume { client_id, volume }).await
+}
+#[tauri::command]
+async fn list_devices(bridge: State<'_, Bridge>) -> Response {
+    bridge.request(Command::ListDevices).await
+}
 
-                let builder = &ui.borrow().builder;
-                let connect_failure_status: gtk::Label =
-                    builder.object("connect_failure_status").unwrap();
-                connect_failure_status
-                    .set_text("Disconnecting from the server because connection timed out");
-            }
-            NetworkEvent::NetworkError => {
-                let (users, user_list, user_id, saved_volumes) =
-                    match ui.borrow_mut().use_state(|state| {
-                        if let UiState::Main {
-                            users,
-                            user_list,
-                            user_id,
-                            saved_volumes,
-                            ..
-                        } = state
-                        {
-                            (
-                                UiState::Disconnecting,
-                                Some((users, user_list, user_id, saved_volumes)),
-                            )
-                        } else {
-                            (state, None)
-                        }
-                    }) {
-                        Some(m) => m,
-                        None => continue,
-                    };
+// Keep only one discovery task per live peer and one keepalive per session.
+// Dropping or clearing the group makes pending tasks unable to affect a later
+// connection, even if a client ID is reused.
+#[derive(Default)]
+struct SessionTasks(HashMap<Option<ClientId>, AbortHandle>);
 
-                disconnect_from_server(
-                    users,
-                    user_list,
-                    ui.clone(),
-                    network.clone(),
-                    audio.clone(),
-                )
-                .await;
+impl SessionTasks {
+    fn spawn(
+        &mut self,
+        peer: Option<ClientId>,
+        task: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let (handle, registration) = AbortHandle::new_pair();
+        if let Some(old) = self.0.insert(peer, handle) {
+            old.abort();
+        }
+        async_std::task::spawn(async move {
+            let _ = Abortable::new(task, registration).await;
+        });
+    }
 
-                ui.borrow_mut().set_state(UiState::ChooseServer {
-                    user_id,
-                    saved_volumes,
-                });
+    fn remove(&mut self, peer: Option<ClientId>) {
+        if let Some(task) = self.0.remove(&peer) {
+            task.abort();
+        }
+    }
 
-                let builder = &ui.borrow().builder;
-                let connect_failure_status: gtk::Label =
-                    builder.object("connect_failure_status").unwrap();
-                connect_failure_status
-                    .set_text("Disconnecting from the server because of a network issue");
-            }
-            NetworkEvent::P2pEstablished {
-                round_trip_latency,
-                client_id,
-                is_from_lead_client,
-            } => {
-                if let UiState::Main { users, .. } = ui.borrow_mut().state_mut() {
-                    if let Some(user) = users.get_mut(&client_id) {
-                        let mut user = user.borrow_mut();
-                        if !user.is_peer_to_peer || is_from_lead_client {
-                            user.is_peer_to_peer = true;
-                            user.network_latency = round_trip_latency;
-                            user.update_latency_text();
-                        }
-                    }
-                }
-            }
-            NetworkEvent::Packet(packet) => {
-                let result = async {
-                    match packet.kind() {
-                        UserJoined::KIND_ID => {
-                            let mut ui_ref = ui.borrow_mut();
-                            let UiState::Main {
-                                users,
-                                user_list,
-                                client_id,
-                                round_trip_latency,
-                                saved_volumes,
-                                ..
-                            } = ui_ref.state_mut()
-                            else {
-                                return Ok(());
-                            };
-                            let packet: Packet<UserJoined> = packet.finish_parse()?;
-                            audio
-                                .send(AudioCommand::NewClient(packet.body.user.client_id))
-                                .unwrap();
-                            let glib_context = glib::MainContext::default();
-                            glib_context.spawn_local(attempt_p2p(
-                                network.clone(),
-                                network_event_sender.clone(),
-                                *client_id,
-                                P2pDestination {
-                                    client_id: packet.body.user.client_id,
-                                    local_udp_addr: packet.body.user.local_udp_addr,
-                                    public_udp_addr: packet.body.user.public_udp_addr,
-                                },
-                                false,
-                            ));
-
-                            let one_way_latency = packet
-                                .body
-                                .user
-                                .round_trip_latency
-                                .saturating_add(*round_trip_latency)
-                                / 2;
-
-                            let volume = if let Some(volume) =
-                                saved_volumes.get(&packet.body.user.user_id)
-                            {
-                                audio
-                                    .send({
-                                        AudioCommand::ChangeClientVolume(
-                                            packet.body.user.client_id,
-                                            *volume,
-                                        )
-                                    })
-                                    .unwrap();
-                                *volume
-                            } else {
-                                100u16
-                            };
-
-                            let (row_widget, latency_widget) =
-                                UiUser::create_widgets(&packet.body.user.name, *round_trip_latency);
-                            let user = UiUser {
-                                client_id: packet.body.user.client_id,
-                                user_id: packet.body.user.user_id,
-                                volume,
-                                is_current_user: false,
-                                network_latency: one_way_latency,
-                                is_peer_to_peer: false,
-                                root_widget: row_widget,
-                                latency_widget,
-                                is_speaking: false,
-                                speaking_duration: Duration::ZERO,
-                            };
-                            user_list.append(&user.root_widget);
-                            let user = Rc::new(RefCell::new(user));
-                            UiUser::attach_signal_handlers(user.clone(), audio.clone(), ui.clone());
-                            users.insert(packet.body.user.client_id, user);
-                            audio.send(AudioCommand::UserJoined).unwrap();
-                        }
-                        UserLeft::KIND_ID => {
-                            let mut ui_ref = ui.borrow_mut();
-                            let UiState::Main {
-                                users, user_list, ..
-                            } = ui_ref.state_mut()
-                            else {
-                                return Ok(());
-                            };
-                            let packet: Packet<UserLeft> = packet.finish_parse()?;
-                            audio
-                                .send(AudioCommand::DropClient(packet.body.client_id))
-                                .unwrap();
-
-                            network.command(NetworkCommand::RemoveP2pClient {
-                                client_id: packet.body.client_id,
-                            });
-
-                            let user = users.remove(&packet.body.client_id).unwrap();
-                            user_list.remove(&user.borrow().root_widget.parent().unwrap());
-                            audio.send(AudioCommand::UserLeft).unwrap();
-                        }
-                        ErrorResponse::KIND_ID => {
-                            let packet: Packet<ErrorResponse> = packet.finish_parse()?;
-                            let Some((users, user_list, user_id, saved_volumes)) =
-                                ui.borrow_mut().use_state(|state| {
-                                    if let UiState::Main {
-                                        users,
-                                        user_list,
-                                        user_id,
-                                        saved_volumes,
-                                        ..
-                                    } = state
-                                    {
-                                        (
-                                            UiState::Disconnecting,
-                                            Some((users, user_list, user_id, saved_volumes)),
-                                        )
-                                    } else {
-                                        (state, None)
-                                    }
-                                })
-                            else {
-                                return Ok(());
-                            };
-
-                            disconnect_from_server(
-                                users,
-                                user_list,
-                                ui.clone(),
-                                network.clone(),
-                                audio.clone(),
-                            )
-                            .await;
-
-                            ui.borrow_mut().set_state(UiState::ChooseServer {
-                                user_id,
-                                saved_volumes,
-                            });
-
-                            let builder = &ui.borrow().builder;
-                            let connect_failure_status: gtk::Label =
-                                builder.object("connect_failure_status").unwrap();
-                            connect_failure_status.set_text(&format!(
-                                "Disconnecting from the server because an error occurred: {:?}",
-                                packet.body
-                            ));
-                        }
-                        _ => (),
-                    }
-
-                    Ok::<(), CommsNetworkError>(())
-                }
-                .await;
-                if result.is_err() {
-                    let builder = &ui.borrow().builder;
-                    let connect_failure_status: gtk::Label =
-                        builder.object("connect_failure_status").unwrap();
-                    connect_failure_status
-                        .set_text("Disconnecting from the server because of a network issue");
-                }
-            }
+    fn clear(&mut self) {
+        for (_, task) in self.0.drain() {
+            task.abort();
         }
     }
 }
 
-async fn handle_ui_commands(
-    mut receiver: async_channel::Receiver<UICommand>,
-    ui: Rc<RefCell<UiModel>>,
-) {
-    while let Some(event) = receiver.next().await {
+impl Drop for SessionTasks {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+struct Session {
+    storage: LocalStorage,
+    snapshot: Snapshot,
+    client_id: Option<ClientId>,
+    round_trip_latency: Duration,
+    tasks: SessionTasks,
+    audio: AudioHandle,
+    network: NetworkHandle,
+    events: mpsc::Sender<NetworkEvent>,
+    app: tauri::AppHandle,
+}
+
+impl Session {
+    fn publish(&mut self) {
+        self.snapshot.revision += 1;
+        if let Err(error) = self.app.emit("comms-state", &self.snapshot) {
+            eprintln!("Cannot publish client state: {error}");
+        }
+    }
+
+    fn send_audio(&self, command: AudioCommand) -> Result<(), String> {
+        self.audio
+            .send(command)
+            .map_err(|_| "Audio worker stopped; restart Comms".into())
+    }
+
+    fn add_peer(&mut self, user: NetworkUser, lead: bool) -> Result<(), String> {
+        let volume = self
+            .storage
+            .volumes
+            .get(&user.user_id)
+            .copied()
+            .unwrap_or(100)
+            .min(400);
+        self.send_audio(AudioCommand::NewClient(user.client_id))?;
+        self.send_audio(AudioCommand::ChangeClientVolume(user.client_id, volume))?;
+        self.tasks.spawn(
+            Some(user.client_id),
+            attempt_p2p(
+                self.network.clone(),
+                self.events.clone(),
+                self.client_id.unwrap(),
+                P2pDestination {
+                    client_id: user.client_id,
+                    local_udp_addr: user.local_udp_addr,
+                    public_udp_addr: user.public_udp_addr,
+                },
+                lead,
+            ),
+        );
+        self.snapshot.users.push(User {
+            client_id: user.client_id,
+            user_id: user.user_id,
+            name: user.name,
+            volume,
+            is_current_user: false,
+            latency_ms: (user.round_trip_latency + self.round_trip_latency).as_secs_f64() * 500.0,
+            is_peer_to_peer: false,
+            is_speaking: false,
+            speaking_until: None,
+        });
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, error: Option<String>) -> Result<(), String> {
+        self.tasks.clear();
+        self.snapshot.status = ConnectionStatus::Disconnecting;
+        self.publish();
+        let result = network::future::disconnect(&self.network, None)
+            .await
+            .map_err(|e| format!("{e:?}"));
+        let audio_result = self.send_audio(AudioCommand::ServerDisconnect);
+        self.client_id = None;
+        self.snapshot.users.clear();
+        self.snapshot.status = ConnectionStatus::Disconnected;
+        self.snapshot.error = error;
+        result.and(audio_result)
+    }
+
+    async fn command(&mut self, command: Command) -> Result<(), String> {
+        match command {
+            Command::Snapshot => (),
+            Command::OpenLink(link) => {
+                let server = server_from_link(&link)?;
+                if self.snapshot.status != ConnectionStatus::Disconnected {
+                    return Err("Disconnect before opening another server link".into());
+                }
+                self.snapshot.server = server;
+                self.snapshot.error = None;
+            }
+            Command::Connect { username, server } => {
+                let (username, server) = validate_connection(&username, &server)?;
+                if self.snapshot.status != ConnectionStatus::Disconnected {
+                    return Err("A session is already active".into());
+                }
+                if !self.snapshot.audio_ready {
+                    return Err(
+                        "Audio is unavailable; check your microphone and output device".into(),
+                    );
+                }
+                self.storage.username = username.clone();
+                self.storage.server = server.clone();
+                self.snapshot.username = username.clone();
+                self.snapshot.server = server.clone();
+                self.snapshot.error = None;
+                self.snapshot.status = ConnectionStatus::Connecting;
+                self.publish();
+                if let Err(error) = self.storage.save().await {
+                    self.snapshot.error = Some(format!("Could not save preferences: {error}"));
+                }
+                match network::future::connect(
+                    &self.network,
+                    server,
+                    username.clone(),
+                    self.storage.user_id,
+                )
+                .await
+                {
+                    Ok((client_id, users, latency)) => {
+                        self.client_id = Some(client_id);
+                        self.round_trip_latency = latency;
+                        self.snapshot.status = ConnectionStatus::Connected;
+                        self.send_audio(AudioCommand::ServerConnect)?;
+                        let volume = self
+                            .storage
+                            .volumes
+                            .get(&self.storage.user_id)
+                            .copied()
+                            .unwrap_or(100)
+                            .min(400);
+                        self.send_audio(AudioCommand::ChangeMainVolume(volume))?;
+                        self.snapshot.users.push(User {
+                            client_id,
+                            user_id: self.storage.user_id,
+                            name: username,
+                            volume,
+                            is_current_user: true,
+                            latency_ms: latency.as_secs_f64() * 500.0,
+                            is_peer_to_peer: false,
+                            is_speaking: false,
+                            speaking_until: None,
+                        });
+                        self.tasks
+                            .spawn(None, keep_alive(self.network.clone(), self.events.clone()));
+                        for user in users {
+                            self.add_peer(user, true)?;
+                        }
+                    }
+                    Err(error) => {
+                        self.snapshot.status = ConnectionStatus::Disconnected;
+                        return Err(connect_error(error));
+                    }
+                }
+            }
+            Command::Disconnect => {
+                if self.snapshot.status == ConnectionStatus::Connected {
+                    self.disconnect(None).await?;
+                }
+            }
+            Command::Volume { client_id, volume } => {
+                if volume > 400 {
+                    return Err("Volume must be between 0 and 400".into());
+                }
+                let user = self
+                    .snapshot
+                    .users
+                    .iter()
+                    .find(|u| u.client_id == client_id)
+                    .ok_or("User is no longer connected")?;
+                self.send_audio(if user.is_current_user {
+                    AudioCommand::ChangeMainVolume(volume)
+                } else {
+                    AudioCommand::ChangeClientVolume(client_id, volume)
+                })?;
+                let user = self
+                    .snapshot
+                    .users
+                    .iter_mut()
+                    .find(|u| u.client_id == client_id)
+                    .unwrap();
+                user.volume = volume;
+                self.storage.volumes.insert(user.user_id, volume);
+                self.storage
+                    .save()
+                    .await
+                    .map_err(|e| format!("Could not save volume: {e}"))?;
+            }
+            Command::ListDevices => {
+                self.send_audio(AudioCommand::ListDevices)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn network_event(&mut self, event: NetworkEvent) -> Result<(), String> {
+        if self.snapshot.status != ConnectionStatus::Connected {
+            return Ok(());
+        }
         match event {
+            NetworkEvent::SocketClosed => {
+                self.disconnect(Some("The server closed the connection".into()))
+                    .await?
+            }
+            NetworkEvent::TimedOut => {
+                self.disconnect(Some("The connection timed out".into()))
+                    .await?
+            }
+            NetworkEvent::NetworkError => {
+                self.disconnect(Some("The connection failed".into()))
+                    .await?
+            }
+            NetworkEvent::P2pEstablished {
+                client_id,
+                round_trip_latency,
+                is_from_lead_client,
+            } => {
+                if let Some(user) = self
+                    .snapshot
+                    .users
+                    .iter_mut()
+                    .find(|u| u.client_id == client_id)
+                {
+                    if !user.is_peer_to_peer || is_from_lead_client {
+                        user.is_peer_to_peer = true;
+                        user.latency_ms = round_trip_latency.as_secs_f64() * 500.0;
+                    }
+                }
+            }
+            NetworkEvent::Packet(packet) => match packet.kind() {
+                UserJoined::KIND_ID => {
+                    let packet: Packet<UserJoined> = packet
+                        .finish_parse()
+                        .map_err(|e| format!("Invalid join packet: {e:?}"))?;
+                    if !self
+                        .snapshot
+                        .users
+                        .iter()
+                        .any(|u| u.client_id == packet.body.user.client_id)
+                    {
+                        self.add_peer(packet.body.user, false)?;
+                        self.send_audio(AudioCommand::UserJoined)?;
+                    }
+                }
+                UserLeft::KIND_ID => {
+                    let packet: Packet<UserLeft> = packet
+                        .finish_parse()
+                        .map_err(|e| format!("Invalid leave packet: {e:?}"))?;
+                    let id = packet.body.client_id;
+                    self.tasks.remove(Some(id));
+                    self.send_audio(AudioCommand::DropClient(id))?;
+                    self.network
+                        .command(NetworkCommand::RemoveP2pClient { client_id: id });
+                    self.snapshot.users.retain(|u| u.client_id != id);
+                    self.send_audio(AudioCommand::UserLeft)?;
+                }
+                ErrorResponse::KIND_ID => {
+                    let packet: Packet<ErrorResponse> = packet
+                        .finish_parse()
+                        .map_err(|e| format!("Invalid error packet: {e:?}"))?;
+                    self.disconnect(Some(format!("Server error: {:?}", packet.body)))
+                        .await?;
+                }
+                _ => (),
+            },
+        }
+        Ok(())
+    }
+
+    fn audio_event(&mut self, event: UICommand) -> bool {
+        match event {
+            UICommand::AudioIPCInitStatus(status) => {
+                match status {
+                    AudioIPCInitStatus::Ready => self.snapshot.audio_ready = true,
+                    AudioIPCInitStatus::Error(error) => {
+                        self.snapshot.audio_ready = false;
+                        let message = match error {
+                            EventLoopCreationError::InputDeviceError(message) => {
+                                format!("Could not initialize microphone: {message}")
+                            }
+                            EventLoopCreationError::OutputDeviceError(message) => {
+                                format!("Could not initialize output: {message}")
+                            }
+                        };
+                        self.snapshot.audio_error = Some(format!("{message}. Check devices and microphone permission, then restart Comms."));
+                    }
+                }
+            }
+            UICommand::DevicesFound {
+                input_devices,
+                output_devices,
+            } => {
+                let convert = |d: audio_device::audio_connection::DeviceInfo| Device {
+                    id: d.id,
+                    label: d.label,
+                };
+                self.snapshot.input_devices = input_devices.into_iter().map(convert).collect();
+                self.snapshot.output_devices = output_devices.into_iter().map(convert).collect();
+            }
             UICommand::UserIsSpeaking {
                 client_id,
                 duration,
             } => {
-                if let UiState::Main { users, .. } = ui.borrow().state() {
-                    if let Some(user_rc) = users.get(&client_id) {
-                        let mut user = user_rc.borrow_mut();
-                        if !user.is_speaking {
-                            user.is_speaking = true;
-                            user.speaking_duration = duration;
-                            if let Some(p) = user.root_widget.parent() {
-                                p.add_css_class("active")
-                            }
-                            let glib_context = glib::MainContext::default();
-                            let user_rc = user_rc.clone();
-                            glib_context.spawn_local(async move {
-                                loop {
-                                    let timeout = {
-                                        let mut user = user_rc.borrow_mut();
-                                        let timeout = user.speaking_duration;
-                                        user.speaking_duration = Duration::ZERO;
-                                        timeout
-                                    };
-                                    Delay::new(timeout).await;
-
-                                    if timeout == Duration::ZERO {
-                                        let mut user = user_rc.borrow_mut();
-                                        user.is_speaking = false;
-                                        if let Some(p) = user.root_widget.parent() {
-                                            p.remove_css_class("active")
-                                        }
-                                        break;
-                                    }
-                                }
-                            });
-                        } else {
-                            user.speaking_duration += duration;
-                        }
-                    }
-                }
+                return self
+                    .snapshot
+                    .users
+                    .iter_mut()
+                    .find(|u| u.client_id == client_id)
+                    .is_some_and(|user| user.speak_for(duration));
             }
-            UICommand::CurrentUserStartedSpeaking => {
-                if let UiState::Main {
-                    client_id, users, ..
-                } = ui.borrow().state()
-                {
-                    if let Some(user_rc) = users.get(client_id) {
-                        let mut user = user_rc.borrow_mut();
-                        user.is_speaking = true;
-                        if let Some(p) = user.root_widget.parent() {
-                            p.add_css_class("active")
-                        }
-                    }
+            UICommand::CurrentUserStartedSpeaking | UICommand::CurrentUserStoppedSpeaking => {
+                let speaking = matches!(event, UICommand::CurrentUserStartedSpeaking);
+                if let Some(user) = self.snapshot.users.iter_mut().find(|u| u.is_current_user) {
+                    let changed = user.is_speaking != speaking;
+                    user.is_speaking = speaking;
+                    return changed;
                 }
+                return false;
             }
-            UICommand::CurrentUserStoppedSpeaking => {
-                if let UiState::Main {
-                    client_id, users, ..
-                } = ui.borrow().state()
-                {
-                    if let Some(user_rc) = users.get(client_id) {
-                        let mut user = user_rc.borrow_mut();
-                        user.is_speaking = false;
-                        if let Some(p) = user.root_widget.parent() {
-                            p.remove_css_class("active")
-                        }
-                    }
-                }
-            }
-            UICommand::AudioIPCInitStatus(audio_status) => {
-                if let AudioIPCInitStatus::Error(e) = audio_status {
-                    let error_message = match e {
-                        EventLoopCreationError::InputDeviceError(m) => {
-                            format!("Failed to set up microphone: {m}")
-                        }
-                        EventLoopCreationError::OutputDeviceError(m) => {
-                            format!("Failed to set up headphones/speakers: {m}")
-                        }
-                    };
-
-                    let app = ui.borrow().app.clone();
-                    let window = ui.borrow().window.clone();
-                    let dialog = gtk::Dialog::with_buttons(
-                        Some(&error_message),
-                        Some(&window),
-                        DialogFlags::USE_HEADER_BAR.union(DialogFlags::DESTROY_WITH_PARENT),
-                        &[("_Close", ResponseType::Close)],
-                    );
-                    dialog.connect_response(move |_, _| {
-                        app.quit();
-                    });
-                    dialog.show();
-                    return;
-                }
-            }
-            UICommand::DevicesFound { .. } => (),
         }
+        true
     }
 }
 
-fn gtk_start(f: impl FnOnce(&adw::Application) + 'static) {
-    let application =
-        adw::Application::new(Some("ca.mitchhentges.comms"), ApplicationFlags::NON_UNIQUE);
+fn server_from_link(link: &str) -> Result<String, String> {
+    let url = tauri::Url::parse(link).map_err(|_| "Invalid Comms server link")?;
+    if url.scheme() != "comms"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("Expected a comms://hostname link without a custom port".into());
+    }
+    url.host_str()
+        .filter(|host| !host.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "The server link needs a hostname".into())
+}
 
-    let o = RefCell::new(Some(f));
-    application.connect_startup(move |a| {
-        let mut o = o.borrow_mut();
-        if let Some(f) = o.take() {
-            f(a);
-        }
-    });
-    application.connect_activate(|_| {});
-    application.run();
+fn validate_connection(username: &str, server: &str) -> Result<(String, String), String> {
+    let username = username.trim();
+    let server = server.trim().trim_start_matches("comms:").trim_matches('/');
+    if username.is_empty() || server.is_empty() {
+        return Err("Set both username and server".into());
+    }
+    Ok((username.into(), server.into()))
+}
+
+fn connect_error(error: ConnectError) -> String {
+    match error {
+        ConnectError::DestinationUnusable => "Could not find the server provided".into(),
+        ConnectError::NetworkError => "Could not connect to the server".into(),
+        ConnectError::AlreadyConnected => "Already connected to a server".into(),
+        ConnectError::RequestError(e) => format!("Connection request failed: {e:?}"),
+        ConnectError::IncompatibleServerProtocolVersion(version) => format!(
+            "Incompatible server protocol ({version}); this client uses {}. Update the older client or server.",
+            comms_lib::packet::PROTOCOL_VERSION),
+    }
 }
 
 pub fn run(
     network: NetworkHandle,
-    network_event_receiver: futures::channel::mpsc::Receiver<NetworkEvent>,
-    network_event_sender: Sender<NetworkEvent>,
-    ui_receiver: async_channel::Receiver<UICommand>,
+    mut network_events: mpsc::Receiver<NetworkEvent>,
+    events: mpsc::Sender<NetworkEvent>,
+    ui_events: async_channel::Receiver<UICommand>,
     audio: AudioHandle,
 ) {
-    let project_dirs = ProjectDirs::from("", "Comms", "Comms").unwrap();
-    let initial_local_storage: Option<LocalStorage> =
-        std::fs::read_to_string(project_dirs.data_dir().join("local_storage"))
-            .ok()
-            .and_then(|storage_string| serde_json::from_str(&storage_string).ok());
-
-    let initial_local_storage = initial_local_storage.unwrap_or(LocalStorage {
-        username: std::env::var_os(if cfg!(windows) { "USERNAME" } else { "USER" })
-            .map(|v| v.to_string_lossy().to_string())
-            .unwrap_or_default(),
-        server: "getcomms.app".to_string(),
-        user_id: Uuid::new_v4(),
-        volumes: HashMap::new(),
-    });
-
-    let server_parameter = std::env::args()
+    let storage = LocalStorage::load();
+    let server = std::env::args()
         .nth(1)
-        .map(|p| p.replace("comms:", "").replace('/', ""));
-
-    if let Some(initial_main_volume) = initial_local_storage
-        .volumes
-        .get(&initial_local_storage.user_id)
-    {
-        audio
-            .send(AudioCommand::ChangeMainVolume(*initial_main_volume))
-            .unwrap();
-    }
-
-    gtk_start(move |app| {
-        let css_provider = gtk::CssProvider::new();
-        css_provider.load_from_data(
-            RESOURCES_DIR
-                .get_file("theme.css")
-                .unwrap()
-                .contents_utf8()
-                .unwrap(),
-        );
-
-        gtk::style_context_add_provider_for_display(
-            &Display::default().unwrap(),
-            &css_provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-
-        let window = gtk::ApplicationWindow::new(app);
-        let disconnect_button = gtk::Button::builder().label("Disconnect").build();
-
-        let disconnect_button_revealer = gtk::Revealer::builder()
-            .transition_type(RevealerTransitionType::Crossfade)
-            .transition_duration(100)
-            .child(&disconnect_button)
-            .reveal_child(false)
-            .build();
-
-        let update_button_progress_box = gtk::Box::builder()
-            .orientation(Orientation::Horizontal)
-            .spacing(0)
-            .build();
-        let update_button_label = gtk::Label::new(Some("🎉"));
-        update_button_progress_box.append(&update_button_label);
-
-        let update_progress_css_provider = gtk::CssProvider::new();
-        StyleContext::add_provider(
-            &update_button_progress_box.style_context(),
-            &update_progress_css_provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-
-        let header_bar = adw::HeaderBar::new();
-        header_bar.pack_start(&disconnect_button_revealer);
-        window.set_titlebar(Some(&header_bar));
-
-        // Audio thread is expecting this to be provided.
-        audio.send(AudioCommand::ListDevices).unwrap();
-
-        let stack = gtk::Stack::new();
-        stack.set_visible(true);
-        let raw_app_ui = RESOURCES_DIR
-            .get_file("app.ui")
-            .unwrap()
-            .contents_utf8()
-            .unwrap();
-        let builder = gtk::Builder::from_string(raw_app_ui);
-        let ui = Rc::new(RefCell::new(UiModel {
-            state: Some(UiState::ChooseServer {
-                user_id: initial_local_storage.user_id,
-                saved_volumes: initial_local_storage.volumes,
-            }),
-            pane_stack: stack.clone(),
-            disconnect_button_revealer,
-            app: app.clone(),
-            window: window.clone(),
-            builder: builder.clone(),
-        }));
-
-        let glib_context = glib::MainContext::default();
-        glib_context.spawn_local(handle_network_events(
-            network_event_receiver,
-            network_event_sender.clone(),
-            audio.clone(),
-            network.clone(),
-            ui.clone(),
-        ));
-        glib_context.spawn_local(handle_ui_commands(ui_receiver, ui.clone()));
-        #[cfg(windows)]
-        {
-            let update_button = gtk::Button::builder()
-                .css_classes(vec![
-                    "update_button".to_string(),
-                    "suggested-action".to_string(),
-                ])
-                .has_tooltip(true)
-                .tooltip_text("Update is available")
-                .child(&update_button_progress_box)
-                .overflow(gtk::Overflow::Hidden)
-                .build();
-            let update_button_revealer = gtk::Revealer::builder()
-                .transition_type(RevealerTransitionType::Crossfade)
-                .transition_duration(100)
-                .child(&update_button)
-                .reveal_child(false)
-                .build();
-            glib_context.spawn_local(check_for_updates(
-                project_dirs,
-                header_bar,
-                update_button_revealer,
-                update_button,
-                update_button_label,
-                update_progress_css_provider,
-            ));
-        }
-
-        window.set_title(Some("Comms"));
-        stack.set_transition_duration(100);
-
-        // --- Setup for connect-to-server state
-
-        let connect_progress: gtk::ProgressBar = builder.object("connect_progress").unwrap();
-        connect_progress.add_css_class("osd");
-        connect_progress.add_css_class("horizontal");
-
-        let server_entry: adw::EntryRow = builder.object("server_entry").unwrap();
-        server_entry.set_text(&server_parameter.unwrap_or(initial_local_storage.server));
-
-        let username_entry: adw::EntryRow = builder.object("username_entry").unwrap();
-        username_entry.set_text(&initial_local_storage.username);
-
-        let submit_connection_form = {
-            let glib_context = glib_context.clone();
-            let network = network.clone();
-            let audio = audio.clone();
-            let ui = ui.clone();
-            Rc::new(RefCell::new(move || {
-                glib_context.spawn_local(try_connect(
-                    audio.clone(),
-                    network.clone(),
-                    network_event_sender.clone(),
-                    ui.clone(),
-                ));
-            }))
-        };
-
-        let connect_button: gtk::Button = builder.object("connect_button").unwrap();
-        connect_button.set_overflow(gtk::Overflow::Hidden);
-        window.set_default_widget(Some(&connect_button));
-        {
-            let submit_connection_form = submit_connection_form.clone();
-            connect_button.connect_clicked(move |_| {
-                let submit_fn = &mut *submit_connection_form.borrow_mut();
-                submit_fn();
-            });
-        }
-        if let Some(timestamp) = BUILD_TIMESTAMP {
-            connect_button
-                .set_tooltip_text(Some(&format!("Build {timestamp} ({})", comms_version())));
-            connect_button.set_has_tooltip(true);
-        }
-
-        let username_entry: adw::EntryRow = builder.object("username_entry").unwrap();
-        {
-            let submit_connection_form = submit_connection_form.clone();
-            username_entry.connect_activate(move |_| {
-                let submit_fn = &mut *submit_connection_form.borrow_mut();
-                submit_fn();
-            });
-        }
-
-        let server_entry: adw::EntryRow = builder.object("server_entry").unwrap();
-        server_entry.connect_activate(move |_| {
-            let submit_fn = &mut *submit_connection_form.borrow_mut();
-            submit_fn();
-        });
-        let connect_form: gtk::Box = builder.object("connect_form").unwrap();
-        stack.add_named(&connect_form, Some("connect"));
-
-        // --- Setup for main state
-        disconnect_button.connect_clicked(move |_| {
-            let ui = ui.clone();
-            let network = network.clone();
-            let audio = audio.clone();
-            glib_context.spawn_local(async move {
-                let (users, user_list, user_id, saved_volumes) =
-                    match ui.borrow_mut().use_state(|state| {
-                        if let UiState::Main {
-                            users,
-                            user_list,
-                            user_id,
-                            saved_volumes,
-                            ..
-                        } = state
-                        {
-                            (
-                                UiState::Disconnecting,
-                                Some((users, user_list, user_id, saved_volumes)),
-                            )
-                        } else {
-                            (state, None)
-                        }
+        .unwrap_or_else(|| storage.server.clone());
+    let server = server
+        .trim_start_matches("comms:")
+        .trim_matches('/')
+        .to_string();
+    let snapshot = Snapshot {
+        revision: 0,
+        version: comms_version().into_owned(),
+        username: storage.username.clone(),
+        server,
+        status: ConnectionStatus::Disconnected,
+        audio_ready: false,
+        audio_error: None,
+        error: None,
+        users: Vec::new(),
+        input_devices: Vec::new(),
+        output_devices: Vec::new(),
+    };
+    let (sender, requests) = async_channel::bounded::<Request>(32);
+    tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
+        .manage(Bridge(sender))
+        .invoke_handler(tauri::generate_handler![
+            get_state,
+            connect,
+            disconnect,
+            set_volume,
+            list_devices
+        ])
+        .setup(move |app| {
+            let mut snapshot = snapshot;
+            if let Some(urls) = app.deep_link().get_current()? {
+                if let Some(server) = urls
+                    .iter()
+                    .find_map(|url| server_from_link(url.as_str()).ok())
+                {
+                    snapshot.server = server;
+                }
+            }
+            let link_requests = app.state::<Bridge>().0.clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    let (response, _) = oneshot::channel();
+                    if let Err(error) = link_requests.try_send(Request {
+                        command: Command::OpenLink(url.to_string()),
+                        response,
                     }) {
-                        Some(m) => m,
-                        None => return,
-                    };
-
-                disconnect_from_server(users, user_list, ui.clone(), network, audio).await;
-
-                ui.borrow_mut().set_state(UiState::ChooseServer {
-                    user_id,
-                    saved_volumes,
-                });
-            });
-        });
-
-        let user_list_root: gtk::ScrolledWindow = builder.object("user_list_root").unwrap();
-        stack.add_named(&user_list_root, Some("user_list"));
-
-        window.set_child(Some(&stack));
-        #[cfg(not(windows))]
-        window.show();
-
-        #[cfg(windows)]
-        if let Some(warp_window) = std::env::var_os("WARP_WINDOW_HANDLE")
-            .as_ref()
-            .and_then(|h| h.to_str())
-        {
-            use gdk4_win32::Win32Surface;
-            use glib::SignalHandlerId;
-            use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-            use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
-            use windows::Win32::UI::WindowsAndMessaging::WM_CLOSE;
-            use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWMINNOACTIVE};
-
-            let warp_window = warp_window.parse().unwrap();
-            let handler_id = Rc::new(RefCell::new(None::<SignalHandlerId>));
-            *handler_id.borrow_mut() = {
-                let handler_id = handler_id.clone();
-                Some(window.connect_realize(move |window| {
-                    if let Some(signal_id) = handler_id.take() {
-                        window.disconnect(signal_id);
+                        eprintln!("Cannot open server link: {error}");
                     }
-
-                    let native = window.native().unwrap();
-                    let surface = native.surface();
-                    let surface: Win32Surface = surface.downcast().unwrap();
-                    let app_window: HWND = HWND(surface.handle().0);
-                    unsafe { ShowWindow(app_window, SW_SHOWMINNOACTIVE) };
-
-                    unsafe {
-                        SendMessageW(HWND(warp_window), WM_CLOSE, WPARAM(0), LPARAM(0));
-                    };
-
-                    window.show();
-                }))
+                }
+            });
+            let mut session = Session {
+                storage,
+                snapshot,
+                client_id: None,
+                round_trip_latency: Duration::ZERO,
+                tasks: SessionTasks::default(),
+                audio,
+                network,
+                events,
+                app: app.handle().clone(),
             };
-            WidgetExt::realize(&window);
-        } else {
-            window.show();
-        }
-    });
+            // The actor uses the existing async-std based network futures. No
+            // mutex is held over a connection attempt or a filesystem operation.
+            async_std::task::spawn(async move {
+                let mut audio_open = true;
+                enum Input {
+                    Request(Result<Request, async_channel::RecvError>),
+                    Network(Option<NetworkEvent>),
+                    Audio(Option<UICommand>),
+                    Tick,
+                }
+                loop {
+                    // Drop all pending receiver futures before processing the
+                    // selected message, so transitions can drain stale events.
+                    let input = {
+                        // Sleep until a remote speaking indicator expires. An
+                        // idle or disconnected client needs no periodic timer.
+                        let deadline = session
+                            .snapshot
+                            .users
+                            .iter()
+                            .filter_map(|user| user.speaking_until)
+                            .min();
+                        let tick = match deadline {
+                            Some(until) => Either::Left(Delay::new(
+                                until.saturating_duration_since(Instant::now()),
+                            )),
+                            None => Either::Right(futures::future::pending::<()>()),
+                        }
+                        .fuse();
+                        let request = requests.recv().fuse();
+                        let network_event = network_events.next().fuse();
+                        let audio_event = async {
+                            if audio_open {
+                                ui_events.recv().await.ok()
+                            } else {
+                                futures::future::pending().await
+                            }
+                        }
+                        .fuse();
+                        futures::pin_mut!(request, network_event, audio_event, tick);
+                        futures::select! {
+                            request = request => Input::Request(request),
+                            event = network_event => Input::Network(event),
+                            event = audio_event => Input::Audio(event),
+                            _ = tick => Input::Tick,
+                        }
+                    };
+                    match input {
+                        Input::Request(Ok(request)) => {
+                            if matches!(&request.command, Command::Connect { .. })
+                                && session.snapshot.status == ConnectionStatus::Disconnected
+                            {
+                                // A failed or previous session may have queued
+                                // socket-close and discovery notifications.
+                                while network_events.try_recv().is_ok() {}
+                            }
+                            let result = session.command(request.command).await;
+                            if let Err(error) = &result {
+                                session.snapshot.error = Some(error.clone());
+                            }
+                            session.publish();
+                            let _ = request
+                                .response
+                                .send(result.map(|_| session.snapshot.clone()));
+                        }
+                        Input::Network(Some(event)) => {
+                            if let Err(error) = session.network_event(event).await {
+                                let _ = session.disconnect(Some(error)).await;
+                            }
+                            session.publish();
+                        }
+                        Input::Audio(Some(event)) => {
+                            if session.audio_event(event) {
+                                session.publish();
+                            }
+                        }
+                        Input::Audio(None) => {
+                            audio_open = false;
+                        }
+                        Input::Tick => {
+                            let now = Instant::now();
+                            let mut changed = false;
+                            for user in &mut session.snapshot.users {
+                                changed |= user.expire_speaking(now);
+                            }
+                            if changed {
+                                session.publish();
+                            }
+                        }
+                        Input::Request(Err(_)) | Input::Network(None) => break,
+                    }
+                }
+            });
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("Failed to initialize Comms")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // The process owns the native workers; explicitly close the
+                // session before the event loop and process terminate.
+                let bridge = app.state::<Bridge>();
+                let _ = async_std::task::block_on(bridge.request(Command::Disconnect));
+            }
+        });
 }
 
-async fn update_local_storage(f: impl FnOnce(&mut LocalStorage)) {
-    let local_storage_dir = if let Some(dirs) =
-        ProjectDirs::from("", "Comms", "Comms").map(|dirs| dirs.data_dir().join("local_storage"))
-    {
-        dirs
-    } else {
-        return;
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let mut storage: LocalStorage = if let Some(storage) =
-        std::fs::read_to_string(&local_storage_dir)
-            .ok()
-            .and_then(|storage_string| serde_json::from_str(&storage_string).ok())
-    {
-        storage
-    } else {
-        return;
-    };
-
-    f(&mut storage);
-
-    if let Ok(raw_storage) = serde_json::to_string(&storage) {
-        let _ = async_std::fs::write(&local_storage_dir, raw_storage).await;
+    #[test]
+    fn connection_fields_are_validated_and_links_normalized() {
+        assert!(validate_connection("  ", "localhost").is_err());
+        assert!(validate_connection("Alice", "comms://").is_err());
+        assert_eq!(
+            validate_connection(" Alice ", " comms://localhost/ ").unwrap(),
+            ("Alice".into(), "localhost".into())
+        );
     }
-}
 
-async fn update_saved_volumes(volumes: HashMap<UserId, u16>) {
-    update_local_storage(|storage| {
-        storage.volumes = volumes;
-    })
-    .await;
+    #[test]
+    fn server_links_require_a_hostname_and_reject_other_url_components() {
+        assert_eq!(
+            server_from_link("comms://voice.example.com/").unwrap(),
+            "voice.example.com"
+        );
+        for link in [
+            "https://example.com",
+            "comms://",
+            "comms://user@host",
+            "comms://host:1234",
+            "comms://host/path",
+            "comms://host?server=other",
+        ] {
+            assert!(server_from_link(link).is_err(), "{link}");
+        }
+    }
+
+    #[test]
+    fn gtk_settings_preserve_identity_and_volume() {
+        let id = Uuid::new_v4();
+        let raw = format!(
+            r#"{{"username":"Alice","server":"localhost","user_id":"{id}","volumes":{{"{id}":175}}}}"#
+        );
+        let storage: LocalStorage = serde_json::from_str(&raw).unwrap();
+        assert_eq!(storage.user_id, id);
+        assert_eq!(storage.volumes[&id], 175);
+        assert_eq!(
+            serde_json::to_value(&storage).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap()
+        );
+    }
+
+    #[test]
+    fn speaking_expires_and_new_audio_extends_the_indicator() {
+        let mut user = User {
+            client_id: 1,
+            user_id: Uuid::new_v4(),
+            name: "Alice".into(),
+            volume: 100,
+            is_current_user: false,
+            latency_ms: 12.0,
+            is_peer_to_peer: false,
+            is_speaking: false,
+            speaking_until: None,
+        };
+        assert!(user.speak_for(Duration::from_millis(100)));
+        assert!(!user.speak_for(Duration::from_millis(200)));
+        assert!(!user.expire_speaking(Instant::now() + Duration::from_millis(150)));
+        assert!(user.is_speaking);
+        assert!(user.expire_speaking(Instant::now() + Duration::from_millis(300)));
+        assert!(!user.is_speaking);
+    }
+
+    #[test]
+    fn session_task_cancellation_stops_pending_work() {
+        async_std::task::block_on(async {
+            let (release, wait) = oneshot::channel::<()>();
+            let (result, received) = oneshot::channel();
+            let mut tasks = SessionTasks::default();
+            tasks.spawn(Some(1), async move {
+                let _ = wait.await;
+                let _ = result.send("stale peer registration");
+            });
+            tasks.clear();
+            let _ = release.send(());
+            assert!(received.await.is_err());
+            assert!(tasks.0.is_empty());
+        });
+    }
+
+    #[test]
+    fn removing_a_peer_cancels_only_its_discovery() {
+        async_std::task::block_on(async {
+            let (release, wait) = oneshot::channel::<()>();
+            let (result, received) = oneshot::channel();
+            let mut tasks = SessionTasks::default();
+            tasks.spawn(Some(1), async move {
+                let _ = wait.await;
+                let _ = result.send(());
+            });
+            tasks.spawn(None, futures::future::pending());
+            tasks.remove(Some(1));
+            let _ = release.send(());
+            assert!(received.await.is_err());
+            assert!(tasks.0.contains_key(&None));
+        });
+    }
 }
